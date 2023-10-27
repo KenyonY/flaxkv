@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flaxkv"
+description = "Let you forget you're using a database. Simple and high-performance persistent database solutions. 一个伪装成字典的数据库。 简单且高性能的持久化数据库解决方案。"
+authors = [
+    { name = "K.Y", email = "beidongjiedeguang@gmail.com" },
+]
+license-files = { paths = ["LICENSE"] }
+readme = "README.md"
+keywords = ["database", "dict", "lmdb", "leveldb", "Machine Learning", "NLP"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3"
+]
+
+requires-python = ">=3.8"
+
+dependencies = [
+    "loguru>=0.7.0",
+    "orjson>=3.9",
+    "rich",
+    "psutil",
+    "fire",
+    "pytz",
+    "numpy",
+    "msgspec>=0.18.4",
+    "lmdb>=1.4.1",
+]
+
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/KenyonY/flaxkv"
+Documentation = "https://github.com/KenyonY/flaxkv#flaxkv"
+Issues = "https://github.com/KenyonY/flaxkv/issues"
+Source = "https://github.com/KenyonY/flaxkv"
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-aiohttp",
+]
+
+
+database = [
+    "lmdb>=1.4.1",
+    "plyvel>=1.5.0",
+]
+
+
+leveldb = [
+    "plyvel>=1.5.0",
+]
+
+
+
+#[project.scripts]
+#flaxkv = "flaxkv.__main__:main"
+
+[tool.hatch.version]
+path = "flaxkv/__init__.py"
+
+[tool.isort]
+profile = "black"
+
+[tool.hatch.build]
+include = [
+    "flaxkv/**/*.py",
+]
+exclude = [
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["flaxkv"]
