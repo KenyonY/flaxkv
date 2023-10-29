@@ -19,18 +19,18 @@ from loguru import logger
 
 
 class DBManager:
-    def __init__(self, db_type: str, db_path: str, new=False, **kwargs):
+    def __init__(self, db_type: str, db_path: str, rebuild=False, **kwargs):
         """
         Initializes the database manager.
 
         Args:
             db_type (str): Type of the database ("lmdb" or "leveldb").
             db_path (str): Path to the database.
-            new (bool, optional): Whether to create a new database. Defaults to False.
+            rebuild (bool, optional): Whether to create a new database. Defaults to False.
         """
         self.db_type = db_type.lower()
         self.db_path = db_path
-        if new:
+        if rebuild:
             self.delete_db()
         self.env = self.connect()
 

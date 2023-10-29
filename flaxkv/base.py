@@ -21,14 +21,15 @@ from dataclasses import dataclass
 import numpy as np
 from loguru import logger
 
-# from .decorators import class_measure_time
+from .decorators import class_measure_time
+from .helper import SimpleQueue
 from .log import setting_log
 from .manager import DBManager
 from .pack import decode, decode_key, encode
 
 
 class BaseDBDict(ABC):
-    MAX_BUFFER_SIZE = 1000
+    MAX_BUFFER_SIZE = 200
     _COMMIT_TIME_INTERVAL = 60 * 60 * 24
     _logger = None
 
@@ -44,17 +45,17 @@ class BaseDBDict(ABC):
         dict = b'd'
         array = b'a'
 
-    def __init__(self, db_type, path, recreate=False, **kwargs):
+    def __init__(self, db_type, path, rebuild=False, **kwargs):
         """
         Initializes the BaseDBDict class which provides a dictionary-like interface to a database.
 
         Args:
             db_type (str): Type of the database ("lmdb" or "leveldb").
             path (str): Path to the database.
-            recreate (bool, optional): Whether to recreate the database. Defaults to False.
+            rebuild (bool, optional): Whether to recreate the database. Defaults to False.
         """
         self._db_manager = DBManager(
-            db_type=db_type, db_path=path, new=recreate, **kwargs
+            db_type=db_type, db_path=path, rebuild=rebuild, **kwargs
         )
         self._static_view = self._db_manager.new_static_view()
 
@@ -64,9 +65,10 @@ class BaseDBDict(ABC):
         self._buffer_lock = threading.Lock()
 
         self._write_event = threading.Event()
-        self._write_activate = True  # to skip writing when close()
         self._latest_write_num = 0
+        self._write_queue = SimpleQueue(maxsize=1)
         self._thread_running = True
+
         self._thread = threading.Thread(target=self._background_worker)
         self._thread.daemon = True
 
@@ -118,30 +120,38 @@ class BaseDBDict(ABC):
         """
         Background worker function to periodically write buffer to the database.
         """
-        while self._thread_running:
+        while self._thread_running or not self._write_queue.empty():
+
             self._write_event.wait(timeout=self._COMMIT_TIME_INTERVAL)
             self._write_event.clear()
-            if self._write_activate:
-                try:
-                    self._write_buffer_to_db(current_write_num=self._latest_write_num)
-                except:
-                    # todo:
-                    self._logger.warning(f"Write buffer to db failed. error")
 
-    def write_immediately(self):
+            if not self._write_queue.empty():
+                value = self._write_queue.get()
+                if value is False:
+                    break
+
+            try:
+                self._write_buffer_to_db(current_write_num=self._latest_write_num)
+
+            except:
+                # todo:
+                self._logger.warning(f"Write buffer to db failed. error")
+
+    def write_immediately(self, write=True):
         """
         Triggers an immediate write of the buffer to the database.
         """
+        self._write_queue.put(write)
         self._write_event.set()
 
-    def _close_background_worker(self):
+    def _close_background_worker(self, write=True):
         """
         Stops the background worker thread.
         """
         self._latest_write_num += 1
-        self.write_immediately()
+        self.write_immediately(write=write)
         self._thread_running = False
-        self._thread.join(timeout=10)
+        self._thread.join(timeout=30)
         if self._thread.is_alive():
             self._logger.warning(
                 "Warning: Background thread did not finish in time. Some data might not be saved."
@@ -220,7 +230,7 @@ class BaseDBDict(ABC):
             self._buffered_count += 1
             # Trigger immediate write if buffer size exceeds MAX_BUFFER_SIZE
             if self._buffered_count >= self.MAX_BUFFER_SIZE:
-                print("Trigger immediate write")
+                self._logger.debug("Trigger immediate write")
                 self._latest_write_num += 1
                 self._buffered_count = 0
                 self.write_immediately()
@@ -305,12 +315,14 @@ class BaseDBDict(ABC):
                 raise
 
         with self._buffer_lock:
-            self._logger.debug("reset buffer")
             self.delete_buffer_set = self.delete_buffer_set - delete_buffer_set_snapshot
             self.buffer_dict = self._diff_buffer(self.buffer_dict, buffer_dict_snapshot)
 
             self._db_manager.close_view(self._static_view)
             self._static_view = self._db_manager.new_static_view()
+            self._logger.info(
+                f"write {self._db_manager.db_type.upper()} buffer to db successfully-{current_write_num=}-{self._latest_write_num=}"
+            )
 
     def __getitem__(self, key):
         """
@@ -403,8 +415,7 @@ class BaseDBDict(ABC):
         with self._buffer_lock:
             self._db_manager.close_view(self._static_view)
             self._db_manager.close()
-            self._write_activate = False
-            self._close_background_worker()
+            self._close_background_worker(write=False)
 
         self._db_manager.clear()
         self._static_view = self._db_manager.new_static_view()
@@ -413,7 +424,6 @@ class BaseDBDict(ABC):
         self.buffer_dict = {}
         self.delete_buffer_set = set()
         self._buffer_lock = threading.Lock()
-        self._write_activate = True
 
         self._write_event = threading.Event()
         self._latest_write_num = 0
@@ -450,10 +460,8 @@ class BaseDBDict(ABC):
         Args:
             write (bool, optional): Whether to write the buffer to the database before closing. Defaults to True.
         """
-        if not write:
-            self._write_activate = False
-        self._close_background_worker()
-        self._write_activate = True
+        self._close_background_worker(write=write)
+
         self._db_manager.close_view(self._static_view)
         self._db_manager.close()
         self._logger.info(f"Closed ({self._db_manager.db_type.upper()}) successfully")
@@ -503,13 +511,16 @@ class LMDBDict(BaseDBDict):
         value: int, float, bool, str, list, dict, and np.ndarray,
     """
 
-    def __init__(self, path, map_size=1024**3, recreate=False, log=False, **kwargs):
-        setting_log(save_file=log)
+    def __init__(
+        self, path, map_size=1024**3, rebuild=False, log_level=None, **kwargs
+    ):
+
+        setting_log(level=log_level, save_file=kwargs.pop('save_log', False))
         self._logger = logger.bind(flaxkv=True)
-        if not log:
+        if not log_level:
             self._logger.remove()
         super().__init__(
-            "lmdb", path, max_dbs=1, map_size=map_size, recreate=recreate, **kwargs
+            "lmdb", path, max_dbs=1, map_size=map_size, rebuild=rebuild, **kwargs
         )
 
     def keys(self):
@@ -594,12 +605,12 @@ class LevelDBDict(BaseDBDict):
         value: int, float, bool, str, list, dict and np.ndarray,
     """
 
-    def __init__(self, path, recreate=False, log=False):
-        setting_log(save_file=log)
+    def __init__(self, path, rebuild=False, log_level=None, **kwargs):
+        setting_log(level=log_level, save_file=kwargs.pop('save_log', False))
         self._logger = logger.bind(flaxkv=True)
-        if not log:
+        if not log_level:
             self._logger.remove()
-        super().__init__("leveldb", path=path, recreate=recreate)
+        super().__init__("leveldb", path=path, rebuild=rebuild)
 
     def keys(self):
         with self._buffer_lock:

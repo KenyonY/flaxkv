@@ -1,5 +1,7 @@
 from .base import LevelDBDict, LMDBDict
 
+__version__ = "0.1.1"
+
 __all__ = [
     "dbdict",
     "LMDBDict",
@@ -7,13 +9,10 @@ __all__ = [
 ]
 
 
-def dbdict(path, backend='lmdb', recreate=False, **kwargs):
+def dbdict(path, backend='lmdb', rebuild=False, **kwargs):
     if backend == 'lmdb':
-        return LMDBDict(path, recreate=recreate, **kwargs)
+        return LMDBDict(path, rebuild=rebuild, **kwargs)
     elif backend == 'leveldb':
-        return LevelDBDict(path, recreate=recreate)
+        return LevelDBDict(path, rebuild=rebuild, **kwargs)
     else:
         raise ValueError(f"Unsupported DB type {backend}.")
-
-
-__version__ = "0.1.0"

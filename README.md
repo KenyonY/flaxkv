@@ -1,15 +1,13 @@
 
-**English** | [**简体中文**](./README_ZH.md)
-
 <h1 align="center">
     <br>
     FlaxKV
-    <br>
 </h1>
 
+
 <p align="center">
-Let you forget you're using a database.
-Simple and high-performance persistent database solutions.
+Let you forget you're using a database —
+Simple and high-performance persistent database solution
 </p>
 <p align="center">
     <a href="https://pypi.org/project/flaxkv/">
@@ -29,15 +27,23 @@ Simple and high-performance persistent database solutions.
     </a>
 </p>
 
+<h4 align="center">
+    <p>
+        <b>English</b> |
+        <a href="https://github.com/KenyonY/flaxkv/blob/main/README_ZH.md">简体中文</a> 
+    </p>
+</h4>
 
+<p >
+<br>
+</p>
 
-
-
-# FlaxKV
 
 A persistent database masquerading as a dictionary.
 
-The `flaxkv` module provides a dictionary-like interface for interacting with high-performance key-value databases (LMDB, LevelDB). It abstracts the complexities of direct database interaction, allowing users to perform CRUD (Create, Read, Update, Delete) operations in a simple and intuitive manner. You can use it just like a Python dictionary without worrying about it blocking your main process at any stage.
+The `flaxkv` module provides a dictionary-like interface for interacting with high-performance key-value databases (LMDB, LevelDB).
+It abstracts the complexities of direct database interaction, allowing users to perform CRUD operations in a simple and 
+intuitive manner. You can use it just like a Python dictionary without worrying about it blocking your main process at any stage.
 
 **Use Cases**
 
@@ -51,7 +57,7 @@ The `flaxkv` module provides a dictionary-like interface for interacting with hi
 
 ## Key Features
 
-- **Always up-to-date, never blocking.**: It was designed from the ground up to ensure that no write operations block the user process, while users can always read the most recently written data.
+- **Always Up-to-date, Never Blocking**: It was designed from the ground up to ensure that no write operations block the user process, while users can always read the most recently written data.
 
 - **Ease of Use**: Interacting with the database feels just like using a Python dictionary! You don't even have to worry about resource release.
 
@@ -106,15 +112,18 @@ for key, value in d.items():
 print(len(d))
 ```
 
-Hey! Did you... forget to call `d.close()` to release resources here? 
-No, you don't need to manage it manually! It's all just like using a dictionary! 
-(Of course, you can also manually call `d.close()` to release resources immediately.)
+You might have noticed that even when the program ends, we didn't use `d.close()` to release resources! 
+Everything will be handled automatically.
+More importantly, as a persistent database, it offers performance close to dictionary (in-memory) access!
+(There should be a benchmark here..)
+
+P.S.: Of course, you can also manually call `d.close()` to release resources immediately~.
 
 ## Citation
 If `FlaxKV` has been helpful to your research, please cite:
 ```bibtex
 @misc{flaxkv,
-    title={FlaxKV: An Easy-to-use and High Performance Key-Value Database},
+    title={FlaxKV: An Easy-to-use and High Performance Key-Value Database Solution},
     author={K.Y},
     howpublished = {\url{https://github.com/KenyonY/flaxkv}},
     year={2023}

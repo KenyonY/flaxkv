@@ -1,14 +1,12 @@
-**简体中文** | [**English**](./README.md)
 
 <h1 align="center">
     <br>
     FlaxKV
-    <br>
 </h1>
 
 <p align="center">
-让你忘记自己在使用数据库。
-简单且高性能的持久化数据库解决方案。
+让你忘记自己在使用数据库 ——
+简单且高性能的持久化数据库解决方案
 </p>
 
 
@@ -30,12 +28,22 @@
     </a>
 </p>
 
-# FlaxKV
+<h4 align="center">
+    <p>
+        <b>简体中文</b> |
+        <a href="https://github.com/KenyonY/flaxkv/blob/main/README.md">English</a> 
+    </p>
+</h4>
+
+<p >
+<br>
+</p>
 
 
-`flaxkv` 模块提供了一个类似字典的接口，用于与高性能键值数据库进行交互。
-它抽象了直接数据库交互的复杂性，允许用户以简单直观的方式执行CRUD（创建、读取、更新、删除）操作。
-你可以直接将它当成python字典来使用而不必关心在任何阶段它会阻塞你的主进程。
+
+`flaxkv` 提供了一个类似字典的接口，用于与高性能键值数据库进行交互。
+抽象了直接数据库交互的复杂性，允许用户以简单直观的方式执行CRUD操作。
+你可以直接将它当成python字典来使用而不必担心在任何阶段它会阻塞你的主进程。
 
 **适用场景**  
 
@@ -106,19 +114,19 @@ for key, value in d.items():
 
 print(len(d))
 ```
+也许你注意到即使到程序结束并没有使用到`d.close()`来进行资源释放！这一切都将被自动处理。
+更重要的是，它(作为持久化数据库)还提供了接近字典(内存)存取的性能！(这里应存在一个benchmark..)
 
-嘿！所以... 这里是不是忘记调用 `d.close()` 进行资源释放？
-不，你并不需要手动去管理！ 一切就和使用字典一样! 
-(当然，也可以手动调用 `d.close()` 来立即释放资源~)
-
-
+PS: 当然也可以手动调用 `d.close()` 来立即释放资源~
 
 
-## Citation
+
+
+## 引用
 如果`FlaxKV`对你的研究有帮助，欢迎引用：
 ```bibtex
 @misc{flaxkv,
-    title={FlaxKV: An Easy-to-use and High Performance Key-Value Database Solutions},
+    title={FlaxKV: An Easy-to-use and High Performance Key-Value Database Solution},
     author={K.Y},
     howpublished = {\url{https://github.com/KenyonY/flaxkv}},
     year={2023}
