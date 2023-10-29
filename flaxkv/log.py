@@ -7,13 +7,14 @@ import pytz
 from loguru import logger
 
 
-def setting_log(
-    save_file=False,
-    multi_process=True,
-):
+def setting_log(level=None, multi_process=True, save_file=True):
     """
     Configures the logging settings for the application.
     """
+    if level is None:
+        # https://loguru.readthedocs.io/en/stable/api/logger.html
+        level = "CRITICAL"
+        save_file = False
 
     tz = os.environ.get("TZ", "").strip()
     if tz and hasattr(time, "tzset"):
@@ -30,7 +31,7 @@ def setting_log(
     config_handlers = [
         {
             "sink": sys.stdout,
-            "level": "DEBUG",
+            "level": level,
             "filter": lambda record: "flaxkv" in record["extra"],
         },
     ]
@@ -40,7 +41,7 @@ def setting_log(
                 "sink": f"./Log/flaxkv.log",
                 "enqueue": multi_process,
                 "rotation": "100 MB",
-                "level": "DEBUG",
+                "level": level,
                 "filter": lambda record: "flaxkv" in record["extra"],
             }
         ]

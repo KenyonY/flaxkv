@@ -5,7 +5,7 @@ from functools import wraps
 from rich import print
 from rich.text import Text
 
-ENABLED_MEASURE_TIME_DECORATOR = False
+ENABLED_MEASURE_TIME_DECORATOR = True
 
 
 def class_measure_time(logger=None, level=logging.INFO, prec=3):
