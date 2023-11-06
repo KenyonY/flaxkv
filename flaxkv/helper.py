@@ -17,3 +17,7 @@ class SimpleQueue:
 
     def empty(self):
         return self.q.empty()
+
+    def clear(self):
+        while not self.empty():
+            self.get()

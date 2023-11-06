@@ -4,6 +4,8 @@ CHACHE_SQLITE3.db
 CACHE_LEVELDB
 Log
 
+flaxkv/server
+
 .idea
 .ipynb_checkpoints
 .pytest_cache
