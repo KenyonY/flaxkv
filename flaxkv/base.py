@@ -29,8 +29,8 @@ from .pack import decode, decode_key, encode
 
 
 class BaseDBDict(ABC):
-    MAX_BUFFER_SIZE = 200
-    _COMMIT_TIME_INTERVAL = 60 * 60
+    MAX_BUFFER_SIZE = 100
+    _COMMIT_TIME_INTERVAL = 60 * 60 * 12
     _logger = None
 
     # Unused
