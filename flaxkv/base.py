@@ -29,8 +29,8 @@ from .pack import decode, decode_key, encode
 
 
 class BaseDBDict(ABC):
-    MAX_BUFFER_SIZE = 200
-    _COMMIT_TIME_INTERVAL = 60 * 60 * 24
+    MAX_BUFFER_SIZE = 100
+    _COMMIT_TIME_INTERVAL = 60 * 60 * 12
     _logger = None
 
     # Unused
@@ -64,6 +64,7 @@ class BaseDBDict(ABC):
         self.delete_buffer_set = set()
         self._buffer_lock = threading.Lock()
 
+        self._write_complete = SimpleQueue(maxsize=1)
         self._write_event = threading.Event()
         self._latest_write_num = 0
         self._write_queue = SimpleQueue(maxsize=1)
@@ -126,9 +127,10 @@ class BaseDBDict(ABC):
             self._write_event.clear()
 
             if not self._write_queue.empty():
-                value = self._write_queue.get()
-                if value is False:
+                if self._write_queue.get() is False:
                     break
+
+            self._write_complete.clear()
 
             try:
                 self._write_buffer_to_db(current_write_num=self._latest_write_num)
@@ -137,21 +139,28 @@ class BaseDBDict(ABC):
                 # todo:
                 self._logger.warning(f"Write buffer to db failed. error")
 
-    def write_immediately(self, write=True):
+            self._write_complete.put(True)
+
+    def write_immediately(self, write=True, wait=False):
         """
         Triggers an immediate write of the buffer to the database.
         """
         self._write_queue.put(write)
         self._write_event.set()
+        if wait:
+            self._write_complete.clear()
+            self._write_complete.get(block=True)
 
     def _close_background_worker(self, write=True):
         """
         Stops the background worker thread.
         """
         self._latest_write_num += 1
-        self.write_immediately(write=write)
+
         self._thread_running = False
-        self._thread.join(timeout=30)
+        self.write_immediately(write=write)
+
+        self._thread.join(timeout=60)
         if self._thread.is_alive():
             self._logger.warning(
                 "Warning: Background thread did not finish in time. Some data might not be saved."

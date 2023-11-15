@@ -25,7 +25,10 @@ def setting_log(level=None, multi_process=True, save_file=True):
             offset_hours = offset_seconds // 3600
             return f"UTC{-int(offset_hours):+d}"
 
-        os.environ["TZ"] = get_utc_offset(tz)
+        try:
+            os.environ["TZ"] = get_utc_offset(tz)
+        except:
+            pass
         time.tzset()
 
     config_handlers = [
