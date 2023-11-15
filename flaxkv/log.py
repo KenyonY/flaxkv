@@ -7,13 +7,14 @@ import pytz
 from loguru import logger
 
 
-def setting_log(level=None, multi_process=True, save_file=True):
+def setting_log(level=None, multi_process=True, save_file=True, stdout=True):
     """
     Configures the logging settings for the application.
     """
     if level is None:
         # https://loguru.readthedocs.io/en/stable/api/logger.html
-        level = "CRITICAL"
+        # level = "CRITICAL"
+        level = "INFO"
         save_file = False
 
     tz = os.environ.get("TZ", "").strip()
@@ -30,14 +31,15 @@ def setting_log(level=None, multi_process=True, save_file=True):
         except:
             pass
         time.tzset()
-
-    config_handlers = [
-        {
-            "sink": sys.stdout,
-            "level": level,
-            "filter": lambda record: "flaxkv" in record["extra"],
-        },
-    ]
+    config_handlers = []
+    if stdout:
+        config_handlers += [
+            {
+                "sink": sys.stdout,
+                "level": level,
+                "filter": lambda record: "flaxkv" in record["extra"],
+            },
+        ]
     if save_file:
         config_handlers += [
             {
@@ -48,6 +50,8 @@ def setting_log(level=None, multi_process=True, save_file=True):
                 "filter": lambda record: "flaxkv" in record["extra"],
             }
         ]
+    return config_handlers
 
-    logger_config = {"handlers": config_handlers}
-    logger.configure(**logger_config)
+
+def enable_logging():
+    logger.enable("flaxkv")
