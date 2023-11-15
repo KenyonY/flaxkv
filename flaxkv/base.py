@@ -31,7 +31,7 @@ from .pack import decode, decode_key, encode
 class BaseDBDict(ABC):
     MAX_BUFFER_SIZE = 100
     _COMMIT_TIME_INTERVAL = 60 * 60 * 12
-    _logger = None
+    _logger = logger
 
     # Unused
     @dataclass
@@ -54,6 +54,19 @@ class BaseDBDict(ABC):
             path (str): Path to the database.
             rebuild (bool, optional): Whether to recreate the database. Defaults to False.
         """
+        log_level = kwargs.pop('log', None)
+        if log_level:
+            log_configs = setting_log(
+                level=log_level,
+                stdout=kwargs.pop("stdout", False),
+                save_file=kwargs.pop('save_log', False),
+            )
+            log_ids = [logger.add(**log_conf) for log_conf in log_configs]
+            self._logger = logger.bind(flaxkv=True)
+
+        else:
+            logger.disable('flaxkv')
+
         self._db_manager = DBManager(
             db_type=db_type, db_path=path, rebuild=rebuild, **kwargs
         )
@@ -345,7 +358,7 @@ class BaseDBDict(ABC):
         """
         value = self.get(key)
         if value is None:
-            raise KeyError(f"Key {key} not found in the database.")
+            raise KeyError(f"Key `{key}` not found in the database.")
         return value
 
     def __setitem__(self, key, value):
@@ -373,7 +386,7 @@ class BaseDBDict(ABC):
                     del self.buffer_dict[key]
                     return
         else:
-            raise KeyError(f"Key {key} not found in the database.")
+            raise KeyError(f"Key `{key}` not found in the database.")
 
     def pop(self, key, default=None):
         """
@@ -520,14 +533,7 @@ class LMDBDict(BaseDBDict):
         value: int, float, bool, str, list, dict, and np.ndarray,
     """
 
-    def __init__(
-        self, path, map_size=1024**3, rebuild=False, log_level=None, **kwargs
-    ):
-
-        setting_log(level=log_level, save_file=kwargs.pop('save_log', False))
-        self._logger = logger.bind(flaxkv=True)
-        if not log_level:
-            self._logger.remove()
+    def __init__(self, path, map_size=1024**3, rebuild=False, **kwargs):
         super().__init__(
             "lmdb", path, max_dbs=1, map_size=map_size, rebuild=rebuild, **kwargs
         )
@@ -614,11 +620,7 @@ class LevelDBDict(BaseDBDict):
         value: int, float, bool, str, list, dict and np.ndarray,
     """
 
-    def __init__(self, path, rebuild=False, log_level=None, **kwargs):
-        setting_log(level=log_level, save_file=kwargs.pop('save_log', False))
-        self._logger = logger.bind(flaxkv=True)
-        if not log_level:
-            self._logger.remove()
+    def __init__(self, path, rebuild=False, **kwargs):
         super().__init__("leveldb", path=path, rebuild=rebuild)
 
     def keys(self):
