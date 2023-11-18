@@ -179,26 +179,27 @@ class BaseDBDict(ABC):
                 "Warning: Background thread did not finish in time. Some data might not be saved."
             )
 
-    def get(self, key: str):
+    def get(self, key: str, default=None):
         """
         Retrieves the value associated with the given key.
 
         Args:
             key (str): The key to retrieve.
+            default: The default value to set if the key does not exist.
 
         Returns:
             value: The value associated with the key, or None if the key is not found.
         """
         with self._buffer_lock:
             if key in self.delete_buffer_set:
-                return None
+                return default
 
             if key in self.buffer_dict:
                 return self.buffer_dict[key]
 
             value = self._static_view.get(encode(key))
             if value is None:
-                return None
+                return default
             return decode(value)
 
     def get_db_value(self, key: str):
