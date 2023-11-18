@@ -1,7 +1,7 @@
 from .base import LevelDBDict, LMDBDict
 from .log import enable_logging
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 __all__ = [
     "dbdict",
