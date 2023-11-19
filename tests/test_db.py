@@ -41,40 +41,44 @@ def test_set_get_write(temp_db):
     if isinstance(temp_db, type(None)):
         pytest.skip("Skipping")
 
-    items = [
-        ("string", "string"),
-        ("int", 123),
-        (2, 2),
-        (2.5, 1 / 3),
-        (True, False),
-        (b'string', b'string'),
-        ((1, 2, 3), [1, 2, 3]),
-        ("test_key", "test_value"),
-        ('dict', {'a': 1, 'b': 2}),
-        # ('set', {1, 2, 3, '1', '2', '3'}), # do not support currently
-        ('list', [1, 2, 3, '1', '2', '3']),
-        ('nest_dict', {'a': {'b': 1, 'c': 2, 'd': {'e': 1, 'f': '2', 'g': 3}}}),
-    ]
+    target_dict = dict(
+        [
+            ("string", "string"),
+            ("int", 123),
+            (2, 2),
+            (2.5, 1 / 3),
+            (True, False),
+            (b'string', b'string'),
+            ((1, 2, 3), [1, 2, 3]),
+            ((1, (2, 3)), [1, 2, 3]),
+            ((1, (2, 3), (2, 3, (3, 4))), [1, 2, 3]),
+            ("test_key", "test_value"),
+            ('dict', {'a': 1, 'b': 2}),
+            # ('set', {1, 2, 3, '1', '2', '3'}), # do not support currently
+            ('list', [1, 2, 3, '1', '2', '3']),
+            ('nest_dict', {'a': {'b': 1, 'c': 2, 'd': {'e': 1, 'f': '2', 'g': 3}}}),
+        ]
+    )
     temp_db.MAX_BUFFER_SIZE = 1000
-    for key, value in items:
+    for key, value in target_dict.items():
         temp_db[key] = value
-    for key, value in items:
+    for key, value in target_dict.items():
         assert temp_db[key] == value
 
     assert temp_db.stat()['db'] == 0
-    assert temp_db.stat()['buffer'] == len(items)
-    assert temp_db.stat()['count'] == len(items)
+    assert temp_db.stat()['buffer'] == len(target_dict)
+    assert temp_db.stat()['count'] == len(target_dict)
 
     temp_db.write_immediately(wait=True)
-    for key, value in items:
-        assert temp_db[key] == value
+    for key, value in temp_db.items():
+        assert target_dict[key] == value
 
     assert temp_db.get('test_key') == 'test_value'
     assert temp_db.get('test_key', "default_value") == 'test_value'
     assert temp_db.get('no_exist_key', "default_value") == "default_value"
 
-    assert temp_db.stat()['db'] == len(items)
-    assert temp_db.stat()['count'] == len(items)
+    assert temp_db.stat()['db'] == len(target_dict)
+    assert temp_db.stat()['count'] == len(target_dict)
     assert temp_db.stat()['buffer'] == 0
 
 

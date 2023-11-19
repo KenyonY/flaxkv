@@ -1,3 +1,4 @@
+import msgpack
 import msgspec.msgpack
 import numpy as np
 
@@ -43,7 +44,4 @@ decode = msgspec.msgpack.Decoder(ext_hook=ext_hook).decode
 
 
 def decode_key(value):
-    value = decode(value)
-    if isinstance(value, list):
-        return tuple(value)
-    return value
+    return msgpack.unpackb(value, use_list=False)
