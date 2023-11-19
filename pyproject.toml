@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "flaxkv"
-description = "Let you forget you're using a database. Simple and high-performance persistent database solutions. 一个伪装成字典的数据库。 简单且高性能的持久化数据库解决方案。"
+description = "A persistent database masquerading as a dictionary. Simple and high-performance persistent database solutions."
 authors = [
     { name = "K.Y", email = "beidongjiedeguang@gmail.com" },
 ]
