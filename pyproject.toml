@@ -28,6 +28,7 @@ dependencies = [
     "pytz",
     "numpy",
     "msgspec>=0.18.4",
+    "msgpack",
     "lmdb>=1.4.1",
 ]
 
