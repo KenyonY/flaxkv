@@ -17,6 +17,7 @@ import threading
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from loguru import logger
@@ -45,7 +46,7 @@ class BaseDBDict(ABC):
         dict = b'd'
         array = b'a'
 
-    def __init__(self, db_type, path, rebuild=False, **kwargs):
+    def __init__(self, db_type, path, rebuild=False, raw=False, **kwargs):
         """
         Initializes the BaseDBDict class which provides a dictionary-like interface to a database.
 
@@ -53,11 +54,12 @@ class BaseDBDict(ABC):
             db_type (str): Type of the database ("lmdb" or "leveldb").
             path (str): Path to the database.
             rebuild (bool, optional): Whether to recreate the database. Defaults to False.
+            raw (bool): Only used by the server.
         """
         log_level = kwargs.pop('log', None)
         if log_level:
             log_configs = setting_log(
-                level=log_level,
+                level="DEBUG" if log_level is True else log_level,
                 stdout=kwargs.pop("stdout", False),
                 save_file=kwargs.pop('save_log', False),
             )
@@ -70,6 +72,7 @@ class BaseDBDict(ABC):
         self._db_manager = DBManager(
             db_type=db_type, db_path=path, rebuild=rebuild, **kwargs
         )
+        self.raw = raw
         self._static_view = self._db_manager.new_static_view()
 
         self._buffered_count = 0
@@ -179,12 +182,12 @@ class BaseDBDict(ABC):
                 "Warning: Background thread did not finish in time. Some data might not be saved."
             )
 
-    def get(self, key: str, default=None):
+    def get(self, key: Any, default=None):
         """
         Retrieves the value associated with the given key.
 
         Args:
-            key (str): The key to retrieve.
+            key (Any): The key to retrieve.
             default: The default value to set if the key does not exist.
 
         Returns:
@@ -197,10 +200,16 @@ class BaseDBDict(ABC):
             if key in self.buffer_dict:
                 return self.buffer_dict[key]
 
-            value = self._static_view.get(encode(key))
+            if self.raw:
+                value = self._static_view.get(key)
+            else:
+                value = self._static_view.get(encode(key))
             if value is None:
                 return default
-            return decode(value)
+            if self.raw:
+                return value
+            else:
+                return decode(value)
 
     def get_db_value(self, key: str):
         """
@@ -325,9 +334,15 @@ class BaseDBDict(ABC):
         with self._db_manager.write() as wb:
             try:
                 for key, value in buffer_dict_snapshot.items():
-                    wb.put(encode(key), encode(value))
+                    if self.raw:
+                        wb.put(key, value)
+                    else:
+                        wb.put(encode(key), encode(value))
                 for key in delete_buffer_set_snapshot:
-                    wb.delete(encode(key))
+                    if self.raw:
+                        wb.delete(key)
+                    else:
+                        wb.delete(encode(key))
 
             except Exception as e:
                 traceback.print_exc()
