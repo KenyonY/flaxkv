@@ -6,8 +6,7 @@
 
 
 <p align="center">
-Let you forget you're using a database —
-Simple and high-performance persistent database solution
+A high-performance dictionary database.
 </p>
 <p align="center">
     <a href="https://pypi.org/project/flaxkv/">
@@ -84,40 +83,40 @@ pip install flaxkv
 ### Usage
 
 ```python
-from flaxkv import dbdict
+from flaxkv import dictdb
 import numpy as np
 
-d = dbdict('./test_db')
-d[1] = 1
-d[1.1] = 1 / 3
-d['key'] = 'value'
-d['a dict'] = {'a': 1, 'b': [1, 2, 3]}
-d['a list'] = [1, 2, 3, {'a': 1}]
-d[(1, 2, 3)] = [1, 2, 3]
-d['numpy array'] = np.random.randn(100, 100)
+db = dictdb('./test_db')
+db[1] = 1
+db[1.1] = 1 / 3
+db['key'] = 'value'
+db['a dict'] = {'a': 1, 'b': [1, 2, 3]}
+db['a list'] = [1, 2, 3, {'a': 1}]
+db[(1, 2, 3)] = [1, 2, 3]
+db['numpy array'] = np.random.randn(100, 100)
 
-d.setdefault('key', 'value_2')
-assert d['key'] == 'value'
+db.setdefault('key', 'value_2')
+assert db['key'] == 'value'
 
-d.update({"key1": "value1", "key2": "value2"})
+db.update({"key1": "value1", "key2": "value2"})
 
-assert 'key2' in d
+assert 'key2' in db
 
-d.pop("key1")
-assert 'key1' not in d
+db.pop("key1")
+assert 'key1' not in db
 
-for key, value in d.items():
+for key, value in db.items():
     print(key, value)
 
-print(len(d))
+print(len(db))
 ```
 
-You might have noticed that even when the program ends, we didn't use `d.close()` to release resources! 
+You might have noticed that even when the program ends, we didn't use `db.close()` to release resources! 
 Everything will be handled automatically.
 More importantly, as a persistent database, it offers performance close to dictionary (in-memory) access!
 (There should be a benchmark here..)
 
-P.S.: Of course, you can also manually call `d.close()` to release resources immediately~.
+P.S.: Of course, you can also manually call `db.close()` to release resources immediately~.
 
 ## Citation
 If `FlaxKV` has been helpful to your research, please cite:

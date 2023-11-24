@@ -5,8 +5,7 @@
 </h1>
 
 <p align="center">
-让你忘记自己在使用数据库 ——
-简单且高性能的持久化数据库解决方案
+一个高性能字典数据库
 </p>
 
 
@@ -87,39 +86,37 @@ pip install flaxkv
 ### 使用
 
 ```python
-from flaxkv import dbdict
+from flaxkv import dictdb
 import numpy as np
 
-d = dbdict('./test_db')
-d[1] = 1
-d[1.1] = 1 / 3
-d['key'] = 'value'
-d['a dict'] = {'a': 1, 'b': [1, 2, 3]}
-d['a list'] = [1, 2, 3, {'a': 1}]
-d[(1, 2, 3)] = [1, 2, 3]
-d['numpy array'] = np.random.randn(100, 100)
+db = dictdb('./test_db')
+db[1] = 1
+db[1.1] = 1 / 3
+db['key'] = 'value'
+db['a dict'] = {'a': 1, 'b': [1, 2, 3]}
+db['a list'] = [1, 2, 3, {'a': 1}]
+db[(1, 2, 3)] = [1, 2, 3]
+db['numpy array'] = np.random.randn(100, 100)
 
-d.setdefault('key', 'value_2')
-assert d['key'] == 'value'
+db.setdefault('key', 'value_2')
+assert db['key'] == 'value'
 
-d.update({"key1": "value1", "key2": "value2"})
+db.update({"key1": "value1", "key2": "value2"})
 
-assert 'key2' in d
+assert 'key2' in db
 
-d.pop("key1")
-assert 'key1' not in d
+db.pop("key1")
+assert 'key1' not in db
 
-for key, value in d.items():
+for key, value in db.items():
     print(key, value)
 
-print(len(d))
+print(len(db))
 ```
 也许你注意到即使到程序结束并没有使用到`d.close()`来进行资源释放！这一切都将被自动处理。
 更重要的是，它(作为持久化数据库)还提供了接近字典(内存)存取的性能！(这里应存在一个benchmark..)
 
-PS: 当然也可以手动调用 `d.close()` 来立即释放资源~
-
-
+PS: 当然也可以手动调用 `d.close()` 来立即释放资源
 
 
 ## 引用
