@@ -1,7 +1,7 @@
 
 <h1 align="center">
     <br>
-    FlaxKV
+    🗲  FlaxKV
 </h1>
 
 <p align="center">

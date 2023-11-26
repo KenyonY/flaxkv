@@ -1,7 +1,7 @@
 
 <h1 align="center">
     <br>
-    FlaxKV
+    🗲  FlaxKV
 </h1>
 
 
@@ -37,8 +37,6 @@ A high-performance dictionary database.
 <br>
 </p>
 
-
-A persistent database masquerading as a dictionary.
 
 The `flaxkv` module provides a dictionary-like interface for interacting with high-performance key-value databases (LMDB, LevelDB).
 It abstracts the complexities of direct database interaction, allowing users to perform CRUD operations in a simple and 
@@ -114,9 +112,9 @@ print(len(db))
 You might have noticed that even when the program ends, we didn't use `db.close()` to release resources! 
 Everything will be handled automatically.
 More importantly, as a persistent database, it offers performance close to dictionary (in-memory) access!
-(There should be a benchmark here..)
+(There should be a benchmark here.)
 
-P.S.: Of course, you can also manually call `db.close()` to release resources immediately~.
+P.S.: Of course, you can also manually call `db.close()` to release resources immediately.
 
 ## Citation
 If `FlaxKV` has been helpful to your research, please cite:
