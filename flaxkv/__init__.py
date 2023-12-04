@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from .base import LevelDBDict, LMDBDict
-from .log import enable_logging
+from .serve.client import RemoteDictDB
 
 __version__ = "0.1.6"
 
@@ -22,15 +22,27 @@ __all__ = [
     "dbdict",
     "LMDBDict",
     "LevelDBDict",
-    "enable_logging",
+    "RemoteDictDB",
 ]
 
 
-def dictdb(path, backend='lmdb', rebuild=False, raw=False, **kwargs):
+def dictdb(
+    path_or_url: str,
+    backend='lmdb',
+    remote=False,
+    db_name=None,
+    rebuild=False,
+    raw=False,
+    **kwargs,
+):
+    if remote:
+        return RemoteDictDB(
+            path_or_url, db_name=db_name, rebuild=rebuild, backend=backend
+        )
     if backend == 'lmdb':
-        return LMDBDict(path, rebuild=rebuild, raw=raw, **kwargs)
+        return LMDBDict(path_or_url, rebuild=rebuild, raw=raw, **kwargs)
     elif backend == 'leveldb':
-        return LevelDBDict(path, rebuild=rebuild, raw=raw, **kwargs)
+        return LevelDBDict(path_or_url, rebuild=rebuild, raw=raw, **kwargs)
     else:
         raise ValueError(f"Unsupported DB type {backend}.")
 

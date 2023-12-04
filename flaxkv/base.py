@@ -46,7 +46,7 @@ class BaseDBDict(ABC):
         dict = b'd'
         array = b'a'
 
-    def __init__(self, db_type, path, rebuild=False, raw=False, **kwargs):
+    def __init__(self, db_type, path, rebuild=False, raw=False, db_name=None, **kwargs):
         """
         Initializes the BaseDBDict class which provides a dictionary-like interface to a database.
 
@@ -69,6 +69,7 @@ class BaseDBDict(ABC):
         else:
             logger.disable('flaxkv')
 
+        self._db_name = db_name
         self._db_manager = DBManager(
             db_type=db_type, db_path=path, rebuild=rebuild, **kwargs
         )
@@ -221,7 +222,10 @@ class BaseDBDict(ABC):
         Returns:
             value: The encoded value associated with the key.
         """
-        return self._static_view.get(encode(key))
+        if self.raw:
+            return self._static_view.get(key)
+        else:
+            return self._static_view.get(encode(key))
 
     def get_batch(self, keys):
         """
@@ -356,7 +360,7 @@ class BaseDBDict(ABC):
             self.delete_buffer_set = self.delete_buffer_set - delete_buffer_set_snapshot
             self.buffer_dict = self._diff_buffer(self.buffer_dict, buffer_dict_snapshot)
 
-            self._db_manager.close_view(self._static_view)
+            self._db_manager.close_static_view(self._static_view)
             self._static_view = self._db_manager.new_static_view()
             self._logger.info(
                 f"write {self._db_manager.db_type.upper()} buffer to db successfully-{current_write_num=}-{self._latest_write_num=}"
@@ -423,7 +427,10 @@ class BaseDBDict(ABC):
                     value = self.buffer_dict.pop(key)
                     return value
                 else:
-                    value = self._static_view.get(encode(key))
+                    if self.raw:
+                        value = self._static_view.get(key)
+                    else:
+                        value = self._static_view.get(encode(key))
                     return decode(value)
         else:
             return default
@@ -444,14 +451,17 @@ class BaseDBDict(ABC):
             if key in self.delete_buffer_set:
                 return False
 
-            return self._static_view.get(encode(key)) is not None
+            if self.raw:
+                return self._static_view.get(key) is not None
+            else:
+                return self._static_view.get(encode(key)) is not None
 
     def clear(self):
         """
         Clears the database and resets the buffer.
         """
         with self._buffer_lock:
-            self._db_manager.close_view(self._static_view)
+            self._db_manager.close_static_view(self._static_view)
             self._db_manager.close()
             self._close_background_worker(write=False)
 
@@ -500,7 +510,7 @@ class BaseDBDict(ABC):
         """
         self._close_background_worker(write=write)
 
-        self._db_manager.close_view(self._static_view)
+        self._db_manager.close_static_view(self._static_view)
         self._db_manager.close()
         self._logger.info(f"Closed ({self._db_manager.db_type.upper()}) successfully")
 
@@ -549,7 +559,7 @@ class LMDBDict(BaseDBDict):
         value: int, float, bool, str, list, dict, and np.ndarray,
     """
 
-    def __init__(self, path, map_size=1024**3, rebuild=False, **kwargs):
+    def __init__(self, path: str, map_size=1024**3, rebuild=False, **kwargs):
         super().__init__(
             "lmdb", path, max_dbs=1, map_size=map_size, rebuild=rebuild, **kwargs
         )
@@ -564,7 +574,7 @@ class LMDBDict(BaseDBDict):
         lmdb_keys = set(
             decode_key(key) for key in cursor.iternext(keys=True, values=False)
         )
-        self._db_manager.close_view(session)
+        self._db_manager.close_static_view(session)
 
         return list(lmdb_keys.union(buffer_keys) - delete_buffer_set)
 
@@ -636,7 +646,7 @@ class LevelDBDict(BaseDBDict):
         value: int, float, bool, str, list, dict and np.ndarray,
     """
 
-    def __init__(self, path, rebuild=False, **kwargs):
+    def __init__(self, path: str, rebuild=False, **kwargs):
         super().__init__("leveldb", path=path, rebuild=rebuild)
 
     def keys(self):
