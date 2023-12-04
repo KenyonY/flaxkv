@@ -106,6 +106,25 @@ def test_numpy_array(temp_db):
         assert np.array_equal(temp_db[key], value)
 
 
+def test_large_value(temp_db):
+    if isinstance(temp_db, type(None)):
+        pytest.skip("Skipping")
+
+    target_dict = {
+        'l1': ["test " for i in range(100 * 100)],
+        'l2': ["test " for i in range(100 * 100 * 100)],
+    }
+
+    for key, value in target_dict.items():
+        temp_db[key] = value
+
+    for key, value in target_dict.items():
+        assert temp_db[key] == value
+    temp_db.write_immediately(wait=True)
+    for key, value in target_dict.items():
+        assert temp_db[key] == value
+
+
 def test_setdefault(temp_db):
     if isinstance(temp_db, type(None)):
         pytest.skip("Skipping")

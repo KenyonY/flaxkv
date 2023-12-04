@@ -3,8 +3,7 @@ CACHE_LMDB
 CHACHE_SQLITE3.db
 CACHE_LEVELDB
 Log
-
-flaxkv/server
+FLAXKV_DB
 
 .idea
 .ipynb_checkpoints

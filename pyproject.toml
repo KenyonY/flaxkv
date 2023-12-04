@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "flaxkv"
-description = "A persistent database masquerading as a dictionary. Simple and high-performance persistent database solutions."
+description = "A high-performance dictionary database."
 authors = [
     { name = "K.Y", email = "beidongjiedeguang@gmail.com" },
 ]
@@ -52,6 +52,10 @@ database = [
     "plyvel>=1.5.0",
 ]
 
+server = [
+    "litestar",
+]
+
 
 leveldb = [
     "plyvel>=1.5.0",
@@ -59,8 +63,8 @@ leveldb = [
 
 
 
-#[project.scripts]
-#flaxkv = "flaxkv.__main__:main"
+[project.scripts]
+flaxkv = "flaxkv.__main__:main"
 
 [tool.hatch.version]
 path = "flaxkv/__init__.py"

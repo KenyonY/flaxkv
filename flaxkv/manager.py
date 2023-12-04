@@ -106,7 +106,7 @@ class DBManager:
         else:
             raise ValueError(f"Unsupported DB type {self.db_type}.")
 
-    def close_view(self, static_view):
+    def close_static_view(self, static_view):
         """
         Closes the provided static view of the database.
 
