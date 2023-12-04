@@ -11,7 +11,7 @@ class DBManager:
             self._root_path.mkdir(parents=True)
 
     def detach(self, db_name: str):
-        self._db_dict.pop(db_name, None)
+        return self._db_dict.pop(db_name, None)
 
     def set_db(self, db_name: str, backend: str, rebuild: bool):
         db_path = self._root_path / db_name
