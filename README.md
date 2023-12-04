@@ -68,7 +68,7 @@ intuitive manner. You can use it just like a Python dictionary without worrying 
 
 ## TODO
 
-- [ ] Client-Server Architecture
+- [x] Client-Server Architecture
 - [ ] Benchmark
 ---
 
@@ -85,6 +85,9 @@ from flaxkv import dictdb
 import numpy as np
 
 db = dictdb('./test_db')
+# or run server `flaxkv run --port 8000`, then:
+# db = dictdb('http://localhost:8000', remote=True)
+
 db[1] = 1
 db[1.1] = 1 / 3
 db['key'] = 'value'

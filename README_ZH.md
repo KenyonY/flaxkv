@@ -72,7 +72,7 @@
 
 ## TODO
 
-- [ ] 客户端-服务器架构
+- [x] 客户端-服务器架构
 - [ ] 性能测试
 
 ---
@@ -90,6 +90,9 @@ from flaxkv import dictdb
 import numpy as np
 
 db = dictdb('./test_db')
+# or run server `flaxkv run --port 8000`, then:
+# db = dictdb('http://localhost:8000', remote=True)
+
 db[1] = 1
 db[1.1] = 1 / 3
 db['key'] = 'value'
