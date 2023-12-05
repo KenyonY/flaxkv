@@ -5,6 +5,8 @@ from functools import wraps
 from rich import print
 from rich.text import Text
 
+from .pack import encode
+
 ENABLED_MEASURE_TIME_DECORATOR = True
 
 
@@ -35,3 +37,12 @@ def class_measure_time(logger=None, level=logging.INFO, prec=3):
         return wrapper
 
     return decorate
+
+
+def msg_encoder(func):
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        result = await func(*args, **kwargs)
+        return encode(result)
+
+    return wrapper

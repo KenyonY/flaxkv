@@ -3,6 +3,7 @@ import traceback
 import msgspec
 from litestar import Litestar, MediaType, Request, get, post
 
+from ..decorators import msg_encoder
 from ..pack import decode, decode_key, encode
 from .interface import (
     AttachRequest,
@@ -40,8 +41,6 @@ async def set_value(data: SetRequest) -> dict:
     db = db_manager.get(data.db_name)
     if db is None:
         return {"success": False, "info": "db not found"}
-    print(data.key, data.value)
-    print(encode(data.key), encode(data.value))
     db[encode(data.key)] = encode(data.value)
     return {"success": True}
 
@@ -79,7 +78,7 @@ async def update_raw(db_name: str, request: Request) -> dict:
 async def get_raw(db_name: str, request: Request) -> bytes:
     db = db_manager.get(db_name)
     if db is None:
-        return encode({"success": False, "info": "db not found"})
+        raise ValueError("db not found")
     key = await request.body()
     value = db.get(key)
     if value is None:
@@ -98,12 +97,13 @@ async def contains(db_name: str, request: Request) -> bytes:
 
 
 @post("/pop")
+@msg_encoder
 async def pop(data: PopKeyRequest) -> dict:
     db = db_manager.get(data.db_name)
     if db is None:
         return {"success": False, "info": "db not found"}
     try:
-        return {"success": True, "value": db.pop(encode(data.key), None)}
+        return {"success": True, "data": db.pop(encode(data.key), None)}
 
     except Exception as e:
         traceback.print_exc()
@@ -116,31 +116,33 @@ async def get_keys(db_name: str) -> dict:
     if db is None:
         return {"success": False, "info": "db not found"}
     try:
-        return {"keys": db.keys()}
+        return {"success": True, "data": db.keys()}
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "info": str(e)}
 
 
-@get("/values")
-async def get_values(db_name: str) -> dict:
+@get("/values", media_type=MediaType.TEXT)
+@msg_encoder
+async def get_values(db_name: str) -> bytes:
     db = db_manager.get(db_name)
     if db is None:
         return {"success": False, "info": "db not found"}
     try:
-        return {"values": db.values()}
+        return {"success": True, "data": db.values()}
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "info": str(e)}
 
 
-@get("/items")
-async def get_items(db_name: str) -> dict:
+@get("/items", media_type=MediaType.TEXT)
+@msg_encoder
+async def get_items(db_name: str) -> bytes:
     db = db_manager.get(db_name)
     if db is None:
         return {"success": False, "info": "db not found"}
     try:
-        return dict(db.items())
+        return {"success": True, "data": dict(db.items())}
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "info": str(e)}

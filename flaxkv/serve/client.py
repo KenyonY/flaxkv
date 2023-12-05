@@ -47,9 +47,9 @@ class RemoteDictDB:
         url = f"{self._url}/pop"
         data = {"key": key, "db_name": self._db_name}
         response = self._client.post(url, json=data)
-        result = response.json()
+        result = decode(response.read())
         if result["success"]:
-            value = result["value"]
+            value = result["data"]
             if value is None:
                 return default
             return value
@@ -59,7 +59,7 @@ class RemoteDictDB:
     def _items_dict(self):
         url = f"{self._url}/items?db_name={self._db_name}"
         response = self._client.get(url)
-        return response.json()
+        return decode(response.read())
 
     def items(self):
         return self._items_dict().items()
@@ -70,12 +70,12 @@ class RemoteDictDB:
     def keys(self):
         url = f"{self._url}/keys?db_name={self._db_name}"
         response = self._client.get(url)
-        return response.json()["keys"]
+        return response.json()['data']
 
     def values(self):
         url = f"{self._url}/values?db_name={self._db_name}"
         response = self._client.get(url)
-        return response.json()["values"]
+        return decode(response.read())['data']
 
     def __contains__(self, key):
         url = f"{self._url}/contains?db_name={self._db_name}"
@@ -97,3 +97,6 @@ class RemoteDictDB:
         if value is None:
             raise KeyError(f"Key `{key}` not found in the database.")
         return value
+
+    def __len__(self):
+        return len(self.keys())
