@@ -36,12 +36,46 @@ class RemoteDictDB:
         url = f"{self._url}/set_raw?db_name={self._db_name}"
         data = {"key": encode(key), "value": encode(value)}
         response = self._client.post(url, data=encode(data))
-        return response.read()
+        return response.json()
+
+    def update(self, d: dict):
+        url = f"{self._url}/update_raw?db_name={self._db_name}"
+        response = self._client.post(url, data=encode(d))
+        return response.json()
+
+    def pop(self, key, default=None):
+        url = f"{self._url}/pop"
+        data = {"key": key, "db_name": self._db_name}
+        response = self._client.post(url, json=data)
+        result = response.json()
+        if result["success"]:
+            value = result["value"]
+            if value is None:
+                return default
+            return value
+        else:
+            raise
+
+    def _items_dict(self):
+        url = f"{self._url}/items?db_name={self._db_name}"
+        response = self._client.get(url)
+        return response.json()
+
+    def items(self):
+        return self._items_dict().items()
+
+    def __repr__(self):
+        return str(self._items_dict())
 
     def keys(self):
         url = f"{self._url}/keys?db_name={self._db_name}"
         response = self._client.get(url)
         return response.json()["keys"]
+
+    def values(self):
+        url = f"{self._url}/values?db_name={self._db_name}"
+        response = self._client.get(url)
+        return response.json()["values"]
 
     def __contains__(self, key):
         url = f"{self._url}/contains?db_name={self._db_name}"
