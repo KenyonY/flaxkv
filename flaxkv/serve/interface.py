@@ -18,6 +18,23 @@ class DetachRequest:
     db_name: str
 
 
+@dataclass
+class SetRequest:
+    db_name: str
+    key: Any
+    value: Any
+
+
+@dataclass
+class PopKeyRequest:
+    db_name: str
+    key: Any
+
+
 class StructSetData(msgspec.Struct):
     key: bytes
     value: bytes
+
+
+class StructUpdateData(msgspec.Struct):
+    dict: bytes

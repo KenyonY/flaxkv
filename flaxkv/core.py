@@ -300,6 +300,8 @@ class BaseDBDict(ABC):
             raise ValueError("Input must be a dictionary.")
         with self._buffer_lock:
             for key, value in d.items():
+                if self.raw:
+                    key, value = encode(key), encode(value)
                 self.buffer_dict[key] = value
                 self.delete_buffer_set.discard(key)
 
@@ -425,7 +427,10 @@ class BaseDBDict(ABC):
                 self._buffered_count += 1
                 if key in self.buffer_dict:
                     value = self.buffer_dict.pop(key)
-                    return value
+                    if self.raw:
+                        return decode(value)
+                    else:
+                        return value
                 else:
                     if self.raw:
                         value = self._static_view.get(key)
@@ -514,8 +519,47 @@ class BaseDBDict(ABC):
         self._db_manager.close()
         self._logger.info(f"Closed ({self._db_manager.db_type.upper()}) successfully")
 
+    def _get_state_buffer_info(
+        self, return_key=False, return_value=False, return_dict=False, decode_raw=True
+    ):
+        with self._buffer_lock:
+            static_view = self._db_manager.new_static_view()
+            buffer_dict = self.buffer_dict.copy()
+            delete_buffer_set = self.delete_buffer_set.copy()
+
+        buffer_keys, buffer_values = None, None
+        if return_key:
+            if self.raw and decode_raw:
+                buffer_keys = set([decode_key(i) for i in buffer_dict.keys()])
+            else:
+                buffer_keys = set(buffer_dict.keys())
+        if return_value:
+            if self.raw and decode_raw:
+                buffer_values = list([decode(i) for i in buffer_dict.values()])
+            else:
+                buffer_values = list(self.buffer_dict.values())
+        if not return_dict:
+            buffer_dict = None
+        else:
+            if self.raw and decode_raw:
+                buffer_dict = {decode_key(k): decode(v) for k, v in buffer_dict.items()}
+
+        return buffer_dict, buffer_keys, buffer_values, delete_buffer_set, static_view
+
+    def values(self, decode_raw=True):
+        """
+        Retrieves all the values in the database and buffer.
+
+        Returns:
+            list: A list of values
+        """
+        values_list = []
+        for key, value in self.items(decode_raw):
+            values_list.append(value)
+        return values_list
+
     @abstractmethod
-    def keys(self):
+    def keys(self, *args, **kwargs):
         """
         Retrieves all the keys in the database and buffer.
 
@@ -524,16 +568,7 @@ class BaseDBDict(ABC):
         """
 
     @abstractmethod
-    def values(self):
-        """
-        Retrieves all the values in the database and buffer.
-
-        Returns:
-            list: A list of values
-        """
-
-    @abstractmethod
-    def items(self):
+    def items(self, *args, **kwargs):
         """
         Retrieves all the key-value pairs in the database and buffer.
 
@@ -542,7 +577,7 @@ class BaseDBDict(ABC):
         """
 
     @abstractmethod
-    def stat(self):
+    def stat(self, *args, **kwargs):
         """
         Database statistics
 
@@ -564,12 +599,15 @@ class LMDBDict(BaseDBDict):
             "lmdb", path, max_dbs=1, map_size=map_size, rebuild=rebuild, **kwargs
         )
 
-    def keys(self):
-        with self._buffer_lock:
-            session = self._db_manager.new_static_view()
-            cursor = session.cursor()
-            delete_buffer_set = self.delete_buffer_set.copy()
-            buffer_keys = set(self.buffer_dict.keys())
+    def keys(self, decode_raw=True):
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            session,
+        ) = self._get_state_buffer_info(return_key=True, decode_raw=decode_raw)
+        cursor = session.cursor()
 
         lmdb_keys = set(
             decode_key(key) for key in cursor.iternext(keys=True, values=False)
@@ -578,40 +616,27 @@ class LMDBDict(BaseDBDict):
 
         return list(lmdb_keys.union(buffer_keys) - delete_buffer_set)
 
-    def values(self):
-
-        with self._buffer_lock:
-            session = self._db_manager.new_static_view()
-            cursor = session.cursor()
-            delete_buffer_set = self.delete_buffer_set.copy()
-            buffer_values = list(self.buffer_dict.values())
-
-        lmdb_values = []
-        for key, value in cursor.iternext(keys=True, values=True):
-            dk = decode_key(key)
-            if dk not in delete_buffer_set:
-                lmdb_values.append(decode(value))
-
-        session.abort()
-        return lmdb_values + buffer_values
-
-    def items(self):
-        with self._buffer_lock:
-            session = self._db_manager.new_static_view()
-            cursor = session.cursor()
-            buffer_dict = self.buffer_dict.copy()
-            delete_buffer_set = self.delete_buffer_set.copy()
-
+    def items(self, decode_raw=True):
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            session,
+        ) = self._get_state_buffer_info(return_dict=True, decode_raw=decode_raw)
+        cursor = session.cursor()
         _db_dict = {}
 
         for key, value in cursor.iternext(keys=True, values=True):
-            dk = decode_key(key)
+            dk = key if self.raw else decode_key(key)
             if dk not in delete_buffer_set:
+                if self.raw:
+                    dk = decode_key(dk)
                 _db_dict[dk] = decode(value)
 
         _db_dict.update(buffer_dict)
 
-        session.abort()
+        self._db_manager.close_static_view(session)
 
         return _db_dict.items()
 
@@ -649,47 +674,40 @@ class LevelDBDict(BaseDBDict):
     def __init__(self, path: str, rebuild=False, **kwargs):
         super().__init__("leveldb", path=path, rebuild=rebuild)
 
-    def keys(self):
-        with self._buffer_lock:
-            buffer_keys = set(self.buffer_dict.keys())
-            snapshot = self._db_manager.new_static_view()
+    def keys(self, decode_raw=True):
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            snapshot,
+        ) = self._get_state_buffer_info(return_key=True, decode_raw=decode_raw)
 
         db_keys = set(decode_key(key) for key, _ in snapshot.iterator())
         snapshot.close()
 
-        return list(db_keys.union(buffer_keys))
+        return list(db_keys.union(buffer_keys) - delete_buffer_set)
 
-    def values(self):
-        with self._buffer_lock:
-            snapshot = self._db_manager.new_static_view()
-            delete_buffer_set = self.delete_buffer_set.copy()
-            buffer_values = list(self.buffer_dict.values())
-
-        db_values = []
-        for key, value in snapshot.iterator():
-            dk = decode_key(key)
-            if dk not in delete_buffer_set:
-                db_values.append(decode(value))
-
-        snapshot.close()
-
-        return db_values + buffer_values
-
-    def items(self):
-        with self._buffer_lock:
-            snapshot = self._db_manager.new_static_view()
-            delete_buffer_set = self.delete_buffer_set.copy()
-            buffer_dict = self.buffer_dict.copy()
+    def items(self, decode_raw=True):
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            snapshot,
+        ) = self._get_state_buffer_info(return_dict=True, decode_raw=decode_raw)
 
         _db_dict = {}
         for key, value in snapshot.iterator():
-            dk = decode_key(key)
+            dk = key if self.raw else decode_key(key)
             if dk not in delete_buffer_set:
+                if self.raw:
+                    dk = decode_key(dk)
                 _db_dict[dk] = decode(value)
 
         _db_dict.update(buffer_dict)
 
-        snapshot.close()
+        self._db_manager.close_static_view(snapshot)
         return _db_dict.items()
 
     def stat(self):

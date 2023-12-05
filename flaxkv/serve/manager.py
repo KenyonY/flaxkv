@@ -4,8 +4,9 @@ from .. import dictdb
 
 
 class DBManager:
-    def __init__(self, root_path="./FLAXKV_DB"):
+    def __init__(self, root_path="./FLAXKV_DB", raw_mode=True):
         self._db_dict = {}
+        self._raw_mode = raw_mode
         self._root_path = Path(root_path)
         if not self._root_path.exists():
             self._root_path.mkdir(parents=True)
@@ -19,7 +20,7 @@ class DBManager:
             path_or_url=db_path.__str__(),
             backend=backend,
             rebuild=rebuild,
-            raw=True,
+            raw=self._raw_mode,
             log=True,
         )
 
