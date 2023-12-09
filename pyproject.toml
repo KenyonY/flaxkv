@@ -30,6 +30,7 @@ dependencies = [
     "msgspec>=0.18.4",
     "msgpack",
     "lmdb>=1.4.1",
+    "typing-extensions>=4.7.1",
 ]
 
 dynamic = ["version"]

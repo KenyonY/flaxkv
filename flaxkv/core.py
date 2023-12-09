@@ -183,6 +183,18 @@ class BaseDBDict(ABC):
                 "Warning: Background thread did not finish in time. Some data might not be saved."
             )
 
+    def _encode_key(self, key):
+        if self.raw:
+            return key
+        else:
+            return encode(key)
+
+    def _encode_value(self, value):
+        if self.raw:
+            return value
+        else:
+            return encode(value)
+
     def get(self, key: Any, default=None):
         """
         Retrieves the value associated with the given key.
@@ -201,16 +213,13 @@ class BaseDBDict(ABC):
             if key in self.buffer_dict:
                 return self.buffer_dict[key]
 
-            if self.raw:
-                value = self._static_view.get(key)
-            else:
-                value = self._static_view.get(encode(key))
+            key = self._encode_key(key)
+            value = self._static_view.get(key)
+
             if value is None:
                 return default
-            if self.raw:
-                return value
-            else:
-                return decode(value)
+
+            return value if self.raw else decode(value)
 
     def get_db_value(self, key: str):
         """
@@ -222,10 +231,8 @@ class BaseDBDict(ABC):
         Returns:
             value: The encoded value associated with the key.
         """
-        if self.raw:
-            return self._static_view.get(key)
-        else:
-            return self._static_view.get(encode(key))
+        key = self._encode_key(key)
+        return self._static_view.get(key)
 
     def get_batch(self, keys):
         """
@@ -245,7 +252,8 @@ class BaseDBDict(ABC):
             if key in self.buffer_dict:
                 values.append(self.buffer_dict[key])
                 continue
-            value = self._static_view.get(encode(key))
+            key = self._encode_key(key)
+            value = self._static_view.get(key)
             if value is not None:
                 value = decode(value)
             values.append(value)
@@ -340,15 +348,11 @@ class BaseDBDict(ABC):
         with self._db_manager.write() as wb:
             try:
                 for key, value in buffer_dict_snapshot.items():
-                    if self.raw:
-                        wb.put(key, value)
-                    else:
-                        wb.put(encode(key), encode(value))
+                    key, value = self._encode_key(key), self._encode_value(value)
+                    wb.put(key, value)
                 for key in delete_buffer_set_snapshot:
-                    if self.raw:
-                        wb.delete(key)
-                    else:
-                        wb.delete(encode(key))
+                    key = self._encode_key(key)
+                    wb.delete(key)
 
             except Exception as e:
                 traceback.print_exc()
@@ -368,6 +372,12 @@ class BaseDBDict(ABC):
                 f"write {self._db_manager.db_type.upper()} buffer to db successfully-{current_write_num=}-{self._latest_write_num=}"
             )
 
+    def __iter__(self):
+        """
+        Returns an iterator over the keys.
+        """
+        return iter(self.keys())
+
     def __getitem__(self, key):
         """
         Retrieves the value for a given key using the dictionary access syntax.
@@ -378,8 +388,9 @@ class BaseDBDict(ABC):
         Returns:
             value: The value associated with the key.
         """
-        value = self.get(key)
-        if value is None:
+
+        value = self.get(key, b'iamnone')
+        if isinstance(value, bytes) and value == b'iamnone':
             raise KeyError(f"Key `{key}` not found in the database.")
         return value
 
@@ -432,10 +443,8 @@ class BaseDBDict(ABC):
                     else:
                         return value
                 else:
-                    if self.raw:
-                        value = self._static_view.get(key)
-                    else:
-                        value = self._static_view.get(encode(key))
+                    key = self._encode_key(key)
+                    value = self._static_view.get(key)
                     return decode(value)
         else:
             return default
@@ -455,11 +464,8 @@ class BaseDBDict(ABC):
                 return True
             if key in self.delete_buffer_set:
                 return False
-
-            if self.raw:
-                return self._static_view.get(key) is not None
-            else:
-                return self._static_view.get(encode(key)) is not None
+            key = self._encode_key(key)
+            return self._static_view.get(key) is not None
 
     def clear(self):
         """
@@ -616,7 +622,7 @@ class LMDBDict(BaseDBDict):
 
         return list(lmdb_keys.union(buffer_keys) - delete_buffer_set)
 
-    def items(self, decode_raw=True):
+    def db_dict(self, decode_raw=True):
         (
             buffer_dict,
             buffer_keys,
@@ -638,6 +644,10 @@ class LMDBDict(BaseDBDict):
 
         self._db_manager.close_static_view(session)
 
+        return _db_dict
+
+    def items(self, decode_raw=True):
+        _db_dict = self.db_dict(decode_raw=decode_raw)
         return _db_dict.items()
 
     def set_mapsize(self, map_size):
@@ -688,7 +698,7 @@ class LevelDBDict(BaseDBDict):
 
         return list(db_keys.union(buffer_keys) - delete_buffer_set)
 
-    def items(self, decode_raw=True):
+    def db_dict(self, decode_raw=True):
         (
             buffer_dict,
             buffer_keys,
@@ -708,6 +718,10 @@ class LevelDBDict(BaseDBDict):
         _db_dict.update(buffer_dict)
 
         self._db_manager.close_static_view(snapshot)
+        return _db_dict
+
+    def items(self, decode_raw=True):
+        _db_dict = self.db_dict(decode_raw=decode_raw)
         return _db_dict.items()
 
     def stat(self):

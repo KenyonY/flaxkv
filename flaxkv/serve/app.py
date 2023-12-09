@@ -20,6 +20,7 @@ db_manager = DBManager(root_path="./FLAXKV_DB", raw_mode=True)
 
 @post(path="/attach")
 async def attach(data: AttachRequest) -> dict:
+    # todo switch `post` to `get`
     db = db_manager.get(data.db_name)
     if db is None or data.rebuild:
         db_manager.set_db(
@@ -30,6 +31,7 @@ async def attach(data: AttachRequest) -> dict:
 
 @post(path="/detach")
 async def detach(data: DetachRequest) -> dict:
+    # todo switch `post` to `get`
     db = db_manager.detach(db_name=data.db_name)
     if db is None:
         return {"success": False, "info": "db not found"}
@@ -75,7 +77,7 @@ async def update_raw(db_name: str, request: Request) -> dict:
 
 
 @post("/get_raw", media_type=MediaType.TEXT)
-async def get_raw(db_name: str, request: Request) -> bytes:
+async def _get(db_name: str, request: Request) -> bytes:
     db = db_manager.get(db_name)
     if db is None:
         raise ValueError("db not found")
@@ -124,7 +126,7 @@ async def get_keys(db_name: str) -> dict:
 
 @get("/values", media_type=MediaType.TEXT)
 @msg_encoder
-async def get_values(db_name: str) -> bytes:
+async def _values(db_name: str) -> bytes:
     db = db_manager.get(db_name)
     if db is None:
         return {"success": False, "info": "db not found"}
@@ -142,7 +144,7 @@ async def get_items(db_name: str) -> bytes:
     if db is None:
         return {"success": False, "info": "db not found"}
     try:
-        return {"success": True, "data": dict(db.items())}
+        return {"success": True, "data": db.db_dict()}
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "info": str(e)}
@@ -158,9 +160,9 @@ app = Litestar(
         detach,
         set_raw,
         update_raw,
-        get_raw,
+        _get,
         get_items,
-        get_values,
+        _values,
         set_value,
         contains,
         pop,
