@@ -76,7 +76,7 @@ class RemoteDictDB:
     def keys(self):
         url = f"{self._url}/keys?db_name={self._db_name}"
         response = self._client.get(url)
-        return decode_key(response.read())['data']
+        return list(decode_key(response.read())['data'])
 
     def values(self):
         url = f"{self._url}/values?db_name={self._db_name}"
