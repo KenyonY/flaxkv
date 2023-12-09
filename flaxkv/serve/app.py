@@ -2,7 +2,9 @@ import traceback
 
 import msgspec
 from litestar import Litestar, MediaType, Request, get, post
+from litestar.openapi import OpenAPIConfig
 
+from .. import __version__
 from ..decorators import msg_encoder
 from ..pack import decode, decode_key, encode
 from .interface import (
@@ -112,8 +114,9 @@ async def pop(data: PopKeyRequest) -> dict:
         return {"success": False, "info": str(e)}
 
 
-@get("/keys")
-async def get_keys(db_name: str) -> dict:
+@get("/keys", media_type=MediaType.TEXT)
+@msg_encoder
+async def get_keys(db_name: str) -> bytes:
     db = db_manager.get(db_name)
     if db is None:
         return {"success": False, "info": "db not found"}
@@ -150,8 +153,14 @@ async def get_items(db_name: str) -> bytes:
         return {"success": False, "info": str(e)}
 
 
+def on_startup():
+    # print("on_startup")
+    ...
+
+
 def on_shutdown():
-    print("on_shutdown")
+    # print("on_shutdown")
+    ...
 
 
 app = Litestar(
@@ -168,6 +177,7 @@ app = Litestar(
         pop,
         get_keys,
     ],
-    on_startup=[lambda: print("on_startup")],
+    on_startup=[on_startup],
     on_shutdown=[on_shutdown],
+    openapi_config=OpenAPIConfig(title="FlaxKV", version=f"v{__version__}"),
 )

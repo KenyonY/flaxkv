@@ -1,6 +1,6 @@
 import httpx
 
-from ..pack import decode, encode
+from ..pack import decode, decode_key, encode
 
 
 class RemoteDictDB:
@@ -76,7 +76,7 @@ class RemoteDictDB:
     def keys(self):
         url = f"{self._url}/keys?db_name={self._db_name}"
         response = self._client.get(url)
-        return response.json()['data']
+        return decode_key(response.read())['data']
 
     def values(self):
         url = f"{self._url}/values?db_name={self._db_name}"
