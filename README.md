@@ -40,6 +40,7 @@ A high-performance dictionary database.
 
 The `flaxkv` provides an interface very similar to a dictionary for interacting with high-performance key-value databases. More importantly, as a persistent database, it offers performance close to that of native dictionaries (in-memory access).
 You can use it just like a Python dictionary without having to worry about blocking your user process when operating the database at any time.
+
 ---
 
 ## Key Features
