@@ -5,11 +5,17 @@ from ..pack import decode, encode
 
 class RemoteDictDB:
     def __init__(
-        self, url: str, db_name: str, rebuild=False, backend="leveldb", timeout=6
+        self,
+        url: str,
+        db_name: str,
+        rebuild=False,
+        backend="leveldb",
+        timeout=6,
+        **kwargs,
     ):
         self._url = url
         self._db_name = db_name
-        self._client = httpx.Client(timeout=timeout)
+        self._client = kwargs.pop("client", httpx.Client(timeout=timeout))
         self._attach_db(rebuild=rebuild, backend=backend)
 
     def _attach_db(self, rebuild=False, backend="lmdb"):
@@ -59,7 +65,7 @@ class RemoteDictDB:
     def _items_dict(self):
         url = f"{self._url}/items?db_name={self._db_name}"
         response = self._client.get(url)
-        return decode(response.read())
+        return decode(response.read())["data"]
 
     def items(self):
         return self._items_dict().items()

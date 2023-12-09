@@ -38,18 +38,8 @@ A high-performance dictionary database.
 </p>
 
 
-The `flaxkv` module provides a dictionary-like interface for interacting with high-performance key-value databases (LMDB, LevelDB).
-It abstracts the complexities of direct database interaction, allowing users to perform CRUD operations in a simple and 
-intuitive manner. You can use it just like a Python dictionary without worrying about it blocking your main process at any stage.
-
-**Use Cases**
-
-- **Key-Value Structure**: `flaxkv` is suitable for storing simple key-value structured datasets.
- 
-- **High-Frequency Writing**: `flaxkv` is very suitable for scenarios that require high-frequency insertion/updating of data.
-  
-- **Machine Learning**: `flaxkv` is perfect for storing various embeddings, images, texts, and other large datasets with key-value structures in machine learning.
-
+The `flaxkv` provides an interface very similar to a dictionary for interacting with high-performance key-value databases. More importantly, as a persistent database, it offers performance close to that of native dictionaries (in-memory access).
+You can use it just like a Python dictionary without having to worry about blocking your user process when operating the database at any time.
 ---
 
 ## Key Features
@@ -86,7 +76,7 @@ import numpy as np
 
 db = dictdb('./test_db')
 # or run server `flaxkv run --port 8000`, then:
-# db = dictdb('http://localhost:8000', remote=True)
+# db = dictdb('http://localhost:8000', remote=True, db_name='test_db', rebuild=False)
 
 db[1] = 1
 db[1.1] = 1 / 3
@@ -112,12 +102,22 @@ for key, value in db.items():
 print(len(db))
 ```
 
-You might have noticed that even when the program ends, we didn't use `db.close()` to release resources! 
-Everything will be handled automatically.
-More importantly, as a persistent database, it offers performance close to dictionary (in-memory) access!
-(There should be a benchmark here.)
+### Tips
+- `flaxkv` provides performance close to native dictionary (in-memory) access as a persistent database! (There should be a benchmark here)
+- You may have noticed that in the previous example code, `db.close()` was not used to release resources! Because all this will be automatically handled by `flaxkv`. Of course, you can also manually call db.close() to immediately release resources.
+- Since `flaxkv` saves data by buffered writing, this feature of delayed writing may not write data to the disk in time in some scenarios (such as in Jupyter),
+in this case, you can use `db.write_immediately()` to immediately trigger a write operation.
 
-P.S.: Of course, you can also manually call `db.close()` to release resources immediately.
+### Benchmark
+todo
+
+### Use Cases
+- **Key-Value Structure:**
+Used to save simple key-value structure data.
+- **High-Frequency Writing:**
+Very suitable for scenarios that require high-frequency insertion/update of data.
+- **Machine Learning:**
+`flaxkv` is very suitable for saving various large datasets of embeddings, images, texts, and other key-value structures in machine learning.
 
 ## Citation
 If `FlaxKV` has been helpful to your research, please cite:
