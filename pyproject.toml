@@ -43,6 +43,7 @@ Source = "https://github.com/KenyonY/flaxkv"
 
 [project.optional-dependencies]
 test = [
+    "litestar",
     "pytest",
     "pytest-aiohttp",
 ]
