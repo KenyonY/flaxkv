@@ -4,6 +4,7 @@ CHACHE_SQLITE3.db
 CACHE_LEVELDB
 Log
 FLAXKV_DB
+test_db/
 
 .idea
 .ipynb_checkpoints
