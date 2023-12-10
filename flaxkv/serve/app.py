@@ -23,11 +23,15 @@ db_manager = DBManager(root_path="./FLAXKV_DB", raw_mode=True)
 @post(path="/attach")
 async def attach(data: AttachRequest) -> dict:
     # todo switch `post` to `get`
-    db = db_manager.get(data.db_name)
-    if db is None or data.rebuild:
-        db_manager.set_db(
-            db_name=data.db_name, backend=data.backend, rebuild=data.rebuild
-        )
+    try:
+        db = db_manager.get(data.db_name)
+        if db is None or data.rebuild:
+            db_manager.set_db(
+                db_name=data.db_name, backend=data.backend, rebuild=data.rebuild
+            )
+    except Exception as e:
+        traceback.print_exc()
+        return {"success": False, "info": str(e)}
     return {"success": True}
 
 
@@ -84,10 +88,10 @@ async def _get(db_name: str, request: Request) -> bytes:
     if db is None:
         raise ValueError("db not found")
     key = await request.body()
-    value = db.get(key)
+    value = db.get(key, None)
     if value is None:
-        return encode(None)
-    return db.get(key)
+        return b'iamnull123'
+    return value
 
 
 @post("/contains", media_type=MediaType.TEXT)

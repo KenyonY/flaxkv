@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+import re
 
 from .core import LevelDBDict, LMDBDict
 from .serve.client import RemoteDictDB
@@ -26,23 +28,26 @@ __all__ = [
 ]
 
 
+url_pattern = re.compile(r'^(http://|https://|ftp://)')
+
+
 def dictdb(
-    path_or_url: str,
+    db_name: str,
+    root_path_or_url: str = ".",
     backend='lmdb',
-    remote=False,
-    db_name=None,
     rebuild=False,
     raw=False,
     **kwargs,
 ):
-    if remote:
+    if url_pattern.match(root_path_or_url):
         return RemoteDictDB(
-            path_or_url, db_name=db_name, rebuild=rebuild, backend=backend
+            root_path_or_url, db_name=db_name, rebuild=rebuild, backend=backend
         )
+    db_path = os.path.join(root_path_or_url, db_name)
     if backend == 'lmdb':
-        return LMDBDict(path_or_url, rebuild=rebuild, raw=raw, **kwargs)
+        return LMDBDict(db_path, rebuild=rebuild, raw=raw, **kwargs)
     elif backend == 'leveldb':
-        return LevelDBDict(path_or_url, rebuild=rebuild, raw=raw, **kwargs)
+        return LevelDBDict(db_path, rebuild=rebuild, raw=raw, **kwargs)
     else:
         raise ValueError(f"Unsupported DB type {backend}.")
 

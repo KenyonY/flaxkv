@@ -33,10 +33,14 @@ class RemoteDictDB:
         response = self._client.post(url, json={"db_name": db_name})
         return response.json()
 
-    def get(self, key):
+    def get(self, key, default=None):
         url = f"{self._url}/get_raw?db_name={self._db_name}"
         response = self._client.post(url, data=encode(key))
-        return decode(response.read())
+        raw_data = response.read()
+        if raw_data == b"iamnull123":
+            return default
+        value = decode(raw_data)
+        return value
 
     def set(self, key, value):
         url = f"{self._url}/set_raw?db_name={self._db_name}"
