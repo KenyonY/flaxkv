@@ -79,9 +79,9 @@ pip install flaxkv
 from flaxkv import dictdb
 import numpy as np
 
-db = dictdb('./test_db')
+db = dictdb('test_db')
 # or run server `flaxkv run --port 8000`, then:
-# db = dictdb('http://localhost:8000', remote=True, db_name='test_db', rebuild=False)
+# db = dictdb('test_db', root_path_or_url='http://localhost:8000')
 
 db[1] = 1
 db[1.1] = 1 / 3
