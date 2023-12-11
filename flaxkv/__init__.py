@@ -17,7 +17,7 @@ import re
 from .core import LevelDBDict, LMDBDict
 from .serve.client import RemoteDictDB
 
-__version__ = "0.1.7"
+__version__ = "0.1.8"
 
 __all__ = [
     "dictdb",
