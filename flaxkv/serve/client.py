@@ -1,5 +1,3 @@
-import httpx
-
 from ..pack import decode, decode_key, encode
 
 
@@ -13,6 +11,8 @@ class RemoteDictDB:
         timeout=6,
         **kwargs,
     ):
+        import httpx
+
         self._url = url
         self._db_name = db_name
         self._client = kwargs.pop("client", httpx.Client(timeout=timeout))
