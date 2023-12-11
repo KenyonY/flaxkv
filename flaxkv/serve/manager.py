@@ -17,7 +17,8 @@ class DBManager:
     def set_db(self, db_name: str, backend: str, rebuild: bool):
         db_path = self._root_path / db_name
         self._db_dict[db_name] = dictdb(
-            path_or_url=db_path.__str__(),
+            db_name=db_name,
+            root_path_or_url=self._root_path.__str__(),
             backend=backend,
             rebuild=rebuild,
             raw=self._raw_mode,
