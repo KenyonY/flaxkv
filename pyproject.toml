@@ -55,6 +55,7 @@ database = [
 ]
 
 server = [
+    "uvicorn",
     "litestar",
     "httpx",
 ]

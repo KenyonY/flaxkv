@@ -102,6 +102,9 @@ class RemoteDictDB:
     def __setitem__(self, key, value):
         self.set(key, value)
 
+    def __iter__(self):
+        return iter(self.keys())
+
     def __getitem__(self, key):
         value = self.get(key)
         if value is None:
