@@ -1,7 +1,7 @@
 import traceback
 
 import msgspec
-from litestar import Litestar, MediaType, Request, get, post
+from litestar import Litestar, MediaType, Request, Response, get, post
 from litestar.openapi import OpenAPIConfig
 
 from .. import __version__
@@ -104,6 +104,13 @@ async def contains(db_name: str, request: Request) -> bytes:
     return encode(is_contain)
 
 
+@post("/delete")
+async def delete(db_name: str, request: Request) -> dict:
+    db = db_manager.get(db_name)
+    key = await request.body()
+    return db.pop(key)
+
+
 @post("/pop")
 @msg_encoder
 async def pop(data: PopKeyRequest) -> dict:
@@ -122,10 +129,8 @@ async def pop(data: PopKeyRequest) -> dict:
 @msg_encoder
 async def get_keys(db_name: str) -> bytes:
     db = db_manager.get(db_name)
-    if db is None:
-        return {"success": False, "info": "db not found"}
     try:
-        return {"success": True, "data": db.keys()}
+        return db.keys()
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "info": str(e)}
@@ -148,10 +153,8 @@ async def _values(db_name: str) -> bytes:
 @msg_encoder
 async def get_items(db_name: str) -> bytes:
     db = db_manager.get(db_name)
-    if db is None:
-        return {"success": False, "info": "db not found"}
     try:
-        return {"success": True, "data": db.db_dict()}
+        return db.db_dict()
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "info": str(e)}
@@ -177,6 +180,7 @@ app = Litestar(
         get_items,
         _values,
         set_value,
+        delete,
         contains,
         pop,
         get_keys,

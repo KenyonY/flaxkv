@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from .. import dictdb
+from .. import LevelDBDict, LMDBDict, dictdb
 
 
 class DBManager:
@@ -25,7 +25,7 @@ class DBManager:
             log=True,
         )
 
-    def get(self, db_name: str, raise_key_error=False):
+    def get(self, db_name: str, raise_key_error=False) -> LMDBDict | LevelDBDict | None:
         if raise_key_error:
             return self._db_dict[db_name]
         else:

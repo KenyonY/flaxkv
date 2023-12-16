@@ -11,28 +11,37 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os.path
 import shutil
 import traceback
 
+import httpx
 from loguru import logger
+
+from .pack import decode, decode_key, encode
 
 
 class DBManager:
-    def __init__(self, db_type: str, db_path: str, rebuild=False, **kwargs):
+    def __init__(
+        self, db_type: str, root_path_or_url: str, db_name: str, rebuild=False, **kwargs
+    ):
         """
         Initializes the database manager.
 
         Args:
-            db_type (str): Type of the database ("lmdb" or "leveldb").
-            db_path (str): Path to the database.
+            db_type (str): Type of the database ("lmdb", "leveldb", "remote").
+            root_path_or_url (str): Root path or URL of the database.
+            db_name (str): Name of the database.
             rebuild (bool, optional): Whether to create a new database. Defaults to False.
         """
         self.db_type = db_type.lower()
-        self.db_path = db_path
+
+        self.db_root = root_path_or_url
+        self.db_name = db_name
+        self.db_path = os.path.join(root_path_or_url, db_name)
         if rebuild:
             self.delete_db()
-        self.env = self.connect()
+        self.env = self.connect(**kwargs)
 
     def connect(self, **kwargs):
         """
@@ -54,6 +63,19 @@ class DBManager:
             import plyvel
 
             env = plyvel.DB(self.db_path, create_if_missing=True)
+        elif self.db_type == "remote":
+            import httpx
+
+            env = kwargs.pop(
+                "env",
+                RemoteEnv(
+                    base_url=self.db_root,
+                    db_name=self.db_name,
+                    backend=kwargs.pop("backend", "lmdb"),
+                    timeout=kwargs.pop("timeout", 15),
+                ),
+            )
+
         else:
             raise ValueError(f"Unsupported DB type {self.db_type}.")
         return env
@@ -103,6 +125,8 @@ class DBManager:
             return self.env.begin()
         elif self.db_type == "leveldb":
             return self.env.snapshot()
+        elif self.db_type == "remote":
+            return self.env
         else:
             raise ValueError(f"Unsupported DB type {self.db_type}.")
 
@@ -116,6 +140,8 @@ class DBManager:
         if self.db_type == "lmdb":
             return static_view.abort()
         elif self.db_type == "leveldb":
+            return static_view.close()
+        elif self.db_type == "remote":
             return static_view.close()
         else:
             raise ValueError(f"Unsupported DB type {self.db_type}.")
@@ -131,6 +157,8 @@ class DBManager:
             return self.env.begin(write=True)
         elif self.db_type == "leveldb":
             return self.env.write_batch()
+        elif self.db_type == "remote":
+            return self.env
         else:
             traceback.print_exc()
             raise ValueError(f"Unsupported DB type {self.db_type}.")
@@ -143,8 +171,77 @@ class DBManager:
             return self.env.close()
         elif self.db_type == "leveldb":
             return self.env.close()
+        elif self.db_type == "remote":
+            return self.env.client.close()
         else:
             raise ValueError(f"Unsupported DB type to {self.db_type}.")
+
+
+class RemoteEnv:
+    def __init__(
+        self, base_url: str, db_name: str, backend="lmdb", rebuild=False, timeout=15
+    ):
+        import httpx
+
+        self.client = httpx.Client(base_url=base_url, timeout=timeout)
+        self.db_name = db_name
+
+        self._attach_db(db_name=db_name, rebuild=rebuild, backend=backend)
+
+    def _attach_db(self, db_name: str, rebuild: bool, backend: str):
+        response = self.client.post(
+            "/attach", json={"db_name": db_name, "backend": backend, "rebuild": rebuild}
+        )
+        return response.json()
+
+    def detach_db(self, db_name=None):
+        if db_name is None:
+            db_name = self.db_name
+
+        url = f"/detach"
+        response = self.client.post(url, json={"db_name": db_name})
+        return response.json()
+
+    def put(self, key: bytes, value: bytes):
+        url = f"/set_raw?db_name={self.db_name}"
+        data = {"key": key, "value": value}
+        response = self.client.post(url, data=encode(data))
+        return response.json()
+
+    def put_batch(self):
+        pass
+
+    def delete(self, key: bytes):
+        url = f"/delete?db_name={self.db_name}"
+        response = self.client.post(url, data=key)
+        return response.read()
+
+    def delete_batch(self):
+        pass
+
+    def get(self, key: bytes, default=None):
+        url = f"/get_raw?db_name={self.db_name}"
+        response = self.client.post(url, data=key)
+        if response.is_success:
+            raw_data = response.read()
+            if raw_data == b"iamnull123":
+                return default
+            return raw_data
+        else:
+            raise
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # todo: put batch
+        # self.close()
+        if exc_type is not None:
+            traceback.print_exception(exc_type, exc_val, exc_tb)
+            return False
+
+    def close(self):
+        self.client.close()
 
 
 # class Transaction:

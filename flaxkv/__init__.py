@@ -14,19 +14,20 @@
 import os
 import re
 
-from .core import LevelDBDict, LMDBDict
-from .serve.client import RemoteDictDB
+from .core import LevelDBDict, LMDBDict, RemoteDBDict
 
-__version__ = "0.1.9"
+# from .serve.client import RemoteDictDB
+
+__version__ = "0.2.0-alpha"
 
 __all__ = [
     "dictdb",
     "dbdict",
     "LMDBDict",
     "LevelDBDict",
-    "RemoteDictDB",
+    # "RemoteDictDB",
+    "RemoteDBDict",
 ]
-
 
 url_pattern = re.compile(r'^(http://|https://|ftp://)')
 
@@ -40,14 +41,33 @@ def dictdb(
     **kwargs,
 ):
     if url_pattern.match(root_path_or_url):
-        return RemoteDictDB(
-            root_path_or_url, db_name=db_name, rebuild=rebuild, backend=backend
+        return RemoteDBDict(
+            root_path_or_url=root_path_or_url,
+            db_name=db_name,
+            rebuild=rebuild,
+            backend=backend,
+            raw=raw,
+            **kwargs,
         )
-    db_path = os.path.join(root_path_or_url, db_name)
+
     if backend == 'lmdb':
-        return LMDBDict(db_path, rebuild=rebuild, raw=raw, **kwargs)
+        return LMDBDict(
+            root_path=root_path_or_url,
+            db_name=db_name,
+            rebuild=rebuild,
+            raw=raw,
+            **kwargs,
+        )
+
     elif backend == 'leveldb':
-        return LevelDBDict(db_path, rebuild=rebuild, raw=raw, **kwargs)
+        return LevelDBDict(
+            root_path=root_path_or_url,
+            db_name=db_name,
+            rebuild=rebuild,
+            raw=raw,
+            **kwargs,
+        )
+
     else:
         raise ValueError(f"Unsupported DB type {backend}.")
 
