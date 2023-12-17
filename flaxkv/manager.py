@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os.path
+
+import os
 import shutil
 import traceback
 
-import httpx
 from loguru import logger
 
 from .pack import decode, decode_key, encode
@@ -39,8 +39,12 @@ class DBManager:
         self.db_root = root_path_or_url
         self.db_name = db_name
         self.db_path = os.path.join(root_path_or_url, db_name)
+        self._rebuild = rebuild
         if rebuild:
-            self.delete_db()
+            if db_type == "remote":
+                ...
+            else:
+                self.delete_db()
         self.env = self.connect(**kwargs)
 
     def connect(self, **kwargs):
@@ -64,15 +68,15 @@ class DBManager:
 
             env = plyvel.DB(self.db_path, create_if_missing=True)
         elif self.db_type == "remote":
-            import httpx
-
             env = kwargs.pop(
                 "env",
-                RemoteEnv(
+                RemoteTransaction(
                     base_url=self.db_root,
                     db_name=self.db_name,
                     backend=kwargs.pop("backend", "lmdb"),
+                    rebuild=self._rebuild,
                     timeout=kwargs.pop("timeout", 15),
+                    **kwargs,
                 ),
             )
 
@@ -105,7 +109,7 @@ class DBManager:
         self.delete_db()
         self.env = self.connect()
 
-    def get_env(self):
+    def get_view(self):
         """
         Retrieves the database environment.
 
@@ -172,18 +176,26 @@ class DBManager:
         elif self.db_type == "leveldb":
             return self.env.close()
         elif self.db_type == "remote":
-            return self.env.client.close()
+            return self.env.close()
         else:
             raise ValueError(f"Unsupported DB type to {self.db_type}.")
 
 
-class RemoteEnv:
+class RemoteTransaction:
     def __init__(
-        self, base_url: str, db_name: str, backend="lmdb", rebuild=False, timeout=15
+        self,
+        base_url: str,
+        db_name: str,
+        backend="lmdb",
+        rebuild=False,
+        timeout=15,
+        **kwargs,
     ):
         import httpx
 
-        self.client = httpx.Client(base_url=base_url, timeout=timeout)
+        self.client = kwargs.pop(
+            "client", httpx.Client(base_url=base_url, timeout=timeout)
+        )
         self.db_name = db_name
 
         self._attach_db(db_name=db_name, rebuild=rebuild, backend=backend)
@@ -192,6 +204,8 @@ class RemoteEnv:
         response = self.client.post(
             "/attach", json={"db_name": db_name, "backend": backend, "rebuild": rebuild}
         )
+        if not response.is_success:
+            raise ValueError
         return response.json()
 
     def detach_db(self, db_name=None):
@@ -200,20 +214,25 @@ class RemoteEnv:
 
         url = f"/detach"
         response = self.client.post(url, json={"db_name": db_name})
+        if not response.is_success:
+            raise ValueError
         return response.json()
 
     def put(self, key: bytes, value: bytes):
         url = f"/set_raw?db_name={self.db_name}"
         data = {"key": key, "value": value}
-        response = self.client.post(url, data=encode(data))
-        return response.json()
+        response = self.client.post(url, content=encode(data))
+        if not response.is_success:
+            raise ValueError
 
     def put_batch(self):
         pass
 
     def delete(self, key: bytes):
         url = f"/delete?db_name={self.db_name}"
-        response = self.client.post(url, data=key)
+        response = self.client.post(url, content=key)
+        if not response.is_success:
+            raise ValueError
         return response.read()
 
     def delete_batch(self):
@@ -221,14 +240,13 @@ class RemoteEnv:
 
     def get(self, key: bytes, default=None):
         url = f"/get_raw?db_name={self.db_name}"
-        response = self.client.post(url, data=key)
-        if response.is_success:
-            raw_data = response.read()
-            if raw_data == b"iamnull123":
-                return default
-            return raw_data
-        else:
-            raise
+        response = self.client.post(url, content=key)
+        if not response.is_success:
+            raise ValueError
+        raw_data = response.read()
+        if raw_data == b"iamnull123":
+            return default
+        return raw_data
 
     def __enter__(self):
         return self
@@ -241,7 +259,12 @@ class RemoteEnv:
             return False
 
     def close(self):
-        self.client.close()
+        # do not close
+        ...
+        # try:
+        #     self.client.close()
+        # except:
+        #     ...
 
 
 # class Transaction:

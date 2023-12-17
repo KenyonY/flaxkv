@@ -17,7 +17,7 @@ import threading
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Optional, Type, TypeVar
 
 import numpy as np
 from loguru import logger
@@ -27,6 +27,10 @@ from .helper import SimpleQueue
 from .log import setting_log
 from .manager import DBManager
 from .pack import decode, decode_key, encode
+
+if TYPE_CHECKING:
+    from httpx import Response
+    from litestar.exceptions import HTTPException
 
 
 class BaseDBDict(ABC):
@@ -626,7 +630,12 @@ class LMDBDict(BaseDBDict):
     """
 
     def __init__(
-        self, root_path: str, db_name: str, map_size=1024**3, rebuild=False, **kwargs
+        self,
+        db_name: str,
+        root_path: str = './',
+        map_size=1024**3,
+        rebuild=False,
+        **kwargs,
     ):
         super().__init__(
             "lmdb",
@@ -689,7 +698,7 @@ class LMDBDict(BaseDBDict):
             self._logger.error(f"Error setting map size: {e}")
 
     def stat(self):
-        env = self._db_manager.get_env()
+        env = self._db_manager.get_view()
         stats = env.stat()
         db_count = stats['entries']
         buffer_count = len(self.buffer_dict.keys())
@@ -710,7 +719,7 @@ class LevelDBDict(BaseDBDict):
         value: int, float, bool, str, list, dict and np.ndarray,
     """
 
-    def __init__(self, root_path: str, db_name: str, rebuild=False, **kwargs):
+    def __init__(self, db_name: str, root_path: str, rebuild=False, **kwargs):
         super().__init__(
             "leveldb", root_path_or_url=root_path, db_name=db_name, rebuild=rebuild
         )
@@ -805,7 +814,11 @@ class RemoteDBDict(BaseDBDict):
         ) = self._get_state_buffer_info(return_key=True, decode_raw=decode_raw)
 
         url = f"/keys?db_name={self._db_name}"
-        response = view.client.get(url)
+        response: Response = view.client.get(url)
+        if not response.is_success:
+            raise ValueError(
+                f"Failed to get keys from remote db: {decode(response.read())}"
+            )
         db_keys = set(decode_key(response.read()))
         # self._db_manager.close_static_view(view)
 
@@ -821,7 +834,11 @@ class RemoteDBDict(BaseDBDict):
         ) = self._get_state_buffer_info(return_buffer_dict=True, decode_raw=decode_raw)
 
         _db_dict = {}
-        response = view.client.get(f"/items?db_name={self._db_name}")
+        response: Response = view.client.get(f"/items?db_name={self._db_name}")
+        if not response.is_success:
+            raise ValueError(
+                f"Failed to get items from remote db: {decode(response.read())}"
+            )
         remote_db_dict = decode(response.read())
         for dk, dv in remote_db_dict.items():
             if dk not in delete_buffer_set:
@@ -834,20 +851,14 @@ class RemoteDBDict(BaseDBDict):
 
     def stat(self):
         # todo: 通过服务端直接get /stat
-
-        with self._buffer_lock:
-            client = self._db_manager.new_static_view()
-
-        db_keys = set(self.keys())
-        self._db_manager.close_static_view(client)
-
-        db_count = len(db_keys)
-
-        buffer_keys = set(self.buffer_dict.keys())
-
-        db_valid_keys = db_keys - self.delete_buffer_set
-        intersection_count = len(buffer_keys.intersection(db_valid_keys))
-        buffer_count = len(buffer_keys)
-        count = len(db_valid_keys) + buffer_count - intersection_count
-
-        return {'count': count, 'buffer': buffer_count, "db": db_count}
+        env = self._db_manager.get_view()
+        stats = env.stat()
+        db_count = stats['entries']
+        buffer_count = len(self.buffer_dict.keys())
+        count = db_count + buffer_count
+        return {
+            'count': count,
+            'buffer': buffer_count,
+            'db': db_count,
+            'marked_delete': len(self.delete_buffer_set),
+        }
