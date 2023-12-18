@@ -68,18 +68,14 @@ class DBManager:
 
             env = plyvel.DB(self.db_path, create_if_missing=True)
         elif self.db_type == "remote":
-            env = kwargs.pop(
-                "env",
-                RemoteTransaction(
-                    base_url=self.db_root,
-                    db_name=self.db_name,
-                    backend=kwargs.pop("backend", "lmdb"),
-                    rebuild=self._rebuild,
-                    timeout=kwargs.pop("timeout", 15),
-                    **kwargs,
-                ),
+            env = RemoteTransaction(
+                base_url=self.db_root,
+                db_name=self.db_name,
+                backend=kwargs.pop("backend", "lmdb"),
+                rebuild=self._rebuild,
+                timeout=kwargs.pop("timeout", 15),
+                **kwargs,
             )
-
         else:
             raise ValueError(f"Unsupported DB type {self.db_type}.")
         return env
@@ -109,7 +105,7 @@ class DBManager:
         self.delete_db()
         self.env = self.connect()
 
-    def get_view(self):
+    def get_env(self):
         """
         Retrieves the database environment.
 
@@ -199,6 +195,7 @@ class RemoteTransaction:
         self.db_name = db_name
 
         self._attach_db(db_name=db_name, rebuild=rebuild, backend=backend)
+        self.put_buffer_dict = {}
 
     def _attach_db(self, db_name: str, rebuild: bool, backend: str):
         response = self.client.post(
@@ -218,31 +215,39 @@ class RemoteTransaction:
             raise ValueError
         return response.json()
 
-    def put(self, key: bytes, value: bytes):
-        url = f"/set_raw?db_name={self.db_name}"
+    def _put(self, key: bytes, value: bytes):
+        url = f"/set?db_name={self.db_name}"
         data = {"key": key, "value": value}
         response = self.client.post(url, content=encode(data))
         if not response.is_success:
-            raise ValueError
+            raise RuntimeError
 
-    def put_batch(self):
-        pass
+    def put(self, key: bytes, value: bytes):
+        self.put_buffer_dict[key] = value
 
     def delete(self, key: bytes):
         url = f"/delete?db_name={self.db_name}"
         response = self.client.post(url, content=key)
         if not response.is_success:
-            raise ValueError
-        return response.read()
+            # retry
+            raise RuntimeError
+
+    def _put_batch(self):
+        url = f"/set_batch?db_name={self.db_name}"
+        response = self.client.post(url, content=encode({"data": self.put_buffer_dict}))
+        if not response.is_success:
+            # retry
+            raise RuntimeError
+        self.put_buffer_dict = {}
 
     def delete_batch(self):
-        pass
+        """TODO"""
 
     def get(self, key: bytes, default=None):
-        url = f"/get_raw?db_name={self.db_name}"
+        url = f"/get?db_name={self.db_name}"
         response = self.client.post(url, content=key)
         if not response.is_success:
-            raise ValueError
+            raise RuntimeError
         raw_data = response.read()
         if raw_data == b"iamnull123":
             return default
@@ -253,18 +258,27 @@ class RemoteTransaction:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         # todo: put batch
+        self._put_batch()
         # self.close()
         if exc_type is not None:
             traceback.print_exception(exc_type, exc_val, exc_tb)
             return False
 
     def close(self):
-        # do not close
-        ...
+        """
+        Do nothing.
+        """
         # try:
         #     self.client.close()
         # except:
         #     ...
+
+    def stat(self):
+        url = f"/stat?db_name={self.db_name}"
+        response = self.client.get(url)
+        if not response.is_success:
+            raise RuntimeError
+        return decode(response.read())
 
 
 # class Transaction:

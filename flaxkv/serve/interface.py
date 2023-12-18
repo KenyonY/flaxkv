@@ -50,5 +50,9 @@ class StructSetData(msgspec.Struct):
     value: bytes
 
 
+class StructSetBatchData(msgspec.Struct):
+    data: dict[bytes, bytes]
+
+
 class StructUpdateData(msgspec.Struct):
     dict: bytes

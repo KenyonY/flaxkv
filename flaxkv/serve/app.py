@@ -14,12 +14,20 @@ from .interface import (
     DetachRequest,
     PopKeyRequest,
     SetRequest,
+    StructSetBatchData,
     StructSetData,
     StructUpdateData,
 )
 from .manager import DBManager
 
 db_manager = DBManager(root_path="./FLAXKV_DB", raw_mode=True)
+
+
+def get_db(db_name: str):
+    db = db_manager.get(db_name)
+    if db is None:
+        raise HTTPException(status_code=404, detail="db not found")
+    return db
 
 
 @get(
@@ -38,7 +46,12 @@ async def attach(data: AttachRequest) -> dict:
     # todo switch `post` to `get`
     try:
         db = db_manager.get(data.db_name)
-        if db is None or data.rebuild:
+        if db is None:
+            db_manager.set_db(
+                db_name=data.db_name, backend=data.backend, rebuild=data.rebuild
+            )
+        elif data.rebuild:
+            db.destroy()
             db_manager.set_db(
                 db_name=data.db_name, backend=data.backend, rebuild=data.rebuild
             )
@@ -57,11 +70,9 @@ async def detach(data: DetachRequest) -> dict:
     return {"success": True}
 
 
-@post(path="/set_raw")
-async def set_raw(db_name: str, request: Request) -> dict:
-    db = db_manager.get(db_name)
-    if db is None:
-        return {"success": False, "info": "db not found"}
+@post(path="/set")
+async def _set(db_name: str, request: Request) -> None:
+    db = get_db(db_name)
     data = await request.body()
     try:
         data = msgspec.msgpack.decode(data, type=StructSetData)
@@ -69,14 +80,24 @@ async def set_raw(db_name: str, request: Request) -> dict:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     db[data.key] = data.value
-    return {"success": True}
 
 
-@post("/get_raw", media_type=MediaType.TEXT)
+@post("/set_batch")
+async def _set_batch(db_name: str, request: Request) -> None:
+    db = get_db(db_name)
+    data = await request.body()
+    try:
+        data = msgspec.msgpack.decode(data, type=StructSetBatchData)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    for key, value in data.data.items():
+        db[key] = value
+
+
+@post("/get", media_type=MediaType.TEXT)
 async def _get(db_name: str, request: Request) -> bytes:
-    db = db_manager.get(db_name)
-    if db is None:
-        raise ValueError("db not found")
+    db = get_db(db_name)
     key = await request.body()
     value = db.get(key, None)
     if value is None:
@@ -85,11 +106,11 @@ async def _get(db_name: str, request: Request) -> bytes:
 
 
 @post("/delete")
-async def delete(db_name: str, request: Request) -> dict:
+async def _delete(db_name: str, request: Request) -> None:
+    db = get_db(db_name)
+    key = await request.body()
     try:
-        db = db_manager.get(db_name)
-        key = await request.body()
-        return db.pop(key)
+        db.pop(key)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -97,8 +118,8 @@ async def delete(db_name: str, request: Request) -> dict:
 
 @get("/keys", media_type=MediaType.TEXT)
 @msg_encoder
-async def get_keys(db_name: str) -> bytes:
-    db = db_manager.get(db_name)
+async def _keys(db_name: str) -> bytes:
+    db = get_db(db_name)
     try:
         return db.keys()
     except Exception as e:
@@ -106,25 +127,23 @@ async def get_keys(db_name: str) -> bytes:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# @get("/values", media_type=MediaType.TEXT)
-# @msg_encoder
-# async def _values(db_name: str) -> bytes:
-#     db = db_manager.get(db_name)
-#     if db is None:
-#         return {"success": False, "info": "db not found"}
-#     try:
-#         return {"success": True, "data": db.values()}
-#     except Exception as e:
-#         traceback.print_exc()
-#         return {"success": False, "info": str(e)}
-
-
-@get("/items", media_type=MediaType.TEXT)
+@get("/dict", media_type=MediaType.TEXT)
 @msg_encoder
-async def get_items(db_name: str) -> bytes:
-    db = db_manager.get(db_name)
+async def _items(db_name: str) -> bytes:
+    db = get_db(db_name)
     try:
         return db.db_dict()
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@get("/stat", media_type=MediaType.TEXT)
+@msg_encoder
+async def _stat(db_name: str) -> bytes:
+    db = get_db(db_name)
+    try:
+        return db.stat()
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -146,16 +165,13 @@ app = Litestar(
         healthz,
         attach,
         detach,
-        set_raw,
-        # update_raw,
         _get,
-        get_items,
-        # _values,
-        # set_value,
-        delete,
-        # contains,
-        # pop,
-        get_keys,
+        _set,
+        _set_batch,
+        _delete,
+        _keys,
+        _items,
+        _stat,
     ],
     on_startup=[on_startup],
     on_shutdown=[on_shutdown],

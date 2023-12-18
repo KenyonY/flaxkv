@@ -107,10 +107,16 @@ class BaseDBDict(ABC):
         self._thread = threading.Thread(target=self._background_worker)
         self._thread.daemon = True
 
-        atexit.register(self.close)
+        self._register_auto_close()
 
         # Start the background worker
         self._start()
+
+    def _register_auto_close(self):
+        atexit.register(self.close)
+
+    def _unregister_auto_close(self):
+        atexit.unregister(self.close)
 
     def _start(self):
         """
@@ -482,7 +488,9 @@ class BaseDBDict(ABC):
             if key in self.delete_buffer_set:
                 return False
             key = self._encode_key(key)
-            return self._static_view.get(key) is not None
+            return (
+                self._static_view.get(key) is not None
+            )  # self._static_view.get() return a binary value or None
 
     def clear(self):
         """
@@ -514,6 +522,7 @@ class BaseDBDict(ABC):
         Destroys the database by closing and deleting it.
         """
         self.close(write=False)
+        self._unregister_auto_close()
         self._db_manager.destroy()
         self._logger.info(f"Destroyed database successfully.")
 
@@ -542,7 +551,7 @@ class BaseDBDict(ABC):
         self._db_manager.close()
         self._logger.info(f"Closed ({self._db_manager.db_type.upper()}) successfully")
 
-    def _get_state_buffer_info(
+    def _get_status_info(
         self,
         return_key=False,
         return_value=False,
@@ -553,6 +562,9 @@ class BaseDBDict(ABC):
             static_view = self._db_manager.new_static_view()
             buffer_dict = self.buffer_dict.copy()
             delete_buffer_set = self.delete_buffer_set.copy()
+
+        if self.raw and decode_raw:
+            delete_buffer_set = set([decode_key(i) for i in delete_buffer_set])
 
         buffer_keys, buffer_values = None, None
         if return_key:
@@ -654,7 +666,7 @@ class LMDBDict(BaseDBDict):
             buffer_values,
             delete_buffer_set,
             view,
-        ) = self._get_state_buffer_info(return_key=True, decode_raw=decode_raw)
+        ) = self._get_status_info(return_key=True, decode_raw=decode_raw)
         cursor = view.cursor()
 
         lmdb_keys = set(
@@ -671,15 +683,16 @@ class LMDBDict(BaseDBDict):
             buffer_values,
             delete_buffer_set,
             view,
-        ) = self._get_state_buffer_info(return_buffer_dict=True, decode_raw=decode_raw)
+        ) = self._get_status_info(return_buffer_dict=True, decode_raw=decode_raw)
         cursor = view.cursor()
         _db_dict = {}
 
         for key, value in cursor.iternext(keys=True, values=True):
-            dk = key if self.raw else decode_key(key)
+            # dk = key if self.raw else decode_key(key)
+            dk = decode_key(key)
             if dk not in delete_buffer_set:
-                if self.raw:
-                    dk = decode_key(dk)
+                # if self.raw:
+                #     dk = decode_key(dk)
                 _db_dict[dk] = decode(value)
 
         _db_dict.update(buffer_dict)
@@ -698,7 +711,7 @@ class LMDBDict(BaseDBDict):
             self._logger.error(f"Error setting map size: {e}")
 
     def stat(self):
-        env = self._db_manager.get_view()
+        env = self._db_manager.get_env()
         stats = env.stat()
         db_count = stats['entries']
         buffer_count = len(self.buffer_dict.keys())
@@ -731,7 +744,7 @@ class LevelDBDict(BaseDBDict):
             buffer_values,
             delete_buffer_set,
             view,
-        ) = self._get_state_buffer_info(return_key=True, decode_raw=decode_raw)
+        ) = self._get_status_info(return_key=True, decode_raw=decode_raw)
 
         db_keys = set(decode_key(key) for key, _ in view.iterator())
         view.close()
@@ -745,14 +758,14 @@ class LevelDBDict(BaseDBDict):
             buffer_values,
             delete_buffer_set,
             view,
-        ) = self._get_state_buffer_info(return_buffer_dict=True, decode_raw=decode_raw)
+        ) = self._get_status_info(return_buffer_dict=True, decode_raw=decode_raw)
 
         _db_dict = {}
         for key, value in view.iterator():
-            dk = key if self.raw else decode_key(key)
+            dk = decode_key(key)
             if dk not in delete_buffer_set:
-                if self.raw:
-                    dk = decode_key(dk)
+                # if self.raw:
+                #     dk = decode_key(dk)
                 _db_dict[dk] = decode(value)
 
         _db_dict.update(buffer_dict)
@@ -811,7 +824,7 @@ class RemoteDBDict(BaseDBDict):
             buffer_values,
             delete_buffer_set,
             view,
-        ) = self._get_state_buffer_info(return_key=True, decode_raw=decode_raw)
+        ) = self._get_status_info(return_key=True, decode_raw=decode_raw)
 
         url = f"/keys?db_name={self._db_name}"
         response: Response = view.client.get(url)
@@ -831,10 +844,10 @@ class RemoteDBDict(BaseDBDict):
             buffer_values,
             delete_buffer_set,
             view,
-        ) = self._get_state_buffer_info(return_buffer_dict=True, decode_raw=decode_raw)
+        ) = self._get_status_info(return_buffer_dict=True, decode_raw=decode_raw)
 
         _db_dict = {}
-        response: Response = view.client.get(f"/items?db_name={self._db_name}")
+        response: Response = view.client.get(f"/dict?db_name={self._db_name}")
         if not response.is_success:
             raise ValueError(
                 f"Failed to get items from remote db: {decode(response.read())}"
@@ -850,10 +863,9 @@ class RemoteDBDict(BaseDBDict):
         return _db_dict
 
     def stat(self):
-        # todo: 通过服务端直接get /stat
-        env = self._db_manager.get_view()
+        env = self._db_manager.get_env()
         stats = env.stat()
-        db_count = stats['entries']
+        db_count = stats['count']
         buffer_count = len(self.buffer_dict.keys())
         count = db_count + buffer_count
         return {
