@@ -43,11 +43,11 @@ Source = "https://github.com/KenyonY/flaxkv"
 
 [project.optional-dependencies]
 test = [
+    "plyvel>=1.5.0",
     "litestar",
     "pytest",
     "pytest-aiohttp",
     "uvicorn",
-    "litestar",
     "httpx",
 ]
 
