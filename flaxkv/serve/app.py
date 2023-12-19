@@ -1,23 +1,19 @@
 import traceback
 
 import msgspec
-from litestar import Litestar, MediaType, Request, Response, get, post, status_codes
+from litestar import Litestar, MediaType, Request, get, post, status_codes
 from litestar.exceptions import HTTPException
 from litestar.openapi import OpenAPIConfig
 from litestar.response import ServerSentEvent, Stream
 
 from .. import __version__
 from ..decorators import msg_encoder
-from ..pack import decode, decode_key, encode
 from .interface import (
     AttachRequest,
     DetachRequest,
-    PopKeyRequest,
-    SetRequest,
     StructDeleteBatchData,
     StructSetBatchData,
     StructSetData,
-    StructUpdateData,
 )
 from .manager import DBManager
 
