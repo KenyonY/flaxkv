@@ -501,7 +501,7 @@ class BaseDBDict(ABC):
             self._db_manager.close()
             self._close_background_worker(write=False)
 
-        self._db_manager.clear()
+        self._db_manager.rebuild_db()
         self._static_view = self._db_manager.new_static_view()
 
         self._buffered_count = 0
@@ -688,11 +688,8 @@ class LMDBDict(BaseDBDict):
         _db_dict = {}
 
         for key, value in cursor.iternext(keys=True, values=True):
-            # dk = key if self.raw else decode_key(key)
             dk = decode_key(key)
             if dk not in delete_buffer_set:
-                # if self.raw:
-                #     dk = decode_key(dk)
                 _db_dict[dk] = decode(value)
 
         _db_dict.update(buffer_dict)
@@ -734,7 +731,11 @@ class LevelDBDict(BaseDBDict):
 
     def __init__(self, db_name: str, root_path: str, rebuild=False, **kwargs):
         super().__init__(
-            "leveldb", root_path_or_url=root_path, db_name=db_name, rebuild=rebuild
+            "leveldb",
+            root_path_or_url=root_path,
+            db_name=db_name,
+            rebuild=rebuild,
+            **kwargs,
         )
 
     def keys(self, decode_raw=True):
@@ -747,7 +748,7 @@ class LevelDBDict(BaseDBDict):
         ) = self._get_status_info(return_key=True, decode_raw=decode_raw)
 
         db_keys = set(decode_key(key) for key, _ in view.iterator())
-        view.close()
+        self._db_manager.close_static_view(view)
 
         return list(db_keys.union(buffer_keys) - delete_buffer_set)
 
@@ -764,8 +765,6 @@ class LevelDBDict(BaseDBDict):
         for key, value in view.iterator():
             dk = decode_key(key)
             if dk not in delete_buffer_set:
-                # if self.raw:
-                #     dk = decode_key(dk)
                 _db_dict[dk] = decode(value)
 
         _db_dict.update(buffer_dict)

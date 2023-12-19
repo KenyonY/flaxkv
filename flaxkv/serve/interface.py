@@ -54,5 +54,9 @@ class StructSetBatchData(msgspec.Struct):
     data: dict[bytes, bytes]
 
 
+class StructDeleteBatchData(msgspec.Struct):
+    keys: list[bytes]
+
+
 class StructUpdateData(msgspec.Struct):
     dict: bytes

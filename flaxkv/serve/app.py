@@ -14,6 +14,7 @@ from .interface import (
     DetachRequest,
     PopKeyRequest,
     SetRequest,
+    StructDeleteBatchData,
     StructSetBatchData,
     StructSetData,
     StructUpdateData,
@@ -37,7 +38,7 @@ def get_db(db_name: str):
     status_code=status_codes.HTTP_200_OK,
     media_type=MediaType.TEXT,
 )
-async def healthz(request: Request) -> str:
+async def healthz() -> str:
     return "OK"
 
 
@@ -52,9 +53,7 @@ async def attach(data: AttachRequest) -> dict:
             )
         elif data.rebuild:
             db.destroy()
-            db_manager.set_db(
-                db_name=data.db_name, backend=data.backend, rebuild=data.rebuild
-            )
+            db_manager.set_db(db_name=data.db_name, backend=data.backend, rebuild=False)
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "info": str(e)}
@@ -116,6 +115,19 @@ async def _delete(db_name: str, request: Request) -> None:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@post("/delete_batch")
+async def _delete_batch(db_name: str, request: Request) -> None:
+    db = get_db(db_name)
+    data = await request.body()
+    try:
+        data = msgspec.msgpack.decode(data, type=StructDeleteBatchData)
+        for key in data.keys:
+            db.pop(key)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @get("/keys", media_type=MediaType.TEXT)
 @msg_encoder
 async def _keys(db_name: str) -> bytes:
@@ -151,12 +163,9 @@ async def _stat(db_name: str) -> bytes:
 
 def on_startup():
     ...
-    # global db_manager
-    # db_manager = DBManager(root_path="./FLAXKV_DB", raw_mode=True)
 
 
 def on_shutdown():
-    # print("on_shutdown")
     ...
 
 
@@ -169,6 +178,7 @@ app = Litestar(
         _set,
         _set_batch,
         _delete,
+        _delete_batch,
         _keys,
         _items,
         _stat,

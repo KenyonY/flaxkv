@@ -38,13 +38,13 @@ class DBManager:
 
         self.db_root = root_path_or_url
         self.db_name = db_name
-        self.db_path = os.path.join(root_path_or_url, db_name)
+        self.db_path = os.path.join(root_path_or_url, f"{db_name}-{self.db_type}")
         self._rebuild = rebuild
         if rebuild:
             if db_type == "remote":
                 ...
             else:
-                self.delete_db()
+                self.destroy()
         self.env = self.connect(**kwargs)
 
     def connect(self, **kwargs):
@@ -67,6 +67,7 @@ class DBManager:
             import plyvel
 
             env = plyvel.DB(self.db_path, create_if_missing=True)
+
         elif self.db_type == "remote":
             env = RemoteTransaction(
                 base_url=self.db_root,
@@ -80,7 +81,7 @@ class DBManager:
             raise ValueError(f"Unsupported DB type {self.db_type}.")
         return env
 
-    def delete_db(self):
+    def rmtree(self):
         """
         Deletes the database at the specified path.
         """
@@ -90,11 +91,14 @@ class DBManager:
         """
         Destroys the database by closing and deleting it.
         """
-        self.close()
-        self.delete_db()
+        try:
+            self.close()
+        except:
+            pass
+        self.rmtree()
         logger.info(f"Destroyed database at {self.db_path}.")
 
-    def clear(self):
+    def rebuild_db(self):
         """
         Clears the database by closing and recreating it.
         """
@@ -102,7 +106,7 @@ class DBManager:
             self.close()
         except:
             pass
-        self.delete_db()
+        self.rmtree()
         self.env = self.connect()
 
     def get_env(self):
@@ -196,6 +200,7 @@ class RemoteTransaction:
 
         self._attach_db(db_name=db_name, rebuild=rebuild, backend=backend)
         self.put_buffer_dict = {}
+        self.delete_buffer_set = set()
 
     def _attach_db(self, db_name: str, rebuild: bool, backend: str):
         response = self.client.post(
@@ -225,12 +230,15 @@ class RemoteTransaction:
     def put(self, key: bytes, value: bytes):
         self.put_buffer_dict[key] = value
 
-    def delete(self, key: bytes):
+    def _delete(self, key: bytes):
         url = f"/delete?db_name={self.db_name}"
         response = self.client.post(url, content=key)
         if not response.is_success:
             # retry
             raise RuntimeError
+
+    def delete(self, key: bytes):
+        self.delete_buffer_set.add(key)
 
     def _put_batch(self):
         url = f"/set_batch?db_name={self.db_name}"
@@ -240,8 +248,15 @@ class RemoteTransaction:
             raise RuntimeError
         self.put_buffer_dict = {}
 
-    def delete_batch(self):
-        """TODO"""
+    def _delete_batch(self):
+        url = f"/delete_batch?db_name={self.db_name}"
+        response = self.client.post(
+            url, content=encode({"keys": list(self.delete_buffer_set)})
+        )
+        if not response.is_success:
+            # retry
+            raise RuntimeError
+        self.delete_buffer_set = set()
 
     def get(self, key: bytes, default=None):
         url = f"/get?db_name={self.db_name}"
@@ -259,7 +274,7 @@ class RemoteTransaction:
     def __exit__(self, exc_type, exc_val, exc_tb):
         # todo: put batch
         self._put_batch()
-        # self.close()
+        self._delete_batch()
         if exc_type is not None:
             traceback.print_exception(exc_type, exc_val, exc_tb)
             return False
@@ -268,10 +283,6 @@ class RemoteTransaction:
         """
         Do nothing.
         """
-        # try:
-        #     self.client.close()
-        # except:
-        #     ...
 
     def stat(self):
         url = f"/stat?db_name={self.db_name}"
