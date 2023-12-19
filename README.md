@@ -66,8 +66,10 @@ You can use it just like a Python dictionary without having to worry about block
 ## Quick Start
 
 ### Installation
+
 ```bash
-pip install flaxkv
+pip install flaxkv 
+# Or pip install flaxkv[server]
 ```
 ### Usage
 

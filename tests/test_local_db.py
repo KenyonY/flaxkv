@@ -29,9 +29,11 @@ if not DB_DICTS:
 
 @pytest.fixture(params=DB_DICTS)
 def temp_db(request):
-    temp_dir = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir, "test_db")
-    db: LMDBDict = request.param(db_path, recreate=True, log=False)
+    DB = request.param
+
+    db: LMDBDict = DB(
+        db_name="test_db", root_path=tempfile.mkdtemp(), rebuild=True, log=False
+    )
 
     yield db
     db.destroy()

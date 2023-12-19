@@ -72,7 +72,9 @@
 ### 安装
 ```bash
 pip install flaxkv
+# Or pip install flaxkv[server]
 ```
+
 ### 使用
 
 ```python

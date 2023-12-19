@@ -12,27 +12,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import shutil
 import traceback
 
 from loguru import logger
 
+from .pack import decode, decode_key, encode
+
 
 class DBManager:
-    def __init__(self, db_type: str, db_path: str, rebuild=False, **kwargs):
+    def __init__(
+        self, db_type: str, root_path_or_url: str, db_name: str, rebuild=False, **kwargs
+    ):
         """
         Initializes the database manager.
 
         Args:
-            db_type (str): Type of the database ("lmdb" or "leveldb").
-            db_path (str): Path to the database.
+            db_type (str): Type of the database ("lmdb", "leveldb", "remote").
+            root_path_or_url (str): Root path or URL of the database.
+            db_name (str): Name of the database.
             rebuild (bool, optional): Whether to create a new database. Defaults to False.
         """
         self.db_type = db_type.lower()
-        self.db_path = db_path
+
+        self.db_root = root_path_or_url
+        self.db_name = db_name
+        self.db_path = os.path.join(root_path_or_url, f"{db_name}-{self.db_type}")
+        self._rebuild = rebuild
         if rebuild:
-            self.delete_db()
-        self.env = self.connect()
+            if db_type == "remote":
+                ...
+            else:
+                self.destroy()
+        self.env = self.connect(**kwargs)
 
     def connect(self, **kwargs):
         """
@@ -54,11 +67,21 @@ class DBManager:
             import plyvel
 
             env = plyvel.DB(self.db_path, create_if_missing=True)
+
+        elif self.db_type == "remote":
+            env = RemoteTransaction(
+                base_url=self.db_root,
+                db_name=self.db_name,
+                backend=kwargs.pop("backend", "lmdb"),
+                rebuild=self._rebuild,
+                timeout=kwargs.pop("timeout", 15),
+                **kwargs,
+            )
         else:
             raise ValueError(f"Unsupported DB type {self.db_type}.")
         return env
 
-    def delete_db(self):
+    def rmtree(self):
         """
         Deletes the database at the specified path.
         """
@@ -68,11 +91,14 @@ class DBManager:
         """
         Destroys the database by closing and deleting it.
         """
-        self.close()
-        self.delete_db()
+        try:
+            self.close()
+        except:
+            pass
+        self.rmtree()
         logger.info(f"Destroyed database at {self.db_path}.")
 
-    def clear(self):
+    def rebuild_db(self):
         """
         Clears the database by closing and recreating it.
         """
@@ -80,7 +106,7 @@ class DBManager:
             self.close()
         except:
             pass
-        self.delete_db()
+        self.rmtree()
         self.env = self.connect()
 
     def get_env(self):
@@ -103,6 +129,8 @@ class DBManager:
             return self.env.begin()
         elif self.db_type == "leveldb":
             return self.env.snapshot()
+        elif self.db_type == "remote":
+            return self.env
         else:
             raise ValueError(f"Unsupported DB type {self.db_type}.")
 
@@ -116,6 +144,8 @@ class DBManager:
         if self.db_type == "lmdb":
             return static_view.abort()
         elif self.db_type == "leveldb":
+            return static_view.close()
+        elif self.db_type == "remote":
             return static_view.close()
         else:
             raise ValueError(f"Unsupported DB type {self.db_type}.")
@@ -131,6 +161,8 @@ class DBManager:
             return self.env.begin(write=True)
         elif self.db_type == "leveldb":
             return self.env.write_batch()
+        elif self.db_type == "remote":
+            return self.env
         else:
             traceback.print_exc()
             raise ValueError(f"Unsupported DB type {self.db_type}.")
@@ -143,8 +175,121 @@ class DBManager:
             return self.env.close()
         elif self.db_type == "leveldb":
             return self.env.close()
+        elif self.db_type == "remote":
+            return self.env.close()
         else:
             raise ValueError(f"Unsupported DB type to {self.db_type}.")
+
+
+class RemoteTransaction:
+    def __init__(
+        self,
+        base_url: str,
+        db_name: str,
+        backend="lmdb",
+        rebuild=False,
+        timeout=15,
+        **kwargs,
+    ):
+        import httpx
+
+        self.client = kwargs.pop(
+            "client", httpx.Client(base_url=base_url, timeout=timeout)
+        )
+        self.db_name = db_name
+
+        self._attach_db(db_name=db_name, rebuild=rebuild, backend=backend)
+        self.put_buffer_dict = {}
+        self.delete_buffer_set = set()
+
+    def _attach_db(self, db_name: str, rebuild: bool, backend: str):
+        response = self.client.post(
+            "/attach", json={"db_name": db_name, "backend": backend, "rebuild": rebuild}
+        )
+        if not response.is_success:
+            raise ValueError
+        return response.json()
+
+    def detach_db(self, db_name=None):
+        if db_name is None:
+            db_name = self.db_name
+
+        url = f"/detach"
+        response = self.client.post(url, json={"db_name": db_name})
+        if not response.is_success:
+            raise ValueError
+        return response.json()
+
+    def _put(self, key: bytes, value: bytes):
+        url = f"/set?db_name={self.db_name}"
+        data = {"key": key, "value": value}
+        response = self.client.post(url, content=encode(data))
+        if not response.is_success:
+            raise RuntimeError
+
+    def put(self, key: bytes, value: bytes):
+        self.put_buffer_dict[key] = value
+
+    def _delete(self, key: bytes):
+        url = f"/delete?db_name={self.db_name}"
+        response = self.client.post(url, content=key)
+        if not response.is_success:
+            # retry
+            raise RuntimeError
+
+    def delete(self, key: bytes):
+        self.delete_buffer_set.add(key)
+
+    def _put_batch(self):
+        url = f"/set_batch?db_name={self.db_name}"
+        response = self.client.post(url, content=encode({"data": self.put_buffer_dict}))
+        if not response.is_success:
+            # retry
+            raise RuntimeError
+        self.put_buffer_dict = {}
+
+    def _delete_batch(self):
+        url = f"/delete_batch?db_name={self.db_name}"
+        response = self.client.post(
+            url, content=encode({"keys": list(self.delete_buffer_set)})
+        )
+        if not response.is_success:
+            # retry
+            raise RuntimeError
+        self.delete_buffer_set = set()
+
+    def get(self, key: bytes, default=None):
+        url = f"/get?db_name={self.db_name}"
+        response = self.client.post(url, content=key)
+        if not response.is_success:
+            raise RuntimeError
+        raw_data = response.read()
+        if raw_data == b"iamnull123":
+            return default
+        return raw_data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # todo: put batch
+        self._put_batch()
+        self._delete_batch()
+        if exc_type is not None:
+            traceback.print_exception(exc_type, exc_val, exc_tb)
+            return False
+
+    def close(self):
+        """
+        Do nothing.
+        """
+
+    def stat(self):
+        url = f"/stat?db_name={self.db_name}"
+        response = self.client.get(url)
+        if not response.is_success:
+            raise RuntimeError
+        return decode(response.read())
 
 
 # class Transaction:
