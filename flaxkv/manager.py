@@ -272,8 +272,10 @@ class RemoteTransaction:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self._put_batch()
-        self._delete_batch()
+        if self.put_buffer_dict:
+            self._put_batch()
+        if self.delete_buffer_set:
+            self._delete_batch()
         if exc_type is not None:
             traceback.print_exception(exc_type, exc_val, exc_tb)
             return False
