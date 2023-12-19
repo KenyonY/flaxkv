@@ -234,7 +234,7 @@ class RemoteTransaction:
         url = f"/delete?db_name={self.db_name}"
         response = self.client.post(url, content=key)
         if not response.is_success:
-            # retry
+            # todo: retry
             raise RuntimeError
 
     def delete(self, key: bytes):
@@ -244,7 +244,7 @@ class RemoteTransaction:
         url = f"/set_batch?db_name={self.db_name}"
         response = self.client.post(url, content=encode({"data": self.put_buffer_dict}))
         if not response.is_success:
-            # retry
+            # todo: retry
             raise RuntimeError
         self.put_buffer_dict = {}
 
@@ -254,7 +254,7 @@ class RemoteTransaction:
             url, content=encode({"keys": list(self.delete_buffer_set)})
         )
         if not response.is_success:
-            # retry
+            # todo: retry
             raise RuntimeError
         self.delete_buffer_set = set()
 
@@ -272,7 +272,6 @@ class RemoteTransaction:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        # todo: put batch
         self._put_batch()
         self._delete_batch()
         if exc_type is not None:
