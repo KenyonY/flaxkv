@@ -17,7 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3"
 ]
 
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 
 dependencies = [
     "loguru>=0.7.0",
@@ -46,6 +46,9 @@ test = [
     "litestar",
     "pytest",
     "pytest-aiohttp",
+    "uvicorn",
+    "litestar",
+    "httpx",
 ]
 
 
@@ -57,6 +60,10 @@ database = [
 server = [
     "uvicorn",
     "litestar",
+    "httpx",
+]
+
+client = [
     "httpx",
 ]
 
