@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from pathlib import Path
 
-from .. import LevelDBDict, LMDBDict, dictdb
+from .. import FlaxKV, LevelDBDict, LMDBDict
 
 
 class DBManager:
@@ -23,13 +25,13 @@ class DBManager:
         self._raw_mode = raw_mode
         self._root_path = Path(root_path)
         if not self._root_path.exists():
-            self._root_path.mkdir(parents=True)
+            self._root_path.mkdir(parents=True, exist_ok=True)
 
     def detach(self, db_name: str):
         return self._db_dict.pop(db_name, None)
 
     def set_db(self, db_name: str, backend: str, rebuild: bool):
-        self._db_dict[db_name] = dictdb(
+        self._db_dict[db_name] = FlaxKV(
             db_name=db_name,
             root_path_or_url=self._root_path.__str__(),
             backend=backend,

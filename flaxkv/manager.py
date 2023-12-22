@@ -12,9 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+from __future__ import annotations
+
 import os
+import re
 import shutil
 import traceback
+from pathlib import Path
 
 from loguru import logger
 
@@ -35,16 +40,24 @@ class DBManager:
             rebuild (bool, optional): Whether to create a new database. Defaults to False.
         """
         self.db_type = db_type.lower()
-
-        self.db_root = root_path_or_url
         self.db_name = db_name
-        self.db_path = os.path.join(root_path_or_url, f"{db_name}-{self.db_type}")
         self._rebuild = rebuild
-        if rebuild:
-            if db_type == "remote":
-                ...
-            else:
+
+        url_pattern = re.compile(r'^(http://|https://|ftp://)')
+        if url_pattern.match(root_path_or_url):
+            self.db_address = root_path_or_url
+        else:
+            self.db_address = os.path.join(
+                root_path_or_url, f"{db_name}-{self.db_type}"
+            )
+
+            root_path = Path(root_path_or_url)
+            if not root_path.exists():
+                root_path.mkdir(parents=True, exist_ok=True)
+
+            if rebuild:
                 self.destroy()
+
         self.env = self.connect(**kwargs)
 
     def connect(self, **kwargs):
@@ -58,7 +71,7 @@ class DBManager:
             import lmdb
 
             env = lmdb.open(
-                self.db_path,
+                self.db_address,
                 max_dbs=kwargs.get('max_dbs', 1),
                 map_size=kwargs.get('map_size', 2 * 1024**3),
             )
@@ -66,11 +79,11 @@ class DBManager:
         elif self.db_type == "leveldb":
             import plyvel
 
-            env = plyvel.DB(self.db_path, create_if_missing=True)
+            env = plyvel.DB(self.db_address, create_if_missing=True)
 
         elif self.db_type == "remote":
             env = RemoteTransaction(
-                base_url=self.db_root,
+                base_url=self.db_address,
                 db_name=self.db_name,
                 backend=kwargs.pop("backend", "lmdb"),
                 rebuild=self._rebuild,
@@ -85,7 +98,7 @@ class DBManager:
         """
         Deletes the database at the specified path.
         """
-        shutil.rmtree(self.db_path, ignore_errors=True)
+        shutil.rmtree(self.db_address, ignore_errors=True)
 
     def destroy(self):
         """
@@ -96,7 +109,7 @@ class DBManager:
         except:
             pass
         self.rmtree()
-        logger.info(f"Destroyed database at {self.db_path}.")
+        logger.info(f"Destroyed database at {self.db_address}.")
 
     def rebuild_db(self):
         """
@@ -166,6 +179,17 @@ class DBManager:
         else:
             traceback.print_exc()
             raise ValueError(f"Unsupported DB type {self.db_type}.")
+
+    # def pull(self):
+    #     if self.db_type == "lmdb":
+    #         ...
+    #     elif self.db_type == "leveldb":
+    #         ...
+    #     elif self.db_type == "remote":
+    #         ...
+    #     else:
+    #         traceback.print_exc()
+    #         raise ValueError(f"Unsupported DB type {self.db_type}.")
 
     def close(self):
         """
@@ -267,6 +291,14 @@ class RemoteTransaction:
         if raw_data == b"iamnull123":
             return default
         return raw_data
+
+    # def get_batch(self, keys: list[bytes]):
+    #     url = f"/get_batch?db_name={self.db_name}"
+    #     response = self.client.post(url, content=encode({"keys": keys}))
+    #     if not response.is_success:
+    #         raise RuntimeError
+    #     raw_data = response.read()
+    #     return decode(raw_data)  # non bytes
 
     def __enter__(self):
         return self

@@ -1,17 +1,34 @@
+# Copyright (c) 2023 K.Y. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+from __future__ import annotations
+
 import traceback
 
 import msgspec
 from litestar import Litestar, MediaType, Request, get, post, status_codes
 from litestar.exceptions import HTTPException
 from litestar.openapi import OpenAPIConfig
-from litestar.response import ServerSentEvent, Stream
 
 from .. import __version__
-from ..decorators import msg_encoder
+from ..pack import encode
 from .interface import (
     AttachRequest,
     DetachRequest,
     StructDeleteBatchData,
+    StructGetBatchData,
     StructSetBatchData,
     StructSetData,
 )
@@ -83,11 +100,11 @@ async def _set_batch(db_name: str, request: Request) -> None:
     data = await request.body()
     try:
         data = msgspec.msgpack.decode(data, type=StructSetBatchData)
+        for key, value in data.data.items():
+            db[key] = value
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-    for key, value in data.data.items():
-        db[key] = value
 
 
 @post("/get", media_type=MediaType.TEXT)
@@ -98,6 +115,15 @@ async def _get(db_name: str, request: Request) -> bytes:
     if value is None:
         return b'iamnull123'
     return value
+
+
+@post("/get_batch", media_type=MediaType.TEXT)
+async def _get_batch(db_name: str, request: Request) -> bytes:
+    db = get_db(db_name)
+    data = await request.body()
+    data = msgspec.msgpack.decode(data, type=StructGetBatchData)
+    values = db.get_batch(data.keys)
+    return encode(values)
 
 
 @post("/delete")
@@ -125,33 +151,30 @@ async def _delete_batch(db_name: str, request: Request) -> None:
 
 
 @get("/keys", media_type=MediaType.TEXT)
-@msg_encoder
 async def _keys(db_name: str) -> bytes:
     db = get_db(db_name)
     try:
-        return db.keys()
+        return encode(db.keys())
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @get("/dict", media_type=MediaType.TEXT)
-@msg_encoder
 async def _items(db_name: str) -> bytes:
     db = get_db(db_name)
     try:
-        return db.db_dict()
+        return encode(db.db_dict())
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @get("/stat", media_type=MediaType.TEXT)
-@msg_encoder
 async def _stat(db_name: str) -> bytes:
     db = get_db(db_name)
     try:
-        return db.stat()
+        return encode(db.stat())
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
