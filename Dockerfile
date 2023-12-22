@@ -12,7 +12,7 @@ RUN apk update && \
 COPY . /home/flaxkv
 WORKDIR /home/flaxkv
 #musl-dev
-RUN apk add patch g++ libstdc++ linux-headers leveldb-dev --no-cache && pip install -e . --no-cache-dir && apk del g++ gcc && rm -rf /var/cache/apk/*
+RUN apk add patch g++ libstdc++ linux-headers leveldb-dev --no-cache && pip install -e .[server] --no-cache-dir && apk del g++ gcc && rm -rf /var/cache/apk/*
 
 EXPOSE 8000
 ENTRYPOINT ["python", "-m", "flaxkv.__main__", "run"]

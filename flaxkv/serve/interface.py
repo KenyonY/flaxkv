@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Annotated, Any
+from typing import Dict, List
 
 import msgspec
 from litestar.enums import RequestEncodingType
@@ -38,8 +41,12 @@ class StructSetData(msgspec.Struct):
 
 
 class StructSetBatchData(msgspec.Struct):
-    data: dict[bytes, bytes]
+    data: Dict[bytes, bytes]
+
+
+class StructGetBatchData(msgspec.Struct):
+    keys: List[bytes]
 
 
 class StructDeleteBatchData(msgspec.Struct):
-    keys: list[bytes]
+    keys: List[bytes]

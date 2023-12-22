@@ -12,16 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
+
+from __future__ import annotations
+
 import re
 
 from .core import LevelDBDict, LMDBDict, RemoteDBDict
 
-__version__ = "0.2.0"
+__version__ = "0.2.1-alpha"
 
 __all__ = [
-    "dictdb",
+    "FlaxKV",
     "dbdict",
+    "dictdb",
     "LMDBDict",
     "LevelDBDict",
     "RemoteDBDict",
@@ -30,14 +33,14 @@ __all__ = [
 url_pattern = re.compile(r'^(http://|https://|ftp://)')
 
 
-def dictdb(
+def FlaxKV(
     db_name: str,
     root_path_or_url: str = ".",
     backend='lmdb',
     rebuild=False,
     raw=False,
     **kwargs,
-):
+) -> LMDBDict | LevelDBDict | RemoteDBDict:
     if url_pattern.match(root_path_or_url):
         return RemoteDBDict(
             root_path_or_url=root_path_or_url,
@@ -70,4 +73,5 @@ def dictdb(
         raise ValueError(f"Unsupported DB type {backend}.")
 
 
-dbdict = dictdb
+dbdict = FlaxKV
+dictdb = FlaxKV

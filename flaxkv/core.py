@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import atexit
 import threading
 import traceback
@@ -92,6 +94,7 @@ class BaseDBDict(ABC):
         self.raw = raw
         self._static_view = self._db_manager.new_static_view()
 
+        self._cache_dict = {}
         self.buffer_dict = {}
         self.delete_buffer_set = set()
 
@@ -275,6 +278,7 @@ class BaseDBDict(ABC):
             if key in self.buffer_dict:
                 values.append(self.buffer_dict[key])
                 continue
+
             key = self._encode_key(key)
             value = self._static_view.get(key)
             if value is not None:
@@ -873,3 +877,35 @@ class RemoteDBDict(BaseDBDict):
             'db': db_count,
             'marked_delete': len(self.delete_buffer_set),
         }
+
+    def pull(self):
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            view,
+        ) = self._get_status_info(return_buffer_dict=True, decode_raw=True)
+        self._cache_dict = {}
+        response: Response = view.client.get(f"/dict?db_name={self._db_name}")
+        if not response.is_success:
+            raise ValueError(
+                f"Failed to get items from remote db: {decode(response.read())}"
+            )
+        remote_db_dict = decode(response.read())
+        for dk, dv in remote_db_dict.items():
+            if dk not in delete_buffer_set:
+                self._cache_dict[dk] = dv
+
+        self._cache_dict.update(buffer_dict)
+
+    def get_with_cache(self, key, default=None):
+
+        with self._buffer_lock:
+            if key in self.delete_buffer_set:
+                return default
+
+            if key in self.buffer_dict:
+                return self.buffer_dict[key]
+
+            return self._cache_dict.get(key, default)
