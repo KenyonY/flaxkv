@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 from __future__ import annotations
 
 import atexit
@@ -91,7 +92,11 @@ class BaseDBDict(ABC):
             rebuild=rebuild,
             **kwargs,
         )
-        self.raw = raw
+        self._raw = raw
+        self._register_auto_close()
+        self._init()
+
+    def _init(self):
         self._static_view = self._db_manager.new_static_view()
 
         self._cache_dict = {}
@@ -110,16 +115,20 @@ class BaseDBDict(ABC):
         self._thread = threading.Thread(target=self._background_worker)
         self._thread.daemon = True
 
-        self._register_auto_close()
-
         # Start the background worker
         self._start()
 
-    def _register_auto_close(self):
-        atexit.register(self.close)
+    def _register_auto_close(self, func=None):
+        if func is None:
+            atexit.register(self.close)
+        else:
+            atexit.register(func)
 
-    def _unregister_auto_close(self):
-        atexit.unregister(self.close)
+    def _unregister_auto_close(self, func=None):
+        if func is None:
+            atexit.unregister(self.close)
+        else:
+            atexit.unregister(func)
 
     def _start(self):
         """
@@ -170,7 +179,9 @@ class BaseDBDict(ABC):
             self._write_event.clear()
 
             if not self._write_queue.empty():
-                if self._write_queue.get() is False:
+                is_write = self._write_queue.get()
+                if is_write is False:
+                    self._write_complete.put(True)
                     break
 
             self._write_complete.clear()
@@ -194,29 +205,30 @@ class BaseDBDict(ABC):
             self._write_complete.clear()
             self._write_complete.get(block=True)
 
-    def _close_background_worker(self, write=True):
+    def _close_background_worker(self, write=True, wait=False):
         """
         Stops the background worker thread.
         """
         self._latest_write_num += 1
 
         self._thread_running = False
-        self.write_immediately(write=write)
 
-        self._thread.join(timeout=60)
+        self.write_immediately(write=write, wait=wait)
+
+        self._thread.join(timeout=15)
         if self._thread.is_alive():
             self._logger.warning(
                 "Warning: Background thread did not finish in time. Some data might not be saved."
             )
 
     def _encode_key(self, key):
-        if self.raw:
+        if self._raw:
             return key
         else:
             return encode(key)
 
     def _encode_value(self, value):
-        if self.raw:
+        if self._raw:
             return value
         else:
             return encode(value)
@@ -245,7 +257,7 @@ class BaseDBDict(ABC):
             if value is None:
                 return default
 
-            return value if self.raw else decode(value)
+            return value if self._raw else decode(value)
 
     def get_db_value(self, key: str):
         """
@@ -335,7 +347,7 @@ class BaseDBDict(ABC):
             raise ValueError("Input must be a dictionary.")
         with self._buffer_lock:
             for key, value in d.items():
-                if self.raw:
+                if self._raw:
                     key, value = encode(key), encode(value)
                 self.buffer_dict[key] = value
                 self.delete_buffer_set.discard(key)
@@ -368,7 +380,7 @@ class BaseDBDict(ABC):
                 )
                 return
             else:
-                # ensure atomicity
+                # ensure atomicity (shallow copy)
                 buffer_dict_snapshot = self.buffer_dict.copy()
                 delete_buffer_set_snapshot = self.delete_buffer_set.copy()
         # ensure atomicity
@@ -396,7 +408,8 @@ class BaseDBDict(ABC):
             self._db_manager.close_static_view(self._static_view)
             self._static_view = self._db_manager.new_static_view()
             self._logger.info(
-                f"write {self._db_manager.db_type.upper()} buffer to db successfully-{current_write_num=}-{self._latest_write_num=}"
+                f"write {self._db_manager.db_type.upper()} buffer to db successfully! "
+                f"current_num={current_write_num} latest_num={self._latest_write_num}"
             )
 
     def __iter__(self):
@@ -465,7 +478,7 @@ class BaseDBDict(ABC):
                 self._buffered_count += 1
                 if key in self.buffer_dict:
                     value = self.buffer_dict.pop(key)
-                    if self.raw:
+                    if self._raw:
                         return decode(value)
                     else:
                         return value
@@ -496,30 +509,15 @@ class BaseDBDict(ABC):
                 self._static_view.get(key) is not None
             )  # self._static_view.get() return a binary value or None
 
-    def clear(self):
+    def clear(self, wait=True):
         """
         Clears the database and resets the buffer.
         """
-        with self._buffer_lock:
-            self._db_manager.close_static_view(self._static_view)
-            self._db_manager.close()
-            self._close_background_worker(write=False)
+
+        self.close(write=False, wait=wait)
 
         self._db_manager.rebuild_db()
-        self._static_view = self._db_manager.new_static_view()
-
-        self._buffered_count = 0
-        self.buffer_dict = {}
-        self.delete_buffer_set = set()
-        self._buffer_lock = threading.Lock()
-
-        self._write_event = threading.Event()
-        self._latest_write_num = 0
-        self._thread_running = True
-        self._thread = threading.Thread(target=self._background_worker)
-        self._thread.daemon = True
-
-        self._start()
+        self._init()
 
     def destroy(self):
         """
@@ -537,19 +535,20 @@ class BaseDBDict(ABC):
         self.close(write=True)
 
     def __repr__(self):
-        return str(dict(self.items()))
+        return str(self.db_dict())
 
     def __len__(self):
         return self.stat()['count']
 
-    def close(self, write=True):
+    def close(self, write=True, wait=False):
         """
         Closes the database and stops the background worker.
 
         Args:
             write (bool, optional): Whether to write the buffer to the database before closing. Defaults to True.
+            wait (bool, optional): Whether to wait for the background worker to finish. Defaults to False.
         """
-        self._close_background_worker(write=write)
+        self._close_background_worker(write=write, wait=wait)
 
         self._db_manager.close_static_view(self._static_view)
         self._db_manager.close()
@@ -562,29 +561,30 @@ class BaseDBDict(ABC):
         return_buffer_dict=False,
         decode_raw=True,
     ):
+        # shallow copy buffer data
         with self._buffer_lock:
             static_view = self._db_manager.new_static_view()
             buffer_dict = self.buffer_dict.copy()
             delete_buffer_set = self.delete_buffer_set.copy()
 
-        if self.raw and decode_raw:
+        if self._raw and decode_raw:
             delete_buffer_set = set([decode_key(i) for i in delete_buffer_set])
 
         buffer_keys, buffer_values = None, None
         if return_key:
-            if self.raw and decode_raw:
+            if self._raw and decode_raw:
                 buffer_keys = set([decode_key(i) for i in buffer_dict.keys()])
             else:
                 buffer_keys = set(buffer_dict.keys())
         if return_value:
-            if self.raw and decode_raw:
+            if self._raw and decode_raw:
                 buffer_values = list([decode(i) for i in buffer_dict.values()])
             else:
                 buffer_values = list(self.buffer_dict.values())
         if not return_buffer_dict:
             buffer_dict = None
         else:
-            if self.raw and decode_raw:
+            if self._raw and decode_raw:
                 buffer_dict = {decode_key(k): decode(v) for k, v in buffer_dict.items()}
 
         return buffer_dict, buffer_keys, buffer_values, delete_buffer_set, static_view
