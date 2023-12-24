@@ -69,7 +69,7 @@ You can use it just like a Python dictionary without having to worry about block
 
 ```bash
 pip install flaxkv 
-# Or pip install flaxkv[server]
+# Install with server version: pip install flaxkv[server]
 ```
 ### Usage
 
@@ -78,8 +78,13 @@ from flaxkv import dictdb
 import numpy as np
 
 db = dictdb('test_db')
-# or run server `flaxkv run --port 8000`, then:
-# db = dictdb('test_db', root_path_or_url='http://localhost:8000')
+"""
+Or start as a server
+>>> flaxkv run --port 8000
+
+Client call:
+db = dictdb('test_db', root_path_or_url='http://localhost:8000')
+"""
 
 db[1] = 1
 db[1.1] = 1 / 3

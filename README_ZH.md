@@ -72,7 +72,7 @@
 ### 安装
 ```bash
 pip install flaxkv
-# Or pip install flaxkv[server]
+# 安装带服务端版本：pip install flaxkv[server]
 ```
 
 ### 使用
@@ -82,8 +82,14 @@ from flaxkv import dictdb
 import numpy as np
 
 db = dictdb('test_db')
-# or run server `flaxkv run --port 8000`, then:
-# db = dictdb('test_db', root_path_or_url='http://localhost:8000')
+
+"""
+或者作为服务端启动
+>>> flaxkv run --port 8000
+
+客户端调用:
+db = dictdb('test_db', root_path_or_url='http://localhost:8000')
+"""
 
 db[1] = 1
 db[1.1] = 1 / 3
