@@ -36,8 +36,10 @@ def start_server():
 @pytest.fixture(
     scope="function",
     params=[
-        dict(db_name="test_server_db", backend="lmdb", rebuild=True),
-        dict(db_name="test_server_db", backend="leveldb", rebuild=True),
+        dict(db_name="test_server_db", backend="lmdb", rebuild=True, cache=False),
+        dict(db_name="test_server_db", backend="leveldb", rebuild=True, cache=False),
+        dict(db_name="test_server_db", backend="lmdb", rebuild=True, cache=True),
+        dict(db_name="test_server_db", backend="leveldb", rebuild=True, cache=True),
     ],
 )
 def temp_db(request):
@@ -49,6 +51,7 @@ def temp_db(request):
         db_name=request.param["db_name"],
         backend=request.param["backend"],
         rebuild=request.param["rebuild"],
+        cache=request.param["cache"],
         # client=TestClient(app=app),
     )
     yield db
