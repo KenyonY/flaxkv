@@ -37,8 +37,8 @@ if TYPE_CHECKING:
 
 
 class BaseDBDict(ABC):
-    MAX_BUFFER_SIZE = 100
-    COMMIT_TIME_INTERVAL = 60 * 60 * 12
+    MAX_BUFFER_SIZE = 100  # unit: number of keys
+    COMMIT_TIME_INTERVAL = 60 * 60 * 12  # unit: second
     _logger = logger
 
     # Unused
@@ -123,7 +123,6 @@ class BaseDBDict(ABC):
         if self._cache_all_data:
             # load from db
             self._cache_dict = self._get_db_data_dict()
-            print(f"{self._cache_dict=}")
 
     def _register_auto_close(self, func=None):
         if func is None:
