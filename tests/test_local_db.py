@@ -42,7 +42,7 @@ def temp_db(request):
 
 
 def test_set_get_write(temp_db):
-    if isinstance(temp_db, type(None)):
+    if temp_db is None:
         pytest.skip("Skipping")
 
     target_dict = dict(
@@ -87,7 +87,7 @@ def test_set_get_write(temp_db):
 
 
 def test_numpy_array(temp_db):
-    if isinstance(temp_db, type(None)):
+    if temp_db is None:
         pytest.skip("Skipping")
 
     target_dict = {
@@ -111,7 +111,7 @@ def test_numpy_array(temp_db):
 
 
 def test_large_value(temp_db):
-    if isinstance(temp_db, type(None)):
+    if temp_db is None:
         pytest.skip("Skipping")
 
     target_dict = {
@@ -130,7 +130,7 @@ def test_large_value(temp_db):
 
 
 def test_setdefault(temp_db):
-    if isinstance(temp_db, type(None)):
+    if temp_db is None:
         pytest.skip("Skipping")
     temp_db.setdefault("test_key", "test_value")
     temp_db.setdefault("test_key", "another_value0")
@@ -145,7 +145,7 @@ def test_setdefault(temp_db):
 
 
 def test_update(temp_db):
-    if isinstance(temp_db, type(None)):
+    if temp_db is None:
         pytest.skip("Skipping")
     temp_db.update({"test_key": "test_value"})
     assert temp_db.get("test_key") == "test_value"
@@ -162,7 +162,7 @@ def test_update(temp_db):
 
 
 def test_buffered_writing(temp_db):
-    if isinstance(temp_db, type(None)):
+    if temp_db is None:
         pytest.skip("Skipping")
     temp_db.MAX_BUFFER_SIZE = 10
     extra_len = 6
@@ -176,7 +176,7 @@ def test_buffered_writing(temp_db):
 
 
 def test_key_checks_and_deletion(temp_db):
-    if isinstance(temp_db, type(None)):
+    if temp_db is None:
         pytest.skip("Skipping")
     target_dict = {"key1": "value1", "key2": "value2", "key3": "value3"}
     temp_db.update(target_dict)
@@ -200,7 +200,7 @@ def test_key_checks_and_deletion(temp_db):
 
 
 def test_list_keys_values_items(temp_db):
-    if isinstance(temp_db, type(None)):
+    if temp_db is None:
         pytest.skip("Skipping")
     data = {"key1": "value1", "key2": "value2", "key3": "value3"}
 
