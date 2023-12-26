@@ -57,10 +57,6 @@ You can use it just like a Python dictionary without having to worry about block
 
 - **Thread-Safety**: Employs only necessary locks to ensure safe concurrent access while balancing performance.
 
-## TODO
-
-- [x] Client-Server Architecture
-- [ ] Benchmark
 ---
 
 ## Quick Start
@@ -111,7 +107,7 @@ print(len(db))
 ```
 
 ### Tips
-- `flaxkv` provides performance close to native dictionary (in-memory) access as a persistent database! (There should be a benchmark here)
+- `flaxkv` provides performance close to native dictionary (in-memory) access as a persistent database! (See benchmark below)
 - You may have noticed that in the previous example code, `db.close()` was not used to release resources! Because all this will be automatically handled by `flaxkv`. Of course, you can also manually call db.close() to immediately release resources.
 - Since `flaxkv` saves data by buffered writing, this feature of delayed writing may not write data to the disk in time in some scenarios (such as in Jupyter),
 in this case, you can use `db.write_immediately()` to immediately trigger a write operation.
