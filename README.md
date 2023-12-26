@@ -117,7 +117,16 @@ print(len(db))
 in this case, you can use `db.write_immediately()` to immediately trigger a write operation.
 
 ### Benchmark
-todo
+![benchmark](.github/img/benchmark.png)
+
+Test Content: Write and read traversal for N=10,000 numpy array vectors (each vector is 1000-dimensional). 
+
+Execute the test:
+```bash
+cd benchmark/
+pytest -s -v run.py
+```
+
 
 ### Use Cases
 - **Key-Value Structure:**
