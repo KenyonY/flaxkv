@@ -46,6 +46,7 @@ class DBManager:
         url_pattern = re.compile(r'^(http://|https://|ftp://)')
         if url_pattern.match(root_path_or_url):
             self.db_address = root_path_or_url
+            self.db_name = f"{db_name}-{kwargs.get('backend', 'leveldb')}"
         else:
             self.db_address = os.path.join(
                 root_path_or_url, f"{db_name}-{self.db_type}"
@@ -85,7 +86,7 @@ class DBManager:
             env = RemoteTransaction(
                 base_url=self.db_address,
                 db_name=self.db_name,
-                backend=kwargs.pop("backend", "lmdb"),
+                backend=kwargs.pop("backend", "leveldb"),
                 rebuild=self._rebuild,
                 timeout=kwargs.pop("timeout", 15),
                 **kwargs,
@@ -210,7 +211,7 @@ class RemoteTransaction:
         self,
         base_url: str,
         db_name: str,
-        backend="lmdb",
+        backend="leveldb",
         rebuild=False,
         timeout=15,
         **kwargs,

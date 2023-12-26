@@ -19,7 +19,7 @@ import re
 
 from .core import LevelDBDict, LMDBDict, RemoteDBDict
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     "FlaxKV",
@@ -36,7 +36,7 @@ url_pattern = re.compile(r'^(http://|https://|ftp://)')
 def FlaxKV(
     db_name: str,
     root_path_or_url: str = ".",
-    backend='lmdb',
+    backend='leveldb',
     rebuild=False,
     raw=False,
     **kwargs,

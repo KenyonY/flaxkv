@@ -85,7 +85,6 @@ class BaseDBDict(ABC):
         else:
             logger.disable('flaxkv')
 
-        self._db_name = db_name
         self._db_manager = DBManager(
             db_type=db_type,
             root_path_or_url=root_path_or_url,
@@ -93,6 +92,7 @@ class BaseDBDict(ABC):
             rebuild=rebuild,
             **kwargs,
         )
+        self._db_name = self._db_manager.db_name
         self._raw = raw
         self._cache_all_data = cache
         self._register_auto_close()
