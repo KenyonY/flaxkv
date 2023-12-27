@@ -982,12 +982,14 @@ class RemoteDBDict(BaseDBDict):
             _db_dict = self._cache_dict.copy()
         else:
             _db_dict = {}
-            response: Response = view.client.get(f"/dict?db_name={self._db_name}")
-            if not response.is_success:
-                raise ValueError(
-                    f"Failed to get items from remote db: {decode(response.read())}"
-                )
-            remote_db_dict = decode(response.read())
+            with view.client.stream(
+                "GET", f"/dict_stream?db_name={self._db_name}"
+            ) as r:
+                data_stream = b""
+                for data in r.iter_bytes():
+                    data_stream += data
+
+            remote_db_dict = decode(data_stream)
             for dk, dv in remote_db_dict.items():
                 if dk not in delete_buffer_set:
                     _db_dict[dk] = dv

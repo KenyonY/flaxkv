@@ -15,12 +15,15 @@
 
 from __future__ import annotations
 
+import io
 import traceback
+from typing import AsyncGenerator
 
 import msgspec
 from litestar import Litestar, MediaType, Request, get, post, status_codes
 from litestar.exceptions import HTTPException
 from litestar.openapi import OpenAPIConfig
+from litestar.response import Stream
 
 from .. import __version__
 from ..pack import encode
@@ -161,10 +164,26 @@ async def _keys(db_name: str) -> bytes:
 
 
 @get("/dict", media_type=MediaType.TEXT)
-async def _items(db_name: str) -> bytes:
+async def _dict(db_name: str) -> bytes:
     db = get_db(db_name)
     try:
         return encode(db.db_dict())
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@get("/dict_stream", media_type=MediaType.TEXT)
+async def _dict_stream(db_name: str) -> Stream:
+    async def my_generator(data: bytes, chunk_size=4096) -> AsyncGenerator[bytes, None]:
+        with io.BytesIO(data) as data_io:
+            while chunk := data_io.read(chunk_size):
+                yield chunk
+
+    db = get_db(db_name)
+    try:
+        result_bin = encode(db.db_dict())
+        return Stream(my_generator(result_bin))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -199,7 +218,8 @@ app = Litestar(
         _delete,
         _delete_batch,
         _keys,
-        _items,
+        _dict,
+        _dict_stream,
         _stat,
     ],
     on_startup=[on_startup],
