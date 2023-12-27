@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import shutil
 import sqlite3
 
@@ -19,9 +20,16 @@ from .pack import decode, decode_key, encode
 
 
 class SQLiteDict:
+    from pathlib import Path
+
+    root_path = Path("./SQLiteDB")
+    if not root_path.exists():
+        root_path.mkdir(parents=True, exist_ok=True)
+
     def __init__(self, filename=None):
-        self._filename = filename
-        self._conn = self._connect(filename)
+
+        self._filename = str(self.root_path / filename)
+        self._conn = self._connect(self._filename)
         self._cursor = self._conn.cursor()
         self._cursor.execute(
             "CREATE TABLE IF NOT EXISTS kv (key BLOB PRIMARY KEY, value BLOB)"
@@ -141,3 +149,6 @@ class SQLiteDict:
 
     def __repr__(self):
         return str(dict(self.items()))
+
+    def destroy(self):
+        self.__del__()

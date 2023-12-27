@@ -7,6 +7,8 @@ from pathlib import Path
 
 from rocksdict import Options, Rdict
 
+from flaxkv.pack import decode, encode
+
 
 class RocksDict:
     rdict_path = "./test_rocksdict"
@@ -77,3 +79,48 @@ class ShelveDict:
     def destroy(self):
         self.sd.close()
         shutil.rmtree(self.root_path)
+
+
+class RedisDict:
+    def __init__(self):
+        import redis
+
+        self.client = redis.Redis(host="localhost", port=6379, db=0)
+
+    def __getitem__(self, key):
+        value = self.client.get(key)
+        return decode(value)
+
+    def __setitem__(self, key, value):
+        self.client.set(key, encode(value))
+
+    def __contains__(self, item):
+        return self.client.exists(item)
+
+    def __len__(self):
+        return self.client.dbsize()
+
+    def keys(self):
+        return self.client.keys('*')
+
+    def items(self):
+        ...
+
+    def destroy(self):
+        self.client.flushdb()
+        self.client.close()
+
+
+def wait_for_server_to_start(url, timeout=10):
+    import httpx
+
+    start_time = time.time()
+    while True:
+        try:
+            response = httpx.get(url)
+            response.raise_for_status()
+            break
+        except Exception:
+            time.sleep(0.5)
+            if time.time() - start_time > timeout:
+                raise RuntimeError("Server didn't start in time")

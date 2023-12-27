@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import subprocess
+
 import numpy as np
 import pandas as pd
 import pytest
-from db_class import RocksDict, ShelveDict
+from db_class import RedisDict, RocksDict, ShelveDict, wait_for_server_to_start
 from rich import print
-from sparrow import MeasureTime
+from sparrow import MeasureTime  # pip install sparrow-python
 
 from flaxkv import FlaxKV
+from flaxkv._sqlite import SQLiteDict
+from flaxkv.core import BaseDBDict
 
 benchmark_info = {}
 
-N = 10_000
+N = 100
 
 
 def prepare_data(n):
@@ -21,8 +25,16 @@ def prepare_data(n):
     return d
 
 
-@pytest.fixture(scope="module", autouse=True)
-def print_info(request):
+@pytest.fixture(scope="session", autouse=True)
+def start_up(request):
+    process = subprocess.Popen(["flaxkv", "run"])
+    try:
+        wait_for_server_to_start(url="http://localhost:8000/healthz")
+        yield
+
+    finally:
+        process.kill()
+
     def plot(df: pd.DataFrame):
         import matplotlib.pyplot as plt
 
@@ -69,10 +81,13 @@ def print_info(request):
 @pytest.fixture(
     params=[
         "dict",
-        "flaxkv-LMDB",
-        "flaxkv-LevelDB",
+        "Redis",
         "RocksDict",
         "Shelve",
+        "Sqlite3",
+        "flaxkv-LMDB",
+        "flaxkv-LevelDB",
+        "flaxkv-REMOTE",
     ]
 )
 def temp_db(request):
@@ -81,10 +96,16 @@ def temp_db(request):
         db = FlaxKV('benchmark', backend='lmdb')
     elif request.param == "flaxkv-LevelDB":
         db = FlaxKV('benchmark', backend='leveldb')
+    elif request.param == "flaxkv-REMOTE":
+        db = FlaxKV('benchmark', "http://localhost:8000")
     elif request.param == "RocksDict":
         db = RocksDict()
     elif request.param == "Shelve":
         db = ShelveDict()
+    elif request.param == "Redis":
+        db = RedisDict()
+    elif request.param == "Sqlite3":
+        db = SQLiteDict('benchmark.db')
     elif request.param == "dict":
         db = {}
     else:
@@ -103,6 +124,8 @@ def benchmark(db, db_name, n=200):
     for i, (key, value) in enumerate(data.items()):
         db[key] = value
 
+    if isinstance(db, BaseDBDict):
+        db.write_immediately()
     write_cost = mt.show_interval(f"{db_name} write")
 
     keys = list(db.keys())
