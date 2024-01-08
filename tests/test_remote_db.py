@@ -54,6 +54,7 @@ def temp_db(request):
         cache=request.param["cache"],
         # client=TestClient(app=app),
     )
+    assert len(db) == 0
     yield db
 
 

@@ -178,6 +178,7 @@ def test_buffered_writing(temp_db):
 def test_key_checks_and_deletion(temp_db):
     if temp_db is None:
         pytest.skip("Skipping")
+    assert len(temp_db) == 0
     target_dict = {"key1": "value1", "key2": "value2", "key3": "value3"}
     temp_db.update(target_dict)
     assert "key1" in temp_db
