@@ -103,7 +103,7 @@ def benchmark(db, db_name, n=200):
         db[key] = value
 
     if isinstance(db, BaseDBDict):
-        db.write_immediately(block=True)
+        db.write_immediately()
     write_cost = mt.show_interval(f"{db_name} write")
 
     mt.start()
