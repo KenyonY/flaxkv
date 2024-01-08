@@ -121,8 +121,8 @@ class BaseDBDict(ABC):
         self._thread = threading.Thread(target=self._background_worker)
         self._thread.daemon = True
 
-        self._thread_monitor = threading.Thread(target=self._write_monitor)
-        self._thread_monitor.daemon = True
+        self._thread_write_monitor = threading.Thread(target=self._write_monitor)
+        self._thread_write_monitor.daemon = True
 
         # Start the background worker
         self._start()
@@ -150,7 +150,7 @@ class BaseDBDict(ABC):
         """
         self._thread_running = True
         self._thread.start()
-        self._thread_monitor.start()
+        self._thread_write_monitor.start()
 
     @staticmethod
     def _diff_buffer(a: dict, b: dict):
@@ -219,7 +219,7 @@ class BaseDBDict(ABC):
 
             self._write_complete.put(True)
 
-    def write_immediately(self, write=True, wait=False):
+    def write_immediately(self, write=True, block=False):
         """
         Triggers an immediate write of the buffer to the database.
         """
@@ -227,7 +227,7 @@ class BaseDBDict(ABC):
         self._latest_write_num += 1
         self._write_queue.put(write)
         self._write_event.set()
-        if wait:
+        if block:
             self._write_complete.clear()
             self._write_complete.get(block=True)
 
@@ -237,7 +237,7 @@ class BaseDBDict(ABC):
         """
         self._write_complete.get(block=True, timeout=timeout)
 
-    def _close_background_worker(self, write=True, wait=False):
+    def _close_background_worker(self, write=True, block=False):
         """
         Stops the background worker thread.
         """
@@ -246,10 +246,10 @@ class BaseDBDict(ABC):
 
         self._thread_running = False
 
-        self.write_immediately(write=write, wait=wait)
+        self.write_immediately(write=write, block=block)
 
         self._thread.join(timeout=15)
-        self._thread_monitor.join(timeout=3)
+        self._thread_write_monitor.join(timeout=3)
         if self._thread.is_alive():
             self._logger.warning(
                 "Warning: Background thread did not finish in time. Some data might not be saved."
@@ -469,7 +469,7 @@ class BaseDBDict(ABC):
         """
         Returns an iterator over the keys.
         """
-        return iter(self.keys())
+        return self.keys()
 
     def __getitem__(self, key):
         """
@@ -608,7 +608,7 @@ class BaseDBDict(ABC):
             write (bool, optional): Whether to write the buffer to the database before closing. Defaults to True.
             wait (bool, optional): Whether to wait for the background worker to finish. Defaults to False.
         """
-        self._close_background_worker(write=write, wait=wait)
+        self._close_background_worker(write=write, block=wait)
 
         self._db_manager.close_static_view(self._static_view)
         self._db_manager.close()
@@ -687,6 +687,7 @@ class BaseDBDict(ABC):
         Returns: dict
         """
 
+    @abstractmethod
     def items(self, decode_raw=True):
         """
         Retrieves all the key-value pairs in the database and buffer.
@@ -694,8 +695,6 @@ class BaseDBDict(ABC):
         Returns:
             list: A list of key-value pairs
         """
-        _db_dict = self.db_dict(decode_raw=decode_raw)
-        return _db_dict.items()
 
     @abstractmethod
     def stat(self, *args, **kwargs):
@@ -752,17 +751,53 @@ class LMDBDict(BaseDBDict):
             decode_raw=decode_raw,
         )
 
+        for key in buffer_keys:
+            yield key
+
         if self._cache_all_db:
             # `view` is None
-            lmdb_keys = set(key for key in self._cache_dict.keys())
+            for key in self._cache_dict.keys():
+                if key not in delete_buffer_set and key not in buffer_keys:
+                    yield key
         else:
             cursor = view.cursor()
-            lmdb_keys = set(
-                decode_key(key) for key in cursor.iternext(keys=True, values=False)
-            )
+            for key in cursor.iternext(keys=True, values=False):
+                d_key = decode_key(key)
+                if d_key not in delete_buffer_set and key not in buffer_keys:
+                    yield d_key
             self._db_manager.close_static_view(view)
 
-        return list(lmdb_keys.union(buffer_keys) - delete_buffer_set)
+    def items(self, decode_raw=True):
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            view,
+        ) = self._get_status_info(
+            return_key=True,
+            return_buffer_dict=True,
+            return_view=False if self._cache_all_db else True,
+            decode_raw=decode_raw,
+        )
+        for key, value in buffer_dict.items():
+            if key not in delete_buffer_set:
+                yield key, value
+
+        if self._cache_all_db:
+            for (
+                key,
+                value,
+            ) in self._cache_dict.items():  # Attention: dict.items() is a dynamic view
+                if key not in delete_buffer_set and key not in buffer_keys:
+                    yield key, value
+        else:
+            cursor = view.cursor()
+            for key, value in cursor.iternext(keys=True, values=True):
+                dk = decode_key(key)
+                if dk not in delete_buffer_set and key not in buffer_keys:
+                    yield dk, decode(value)
+            self._db_manager.close_static_view(view)
 
     def db_dict(self, decode_raw=True):
         (
@@ -857,10 +892,6 @@ class LevelDBDict(BaseDBDict):
         )
 
     def keys(self, decode_raw=True):
-        db_keys, buffer_keys, delete_buffer_set = self._parts_keys(decode_raw)
-        return list(db_keys.union(buffer_keys) - delete_buffer_set)
-
-    def _parts_keys(self, decode_raw=True):
         (
             buffer_dict,
             buffer_keys,
@@ -869,14 +900,53 @@ class LevelDBDict(BaseDBDict):
             view,
         ) = self._get_status_info(return_key=True, decode_raw=decode_raw)
 
+        for key in buffer_keys:
+            if key not in delete_buffer_set:
+                yield key
+
         if self._cache_all_db:
             # `view` is None
-            db_keys = set(key for key in self._cache_dict.keys())
+            for key in self._cache_dict.keys():
+                if key not in delete_buffer_set and key not in buffer_keys:
+                    yield key
         else:
-            db_keys = set(decode_key(key) for key, _ in view.iterator())
+            for key, _ in view.iterator():
+                d_key = decode_key(key)
+                if d_key not in delete_buffer_set and key not in buffer_keys:
+                    yield d_key
             self._db_manager.close_static_view(view)
 
-        return db_keys, buffer_keys, delete_buffer_set
+    def items(self, decode_raw=True):
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            view,
+        ) = self._get_status_info(
+            return_key=True,
+            return_buffer_dict=True,
+            return_view=False if self._cache_all_db else True,
+            decode_raw=decode_raw,
+        )
+        for key, value in buffer_dict.items():
+            if key not in delete_buffer_set:
+                yield key, value
+
+        if self._cache_all_db:
+            for (
+                key,
+                value,
+            ) in self._cache_dict.items():  # Attention: dict.items() is a dynamic view
+                if key not in delete_buffer_set and key not in buffer_keys:
+                    yield key, value
+        else:
+            _db_dict = {}
+            for key, value in view.iterator():
+                dk = decode_key(key)
+                if dk not in delete_buffer_set and key not in buffer_keys:
+                    yield dk, decode(value)
+            self._db_manager.close_static_view(view)
 
     def db_dict(self, decode_raw=True):
         (
@@ -1006,7 +1076,7 @@ class RemoteDBDict(BaseDBDict):
             **kwargs,
         )
 
-    def keys(self, decode_raw=True):
+    def keys(self, fetch_all=True, decode_raw=True):
         (
             buffer_dict,
             buffer_keys,
@@ -1019,21 +1089,39 @@ class RemoteDBDict(BaseDBDict):
             decode_raw=decode_raw,
         )
 
+        for key in buffer_keys:
+            if key not in delete_buffer_set:
+                yield key
+
         if self._cache_all_db:
-            db_keys = set(self._cache_dict.keys())
+            for key in self._cache_dict.keys():
+                if key not in delete_buffer_set and key not in buffer_keys:
+                    yield key
+
         else:
-            with view.client.stream(
-                "GET", f"/keys_stream?db_name={self._db_name}"
-            ) as r:
-                data_stream = b""
-                for data in r.iter_bytes():
-                    data_stream += data
+            if fetch_all:
+                with view.client.stream(
+                    "GET", f"/keys_stream?db_name={self._db_name}"
+                ) as r:
+                    data_stream = b""
+                    for data in r.iter_bytes():
+                        data_stream += data
 
-            db_keys = set(decode_key(data_stream))
+                db_keys = set(decode_key(data_stream))
+                for key in db_keys - delete_buffer_set - buffer_keys:
+                    yield key
 
-        # self._db_manager.close_static_view(view)
+            else:
+                raise NotImplementedError
 
-        return list(db_keys.union(buffer_keys) - delete_buffer_set)
+            # self._db_manager.close_static_view(view)
+
+    def items(self, fetch_all=True, decode_raw=True):
+        if fetch_all:
+            _db_dict = self.db_dict(decode_raw=decode_raw)
+            return _db_dict.items()
+        else:
+            raise NotImplementedError
 
     def db_dict(self, decode_raw=True):
         (

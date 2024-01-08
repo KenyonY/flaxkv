@@ -183,7 +183,7 @@ async def _delete_batch(db_name: str, request: Request) -> None:
 async def _keys(db_name: str) -> bytes:
     db = get_db(db_name)
     try:
-        return encode(db.keys())
+        return encode(list(db.keys()))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -199,7 +199,9 @@ async def _dict(db_name: str) -> bytes:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def stream_generator(data: bytes, chunk_size=2048) -> AsyncGenerator[bytes, None]:
+async def stream_generator(
+    data: bytes, chunk_size=1024 * 1024
+) -> AsyncGenerator[bytes, None]:
     with io.BytesIO(data) as data_io:
         while chunk := data_io.read(chunk_size):
             yield chunk
@@ -209,7 +211,7 @@ async def stream_generator(data: bytes, chunk_size=2048) -> AsyncGenerator[bytes
 async def _keys_stream(db_name: str) -> Stream:
     db = get_db(db_name)
     try:
-        result_bin = encode(db.keys())
+        result_bin = encode(list(db.keys()))
         return Stream(stream_generator(result_bin))
     except Exception as e:
         traceback.print_exc()

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shelve
 import shutil
-import time
 from pathlib import Path
 
 from rocksdict import Options, Rdict
@@ -104,23 +103,13 @@ class RedisDict:
         return self.client.keys('*')
 
     def items(self):
-        ...
+        keys = self.keys()
+        # values = self.client.mget(keys)
+        # for key, value in zip(keys, values):
+        #     yield key, decode(value)
+        for key in keys:
+            yield key, self[key]
 
     def destroy(self):
         self.client.flushdb()
         self.client.close()
-
-
-def wait_for_server_to_start(url, timeout=10):
-    import httpx
-
-    start_time = time.time()
-    while True:
-        try:
-            response = httpx.get(url)
-            response.raise_for_status()
-            break
-        except Exception:
-            time.sleep(0.5)
-            if time.time() - start_time > timeout:
-                raise RuntimeError("Server didn't start in time")

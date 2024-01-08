@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import random
+import shutil
 import subprocess
+import time
 
 import numpy as np
 import pandas as pd
 import pytest
-from db_class import RedisDict, RocksDict, ShelveDict, wait_for_server_to_start
+from dbclass import RedisDict, RocksDict, ShelveDict
+from helpers import plot, wait_for_server_to_start
 from rich import print
 from sparrow import MeasureTime  # pip install sparrow-python
 
@@ -15,18 +19,22 @@ from flaxkv.core import BaseDBDict
 
 benchmark_info = {}
 
-N = 100
+N = 1000
 
 
-def prepare_data(n):
-    d = {}
+def prepare_data(n, key_only=False):
+    import numpy as np
+
     for i in range(n):
-        d[f'vector-{i}'] = np.random.rand(1000)
-    return d
+        if key_only:
+            yield f'vector-{i}'
+        else:
+            # yield (f'vector-{i}', f"{i}")
+            yield (f'vector-{i}', np.random.rand(1000))
 
 
 @pytest.fixture(scope="session", autouse=True)
-def start_up(request):
+def startup_and_shutdown(request):
     process = subprocess.Popen(["flaxkv", "run"])
     try:
         wait_for_server_to_start(url="http://localhost:8000/healthz")
@@ -35,47 +43,16 @@ def start_up(request):
     finally:
         process.kill()
 
-    def plot(df: pd.DataFrame):
-        import matplotlib.pyplot as plt
-
-        # df.plot(kind="bar", figsize=(10, 7))
-        df.reset_index(inplace=True)
-        plt.figure(figsize=(10, 6))
-        write_color = '#ADD8E6'
-        read_color = '#3EB489'
-        plt.bar(
-            df["index"],
-            df["write"],
-            width=0.4,
-            color=write_color,
-            label='Write',
-            align='center',
-        )
-        plt.bar(
-            df["index"],
-            df["read"],
-            width=0.4,
-            color=read_color,
-            label='Read',
-            align='edge',
-        )
-
-        plt.title(f"Read and Write (N={N}) 1000-dim vectors")
-        plt.xlabel("DB Type")
-        plt.ylabel("Time (seconds)")
-        plt.yscale('log')
-        plt.xticks(rotation=20)
-        plt.legend(title="Operation")
-        plt.show()
-
-    def print_result():
+    def process_result():
+        shutil.rmtree("FLAXKV_DB", ignore_errors=True)
+        shutil.rmtree("SQLiteDB", ignore_errors=True)
         df = pd.DataFrame(benchmark_info).T
-        df = df.sort_values(by="read", ascending=True)
-        print()
-        print(df)
-        plot(df)
+        df = df.sort_values(by="write", ascending=True)
+        print("\n", df)
+        title = f"Read and Write ({N=}) 1000-dim vectors"
+        plot(df, title, log=True)
 
-    request.addfinalizer(print_result)
+    request.addfinalizer(process_result)
 
 
 @pytest.fixture(
@@ -83,15 +60,14 @@ def start_up(request):
         "dict",
         "Redis",
         "RocksDict",
-        "Shelve",
-        "Sqlite3",
-        "flaxkv-LMDB",
+        # "Shelve",
+        # "Sqlite3",
+        # "flaxkv-LMDB",
         "flaxkv-LevelDB",
         "flaxkv-REMOTE",
     ]
 )
 def temp_db(request):
-
     if request.param == "flaxkv-LMDB":
         db = FlaxKV('benchmark', backend='lmdb')
     elif request.param == "flaxkv-LevelDB":
@@ -119,24 +95,28 @@ def temp_db(request):
 
 def benchmark(db, db_name, n=200):
     print("\n--------------------------")
-    data = prepare_data(n)
+    idx = 0
+    data = dict(prepare_data(n))
     mt = MeasureTime().start()
-    for i, (key, value) in enumerate(data.items()):
+    for key, value in data.items():
+        idx += 1
         db[key] = value
 
     if isinstance(db, BaseDBDict):
         db.write_immediately()
     write_cost = mt.show_interval(f"{db_name} write")
 
-    keys = list(db.keys())
-    # shuffle keys
-    import random
-
-    random.shuffle(keys)
-
     mt.start()
-    for key in keys:
-        a, b = key, db[key]
+    for key in db.keys():
+        ...
+    mt.show_interval(f"{db_name} read (keys only)")
+    idx = 0
+    for key, value in db.items():
+        idx += 1
+        # print(key, value)
+        # assert value == db[key]
+        # if idx >= 1000:
+        #     break
     read_cost = mt.show_interval(f"{db_name} read (traverse elements) ")
     print("--------------------------")
     return write_cost, read_cost

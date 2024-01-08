@@ -73,7 +73,7 @@ def test_set_get_write(temp_db):
     assert temp_db.stat()['buffer'] == len(target_dict)
     assert temp_db.stat()['count'] == len(target_dict)
 
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
     for key, value in temp_db.items():
         assert target_dict[key] == value
 
@@ -101,7 +101,7 @@ def test_numpy_array(temp_db):
 
     for key, value in target_dict.items():
         assert np.array_equal(temp_db[key], value)
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
 
     assert temp_db.stat()['db'] == len(target_dict)
     assert temp_db.stat()['buffer'] == 0
@@ -124,7 +124,7 @@ def test_large_value(temp_db):
 
     for key, value in target_dict.items():
         assert temp_db[key] == value
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
     for key, value in target_dict.items():
         assert temp_db[key] == value
 
@@ -135,12 +135,12 @@ def test_setdefault(temp_db):
     temp_db.setdefault("test_key", "test_value")
     temp_db.setdefault("test_key", "another_value0")
     assert temp_db.get("test_key") == "test_value"
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
     temp_db.setdefault("test_key", "another_value1")
 
     temp_db['test_key'] = "another_value"
     assert temp_db.get("test_key") == "another_value"
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
     assert temp_db.get("test_key") == "another_value"
 
 
@@ -150,14 +150,14 @@ def test_update(temp_db):
     temp_db.update({"test_key": "test_value"})
     assert temp_db.get("test_key") == "test_value"
 
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
 
     temp_db.update({"test_key": "another_value0"})
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
     assert temp_db.get("test_key") == "another_value0"
 
     temp_db.update({"test_key": "another_value1"})
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
     assert temp_db.get("test_key") == "another_value1"
 
 
@@ -182,19 +182,19 @@ def test_key_checks_and_deletion(temp_db):
     target_dict = {"key1": "value1", "key2": "value2", "key3": "value3"}
     temp_db.update(target_dict)
     assert "key1" in temp_db
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
     assert "key1" in temp_db
 
     del temp_db["key1"]
     assert "key1" not in temp_db
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
     assert "key1" not in temp_db
 
     value = temp_db.pop("key2")
     assert value == "value2"
 
     assert "key2" not in temp_db
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
     assert "key2" not in temp_db
 
     assert len(temp_db) == 1
@@ -211,7 +211,7 @@ def test_list_keys_values_items(temp_db):
     assert set(temp_db.values()) == set(data.values())
     assert set(temp_db.items()) == set(data.items())
 
-    temp_db.write_immediately(wait=True)
+    temp_db.write_immediately(block=True)
 
     assert set(temp_db.keys()) == set(data.keys())
     assert set(temp_db.values()) == set(data.values())

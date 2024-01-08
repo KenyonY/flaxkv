@@ -88,22 +88,18 @@ class SQLiteDict:
     def __iter__(self):
         return iter(self.keys())
 
-    @staticmethod
-    def close_conn_and_cursor(conn, cursor):
-        if conn:
-            conn.close()
-        if cursor:
-            cursor.close()
+    def close_conn_and_cursor(self):
+        try:
+            self._conn.close()
+        except:
+            ...
+        try:
+            self._cursor.close()
+        except:
+            ...
 
     def close(self):
-        if self._conn:
-            self._conn.commit()  # Commit any pending changes
-        if self._cursor:
-            self._cursor.close()
-            self._cursor = None
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        self.close_conn_and_cursor()
 
     def __enter__(self):
         return self
@@ -117,8 +113,7 @@ class SQLiteDict:
             self.close()
 
     def __del__(self):
-        self.clear()
-        self.close()
+        self.close_conn_and_cursor()
         if self._filename:
             shutil.rmtree(self._filename, ignore_errors=True)
 
