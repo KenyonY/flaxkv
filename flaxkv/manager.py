@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import shutil
@@ -56,7 +57,7 @@ class DBManager:
             if not root_path.exists():
                 root_path.mkdir(parents=True, exist_ok=True)
 
-            if rebuild:
+            if self._rebuild:
                 self.destroy()
 
         self.env = self.connect(**kwargs)
@@ -266,8 +267,12 @@ class RemoteTransaction:
         self.delete_buffer_set.add(key)
 
     def _put_batch(self):
-        url = f"/set_batch?db_name={self.db_name}"
-        response = self.client.post(url, content=encode({"data": self.put_buffer_dict}))
+        byte_data = encode({"data": self.put_buffer_dict})
+        with io.BytesIO(byte_data) as f:
+            url = "/set_batch_stream"
+            files = {'file': (self.db_name, f)}
+            response = self.client.post(url, files=files)
+
         if not response.is_success:
             # todo: retry
             raise RuntimeError

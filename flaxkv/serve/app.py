@@ -21,9 +21,13 @@ from typing import AsyncGenerator
 
 import msgspec
 from litestar import Litestar, MediaType, Request, get, post, status_codes
+from litestar.datastructures import UploadFile
+from litestar.enums import RequestEncodingType
 from litestar.exceptions import HTTPException
 from litestar.openapi import OpenAPIConfig
+from litestar.params import Body
 from litestar.response import Stream
+from typing_extensions import Annotated
 
 from .. import __version__
 from ..pack import encode
@@ -36,6 +40,10 @@ from .interface import (
     StructSetData,
 )
 from .manager import DBManager
+
+# from typing import Any, Dict
+# from litestar.serialization import decode_json, decode_msgpack
+
 
 db_manager = DBManager(root_path="./FLAXKV_DB", raw_mode=True)
 
@@ -110,6 +118,24 @@ async def _set_batch(db_name: str, request: Request) -> None:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@post("/set_batch_stream", media_type=MediaType.TEXT)
+async def _set_batch_stream(
+    data: Annotated[UploadFile, Body(media_type=RequestEncodingType.MULTI_PART)],
+) -> None:
+    # litestar >= 2.5.0 fixed: https://github.com/litestar-org/litestar/issues/2939
+    content = await data.read()
+    db_name = data.filename
+    db = get_db(db_name)
+
+    try:
+        content = msgspec.msgpack.decode(content, type=StructSetBatchData)
+        for key, value in content.data.items():
+            db[key] = value
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @post("/get", media_type=MediaType.TEXT)
 async def _get(db_name: str, request: Request) -> bytes:
     db = get_db(db_name)
@@ -173,17 +199,44 @@ async def _dict(db_name: str) -> bytes:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def stream_generator(data: bytes, chunk_size=2048) -> AsyncGenerator[bytes, None]:
+    with io.BytesIO(data) as data_io:
+        while chunk := data_io.read(chunk_size):
+            yield chunk
+
+
+@get("/keys_stream", media_type=MediaType.TEXT)
+async def _keys_stream(db_name: str) -> Stream:
+    db = get_db(db_name)
+    try:
+        result_bin = encode(db.keys())
+        return Stream(stream_generator(result_bin))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@post("/get_batch_stream", media_type=MediaType.TEXT)
+async def _get_batch_stream(db_name: str, request: Request) -> Stream:
+    db = get_db(db_name)
+    data = await request.body()
+    try:
+        data = msgspec.msgpack.decode(data, type=StructGetBatchData)
+        values = db.get_batch(data.keys)
+        result_bin = encode(values)
+        return Stream(stream_generator(result_bin))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @get("/dict_stream", media_type=MediaType.TEXT)
 async def _dict_stream(db_name: str) -> Stream:
-    async def my_generator(data: bytes, chunk_size=4096) -> AsyncGenerator[bytes, None]:
-        with io.BytesIO(data) as data_io:
-            while chunk := data_io.read(chunk_size):
-                yield chunk
 
     db = get_db(db_name)
     try:
         result_bin = encode(db.db_dict())
-        return Stream(my_generator(result_bin))
+        return Stream(stream_generator(result_bin))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -213,11 +266,14 @@ app = Litestar(
         attach,
         detach,
         _get,
+        _get_batch_stream,
         _set,
         _set_batch,
+        _set_batch_stream,
         _delete,
         _delete_batch,
         _keys,
+        _keys_stream,
         _dict,
         _dict_stream,
         _stat,
