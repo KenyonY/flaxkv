@@ -38,12 +38,14 @@ class Cli:
 
         uvicorn.run(
             app="flaxkv.serve.app:app",
-            host="0.0.0.0",
+            host=kwargs.get("host", "0.0.0.0"),
             port=port,
             workers=workers,
             app_dir="..",
             ssl_keyfile=kwargs.get("ssl_keyfile", None),
             ssl_certfile=kwargs.get("ssl_certfile", None),
+            use_colors=False,
+            log_level="info",
         )
 
 
