@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import atexit
 import threading
+import time
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -38,7 +39,7 @@ if TYPE_CHECKING:
 
 class BaseDBDict(ABC):
     MAX_BUFFER_SIZE = 100  # unit: number of keys
-    COMMIT_TIME_INTERVAL = 60 * 60 * 12  # unit: second
+    COMMIT_TIME_INTERVAL = 10 * 60  # unit: second
     _logger = logger
 
     # Unused
@@ -94,7 +95,7 @@ class BaseDBDict(ABC):
         )
         self._db_name = self._db_manager.db_name
         self._raw = raw
-        self._cache_all_data = cache
+        self._cache_all_db = cache
         self._register_auto_close()
         self._init()
 
@@ -107,6 +108,10 @@ class BaseDBDict(ABC):
         self._buffered_count = 0
         self._buffer_lock = threading.Lock()
 
+        self._stop_event = threading.Event()
+
+        self._last_set_time = None
+
         self._write_complete = SimpleQueue(maxsize=1)
         self._write_event = threading.Event()
         self._latest_write_num = 0
@@ -116,11 +121,14 @@ class BaseDBDict(ABC):
         self._thread = threading.Thread(target=self._background_worker)
         self._thread.daemon = True
 
+        self._thread_monitor = threading.Thread(target=self._write_monitor)
+        self._thread_monitor.daemon = True
+
         # Start the background worker
         self._start()
 
         self._cache_dict = {}
-        if self._cache_all_data:
+        if self._cache_all_db:
             # load from db
             self._cache_dict = self._get_db_data_dict()
 
@@ -142,6 +150,7 @@ class BaseDBDict(ABC):
         """
         self._thread_running = True
         self._thread.start()
+        self._thread_monitor.start()
 
     @staticmethod
     def _diff_buffer(a: dict, b: dict):
@@ -175,6 +184,15 @@ class BaseDBDict(ABC):
                         result[key] = value
         return result
 
+    def _write_monitor(self):
+        self._logger.info("Write monitor started")
+        while not self._stop_event.is_set():
+            time.sleep(0.2)
+            if self._last_set_time is not None:
+                if (time.time() - self._last_set_time) >= 0.6:
+                    self._logger.debug("Write monitor triggered")
+                    self.write_immediately()
+
     def _background_worker(self):
         """
         Background worker function to periodically write buffer to the database.
@@ -205,6 +223,8 @@ class BaseDBDict(ABC):
         """
         Triggers an immediate write of the buffer to the database.
         """
+        self._last_set_time = None
+        self._latest_write_num += 1
         self._write_queue.put(write)
         self._write_event.set()
         if wait:
@@ -221,6 +241,7 @@ class BaseDBDict(ABC):
         """
         Stops the background worker thread.
         """
+        self._stop_event.set()
         self._latest_write_num += 1
 
         self._thread_running = False
@@ -228,6 +249,7 @@ class BaseDBDict(ABC):
         self.write_immediately(write=write, wait=wait)
 
         self._thread.join(timeout=15)
+        self._thread_monitor.join(timeout=3)
         if self._thread.is_alive():
             self._logger.warning(
                 "Warning: Background thread did not finish in time. Some data might not be saved."
@@ -263,7 +285,7 @@ class BaseDBDict(ABC):
             if key in self.buffer_dict:
                 return self.buffer_dict[key]
 
-            if self._cache_all_data:
+            if self._cache_all_db:
                 return self._cache_dict.get(key, default)
 
             key = self._encode_key(key)
@@ -306,7 +328,7 @@ class BaseDBDict(ABC):
                 values.append(self.buffer_dict[key])
                 continue
 
-            if self._cache_all_data:
+            if self._cache_all_db:
                 value = self._cache_dict.get(key)
             else:
                 key = self._encode_key(key)
@@ -329,12 +351,12 @@ class BaseDBDict(ABC):
             self.delete_buffer_set.discard(key)
 
             self._buffered_count += 1
-            # Trigger immediate write if buffer size exceeds MAX_BUFFER_SIZE
-            if self._buffered_count >= self.MAX_BUFFER_SIZE:
-                self._logger.debug("Trigger immediate write")
-                self._latest_write_num += 1
-                self._buffered_count = 0
-                self.write_immediately()
+        self._last_set_time = time.time()
+        # Trigger immediate write if buffer size exceeds MAX_BUFFER_SIZE
+        if self._buffered_count >= self.MAX_BUFFER_SIZE:
+            self._logger.debug("Trigger immediate write")
+            self._buffered_count = 0
+            self.write_immediately()
 
     def setdefault(self, key, default=None):
         """
@@ -371,12 +393,13 @@ class BaseDBDict(ABC):
                 self.delete_buffer_set.discard(key)
 
             self._buffered_count += 1
-            # Trigger immediate write if buffer size exceeds MAX_BUFFER_SIZE
-            if self._buffered_count >= self.MAX_BUFFER_SIZE:
-                print("Trigger immediate write")
-                self._latest_write_num += 1
-                self._buffered_count = 0
-                self.write_immediately()
+
+        self._last_set_time = time.time()
+        # Trigger immediate write if buffer size exceeds MAX_BUFFER_SIZE
+        if self._buffered_count >= self.MAX_BUFFER_SIZE:
+            self._logger.debug("Trigger immediate write")
+            self._buffered_count = 0
+            self.write_immediately()
 
     # @class_measure_time()
     def _write_buffer_to_db(
@@ -407,7 +430,7 @@ class BaseDBDict(ABC):
             try:
                 for key in delete_buffer_set_snapshot:
                     # delete from cache dict
-                    if self._cache_all_data:
+                    if self._cache_all_db:
                         cache_dict.pop(key)
 
                     # delete from db
@@ -415,7 +438,7 @@ class BaseDBDict(ABC):
                     wb.delete(key)
                 for key, value in buffer_dict_snapshot.items():
                     # set key, value to cache
-                    if self._cache_all_data:
+                    if self._cache_all_db:
                         cache_dict[key] = value
 
                     # set key, value to db
@@ -485,6 +508,7 @@ class BaseDBDict(ABC):
             with self._buffer_lock:
                 self.delete_buffer_set.add(key)
                 self._buffered_count += 1
+                self._last_set_time = time.time()
                 if key in self.buffer_dict:
                     del self.buffer_dict[key]
                     return
@@ -506,6 +530,7 @@ class BaseDBDict(ABC):
             with self._buffer_lock:
                 self.delete_buffer_set.add(key)
                 self._buffered_count += 1
+                self._last_set_time = time.time()
                 if key in self.buffer_dict:
                     value = self.buffer_dict.pop(key)
                     if self._raw:
@@ -536,7 +561,7 @@ class BaseDBDict(ABC):
             if key in self.delete_buffer_set:
                 return False
 
-            if self._cache_all_data:
+            if self._cache_all_db:
                 return key in self._cache_dict
 
             key = self._encode_key(key)
@@ -598,7 +623,7 @@ class BaseDBDict(ABC):
         decode_raw=True,
     ):
         static_view = None
-        buffer_keys, buffer_values = None, None
+        buffer_keys_set, buffer_values_list = None, None
 
         # shallow copy buffer data
         with self._buffer_lock:
@@ -612,21 +637,27 @@ class BaseDBDict(ABC):
 
         if return_key:
             if self._raw and decode_raw:
-                buffer_keys = set([decode_key(i) for i in buffer_dict.keys()])
+                buffer_keys_set = set([decode_key(i) for i in buffer_dict.keys()])
             else:
-                buffer_keys = set(buffer_dict.keys())
+                buffer_keys_set = set(buffer_dict.keys())
         if return_value:
             if self._raw and decode_raw:
-                buffer_values = list([decode(i) for i in buffer_dict.values()])
+                buffer_values_list = list([decode(i) for i in buffer_dict.values()])
             else:
-                buffer_values = list(self.buffer_dict.values())
+                buffer_values_list = list(self.buffer_dict.values())
         if not return_buffer_dict:
             buffer_dict = None
         else:
             if self._raw and decode_raw:
                 buffer_dict = {decode_key(k): decode(v) for k, v in buffer_dict.items()}
 
-        return buffer_dict, buffer_keys, buffer_values, delete_buffer_set, static_view
+        return (
+            buffer_dict,
+            buffer_keys_set,
+            buffer_values_list,
+            delete_buffer_set,
+            static_view,
+        )
 
     def values(self, decode_raw=True):
         """
@@ -717,11 +748,11 @@ class LMDBDict(BaseDBDict):
             view,
         ) = self._get_status_info(
             return_key=True,
-            return_view=False if self._cache_all_data else True,
+            return_view=False if self._cache_all_db else True,
             decode_raw=decode_raw,
         )
 
-        if self._cache_all_data:
+        if self._cache_all_db:
             # `view` is None
             lmdb_keys = set(key for key in self._cache_dict.keys())
         else:
@@ -742,11 +773,11 @@ class LMDBDict(BaseDBDict):
             view,
         ) = self._get_status_info(
             return_buffer_dict=True,
-            return_view=False if self._cache_all_data else True,
+            return_view=False if self._cache_all_db else True,
             decode_raw=decode_raw,
         )
 
-        if self._cache_all_data:
+        if self._cache_all_db:
             _db_dict = self._cache_dict.copy()
         else:
             _db_dict = {}
@@ -773,7 +804,7 @@ class LMDBDict(BaseDBDict):
             self._logger.error(f"Error setting map size: {e}")
 
     def stat(self):
-        if self._cache_all_data:
+        if self._cache_all_db:
             db_count = len(self._cache_dict)
         else:
             env = self._db_manager.get_env()
@@ -826,6 +857,10 @@ class LevelDBDict(BaseDBDict):
         )
 
     def keys(self, decode_raw=True):
+        db_keys, buffer_keys, delete_buffer_set = self._parts_keys(decode_raw)
+        return list(db_keys.union(buffer_keys) - delete_buffer_set)
+
+    def _parts_keys(self, decode_raw=True):
         (
             buffer_dict,
             buffer_keys,
@@ -834,14 +869,14 @@ class LevelDBDict(BaseDBDict):
             view,
         ) = self._get_status_info(return_key=True, decode_raw=decode_raw)
 
-        if self._cache_all_data:
+        if self._cache_all_db:
             # `view` is None
             db_keys = set(key for key in self._cache_dict.keys())
         else:
             db_keys = set(decode_key(key) for key, _ in view.iterator())
             self._db_manager.close_static_view(view)
 
-        return list(db_keys.union(buffer_keys) - delete_buffer_set)
+        return db_keys, buffer_keys, delete_buffer_set
 
     def db_dict(self, decode_raw=True):
         (
@@ -852,11 +887,11 @@ class LevelDBDict(BaseDBDict):
             view,
         ) = self._get_status_info(
             return_buffer_dict=True,
-            return_view=False if self._cache_all_data else True,
+            return_view=False if self._cache_all_db else True,
             decode_raw=decode_raw,
         )
 
-        if self._cache_all_data:
+        if self._cache_all_db:
             _db_dict = self._cache_dict.copy()
         else:
             _db_dict = {}
@@ -872,6 +907,36 @@ class LevelDBDict(BaseDBDict):
 
         self._db_manager.close_static_view(view)
         return _db_dict
+
+    def parts_db_dict(self, decode_raw=True):
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            view,
+        ) = self._get_status_info(
+            return_buffer_dict=True,
+            return_view=False if self._cache_all_db else True,
+            decode_raw=decode_raw,
+        )
+
+        if self._cache_all_db:
+            _db_dict = self._cache_dict.copy()
+        else:
+            _db_dict = {}
+            for key, value in view.iterator():
+                dk = decode_key(key)
+                if dk not in delete_buffer_set:
+                    _db_dict[dk] = decode(value)
+
+        if _db_dict:
+            _db_dict.update(buffer_dict)
+        else:
+            _db_dict = buffer_dict
+
+        self._db_manager.close_static_view(view)
+        return _db_dict, buffer_dict
 
     def _get_db_data_dict(self, decode_raw=True):
         (
@@ -895,7 +960,7 @@ class LevelDBDict(BaseDBDict):
     def stat(self):
         buffer_keys = set(self.buffer_dict.keys())
 
-        if self._cache_all_data:
+        if self._cache_all_db:
             db_keys = set(self._cache_dict.keys())
         else:
             with self._buffer_lock:
@@ -920,6 +985,9 @@ class RemoteDBDict(BaseDBDict):
         key: int, float, bool, str, tuple
         value: int, float, bool, str, list, dict and np.ndarray,
     """
+
+    MAX_BUFFER_SIZE = 100
+    COMMIT_TIME_INTERVAL = 60
 
     def __init__(
         self,
@@ -947,20 +1015,22 @@ class RemoteDBDict(BaseDBDict):
             view,
         ) = self._get_status_info(
             return_key=True,
-            return_view=False if self._cache_all_data else True,
+            return_view=False if self._cache_all_db else True,
             decode_raw=decode_raw,
         )
 
-        if self._cache_all_data:
+        if self._cache_all_db:
             db_keys = set(self._cache_dict.keys())
         else:
-            url = f"/keys?db_name={self._db_name}"
-            response: Response = view.client.get(url)
-            if not response.is_success:
-                raise ValueError(
-                    f"Failed to get keys from remote db: {decode(response.read())}"
-                )
-            db_keys = set(decode_key(response.read()))
+            with view.client.stream(
+                "GET", f"/keys_stream?db_name={self._db_name}"
+            ) as r:
+                data_stream = b""
+                for data in r.iter_bytes():
+                    data_stream += data
+
+            db_keys = set(decode_key(data_stream))
+
         # self._db_manager.close_static_view(view)
 
         return list(db_keys.union(buffer_keys) - delete_buffer_set)
@@ -974,11 +1044,11 @@ class RemoteDBDict(BaseDBDict):
             view,
         ) = self._get_status_info(
             return_buffer_dict=True,
-            return_view=False if self._cache_all_data else True,
+            return_view=False if self._cache_all_db else True,
             decode_raw=decode_raw,
         )
 
-        if self._cache_all_data:
+        if self._cache_all_db:
             _db_dict = self._cache_dict.copy()
         else:
             _db_dict = {}
@@ -1025,7 +1095,7 @@ class RemoteDBDict(BaseDBDict):
         return data_dict
 
     def stat(self):
-        if self._cache_all_data:
+        if self._cache_all_db:
             db_count = len(self._cache_dict)
         else:
             env = self._db_manager.get_env()
@@ -1050,3 +1120,6 @@ class RemoteDBDict(BaseDBDict):
                 return self.buffer_dict[key]
 
             return self._cache_dict.get(key, default)
+
+    def __repr__(self):
+        return str({"keys": self.stat()['count']})
