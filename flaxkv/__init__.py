@@ -19,7 +19,7 @@ import re
 
 from .core import LevelDBDict, LMDBDict, RemoteDBDict
 
-__version__ = "0.2.3.1"
+__version__ = "0.2.4"
 
 __all__ = [
     "FlaxKV",
@@ -39,6 +39,7 @@ def FlaxKV(
     backend='leveldb',
     rebuild=False,
     raw=False,
+    cache=False,
     **kwargs,
 ) -> LMDBDict | LevelDBDict | RemoteDBDict:
     if url_pattern.match(root_path_or_url):
@@ -48,6 +49,7 @@ def FlaxKV(
             rebuild=rebuild,
             backend=backend,
             raw=raw,
+            cache=cache,
             **kwargs,
         )
 
@@ -57,6 +59,7 @@ def FlaxKV(
             db_name=db_name,
             rebuild=rebuild,
             raw=raw,
+            cache=cache,
             **kwargs,
         )
 
@@ -66,6 +69,7 @@ def FlaxKV(
             db_name=db_name,
             rebuild=rebuild,
             raw=raw,
+            cache=cache,
             **kwargs,
         )
 
