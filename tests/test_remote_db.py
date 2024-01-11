@@ -48,10 +48,7 @@ def temp_db(request):
 
     db = RemoteDBDict(
         root_path_or_url="http://localhost:8000",
-        db_name=request.param["db_name"],
-        backend=request.param["backend"],
-        rebuild=request.param["rebuild"],
-        cache=request.param["cache"],
+        **request.param,
         # client=TestClient(app=app),
     )
     assert len(db) == 0

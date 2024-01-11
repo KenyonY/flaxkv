@@ -7,35 +7,43 @@ import time
 import numpy as np
 import pytest
 
-try:
-    import lmdb
-
-    from flaxkv import LMDBDict
-
-except ImportError:
-    LMDBDict = None
-
-try:
-    import plyvel
-
-    from flaxkv import LevelDBDict
-except ImportError:
-    LevelDBDict = None
-
-DB_DICTS = [db for db in (LMDBDict, LevelDBDict) if db is not None]
-
-# If DB_DICTS is empty，skip the test
-if not DB_DICTS:
-    pytestmark = pytest.mark.skip(reason="No database modules available")
+from flaxkv import FlaxKV
 
 
-@pytest.fixture(params=DB_DICTS)
+@pytest.fixture(
+    params=[
+        dict(
+            db_name="test_db",
+            root_path_or_url=tempfile.mkdtemp(),
+            backend='leveldb',
+            rebuild=True,
+            cache=False,
+        ),
+        dict(
+            db_name="test_db",
+            root_path_or_url=tempfile.mkdtemp(),
+            backend='lmdb',
+            rebuild=True,
+            cache=False,
+        ),
+        dict(
+            db_name="test_db",
+            root_path_or_url=tempfile.mkdtemp(),
+            backend='leveldb',
+            rebuild=True,
+            cache=True,
+        ),
+        dict(
+            db_name="test_db",
+            root_path_or_url=tempfile.mkdtemp(),
+            backend='lmdb',
+            rebuild=True,
+            cache=True,
+        ),
+    ]
+)
 def temp_db(request):
-    DB = request.param
-
-    db: LMDBDict = DB(
-        db_name="test_db", root_path=tempfile.mkdtemp(), rebuild=True, log=False
-    )
+    db = FlaxKV(**request.param)
 
     yield db
     db.destroy()
@@ -149,8 +157,6 @@ def test_update(temp_db):
         pytest.skip("Skipping")
     temp_db.update({"test_key": "test_value"})
     assert temp_db.get("test_key") == "test_value"
-
-    temp_db.write_immediately(block=True)
 
     temp_db.update({"test_key": "another_value0"})
     temp_db.write_immediately(block=True)
