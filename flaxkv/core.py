@@ -130,7 +130,7 @@ class BaseDBDict(ABC):
         self._cache_dict = {}
         if self._cache_all_db:
             # load from db
-            self._cache_dict = self._get_db_data_dict()
+            self._pull_db_data_to_cache()
 
     def _register_auto_close(self, func=None):
         if func is None:
@@ -671,23 +671,74 @@ class BaseDBDict(ABC):
             values_list.append(value)
         return values_list
 
-    @abstractmethod
-    def keys(self, *args, **kwargs):
+    def keys(self, decode_raw=True):
         """
         Retrieves all the keys in the database and buffer.
 
         Returns:
             list: A list of keys.
         """
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            view,
+        ) = self._get_status_info(
+            return_key=True,
+            return_view=False if self._cache_all_db else True,
+            decode_raw=decode_raw,
+        )
 
-    @abstractmethod
-    def db_dict(self, *args, **kwargs) -> dict:
+        for key in buffer_keys:
+            yield key
+
+        if self._cache_all_db:
+            # `view` is None
+            for key in self._cache_dict.keys():
+                if key not in delete_buffer_set and key not in buffer_keys:
+                    yield key
+        else:
+            for key in self._iter_db_view(view, include_value=False):
+                d_key = decode_key(key)
+                if d_key not in delete_buffer_set and key not in buffer_keys:
+                    yield d_key
+            self._db_manager.close_static_view(view)
+
+    def db_dict(self, decode_raw=True):
         """
         Retrieves all the key-value pairs in the database and buffer.
         Returns: dict
         """
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            view,
+        ) = self._get_status_info(
+            return_buffer_dict=True,
+            return_view=False if self._cache_all_db else True,
+            decode_raw=decode_raw,
+        )
 
-    @abstractmethod
+        if self._cache_all_db:
+            _db_dict = self._cache_dict.copy()
+        else:
+            _db_dict = {}
+            for key, value in self._iter_db_view(view):
+                dk = decode_key(key)
+                if dk not in delete_buffer_set:
+                    _db_dict[dk] = decode(value)
+
+        if _db_dict:
+            _db_dict.update(buffer_dict)
+        else:
+            _db_dict = buffer_dict
+
+        self._db_manager.close_static_view(view)
+        return _db_dict
+
     def items(self, decode_raw=True):
         """
         Retrieves all the key-value pairs in the database and buffer.
@@ -695,6 +746,55 @@ class BaseDBDict(ABC):
         Returns:
             list: A list of key-value pairs
         """
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            view,
+        ) = self._get_status_info(
+            return_key=True,
+            return_buffer_dict=True,
+            return_view=False if self._cache_all_db else True,
+            decode_raw=decode_raw,
+        )
+        for key, value in buffer_dict.items():
+            if key not in delete_buffer_set:
+                yield key, value
+
+        if self._cache_all_db:
+            for (
+                key,
+                value,
+            ) in self._cache_dict.items():  # Attention: dict.items() is a dynamic view
+                if key not in delete_buffer_set and key not in buffer_keys:
+                    yield key, value
+        else:
+            for key, value in self._iter_db_view(view):
+                # for key, value in view.iterator():
+                dk = decode_key(key)
+                if dk not in delete_buffer_set and key not in buffer_keys:
+                    yield dk, decode(value)
+            self._db_manager.close_static_view(view)
+
+    def _pull_db_data_to_cache(self, decode_raw=True):
+        """
+        Retrieves all the key-value pairs in the database.
+        Load db data to self._cache_dict
+        """
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            view,
+        ) = self._get_status_info(return_view=True, decode_raw=decode_raw)
+        for key, value in self._iter_db_view(view):
+            dk = decode_key(key)
+            if dk not in delete_buffer_set:
+                self._cache_dict[dk] = decode(value)
+
+        self._db_manager.close_static_view(view)
 
     @abstractmethod
     def stat(self, *args, **kwargs):
@@ -706,9 +806,9 @@ class BaseDBDict(ABC):
         """
 
     @abstractmethod
-    def _get_db_data_dict(self, *args, **kwargs):
+    def _iter_db_view(self, view, include_key=True, include_value=True):
         """
-        Load data from `backend` to cache dict
+        Iterates over the items in the database view.
         """
 
 
@@ -738,96 +838,21 @@ class LMDBDict(BaseDBDict):
             **kwargs,
         )
 
-    def keys(self, decode_raw=True):
-        (
-            buffer_dict,
-            buffer_keys,
-            buffer_values,
-            delete_buffer_set,
-            view,
-        ) = self._get_status_info(
-            return_key=True,
-            return_view=False if self._cache_all_db else True,
-            decode_raw=decode_raw,
-        )
+    def _iter_db_view(self, view, include_key=True, include_value=True):
+        """
+        Iterates over the items in the database view.
 
-        for key in buffer_keys:
-            yield key
+        Args:
+            view: The database view to iterate over.
+        """
 
-        if self._cache_all_db:
-            # `view` is None
-            for key in self._cache_dict.keys():
-                if key not in delete_buffer_set and key not in buffer_keys:
-                    yield key
-        else:
-            cursor = view.cursor()
-            for key in cursor.iternext(keys=True, values=False):
-                d_key = decode_key(key)
-                if d_key not in delete_buffer_set and key not in buffer_keys:
-                    yield d_key
-            self._db_manager.close_static_view(view)
-
-    def items(self, decode_raw=True):
-        (
-            buffer_dict,
-            buffer_keys,
-            buffer_values,
-            delete_buffer_set,
-            view,
-        ) = self._get_status_info(
-            return_key=True,
-            return_buffer_dict=True,
-            return_view=False if self._cache_all_db else True,
-            decode_raw=decode_raw,
-        )
-        for key, value in buffer_dict.items():
-            if key not in delete_buffer_set:
+        cursor = view.cursor()
+        if include_key and include_value:
+            for key, value in cursor.iternext(keys=include_key, values=include_value):
                 yield key, value
-
-        if self._cache_all_db:
-            for (
-                key,
-                value,
-            ) in self._cache_dict.items():  # Attention: dict.items() is a dynamic view
-                if key not in delete_buffer_set and key not in buffer_keys:
-                    yield key, value
         else:
-            cursor = view.cursor()
-            for key, value in cursor.iternext(keys=True, values=True):
-                dk = decode_key(key)
-                if dk not in delete_buffer_set and key not in buffer_keys:
-                    yield dk, decode(value)
-            self._db_manager.close_static_view(view)
-
-    def db_dict(self, decode_raw=True):
-        (
-            buffer_dict,
-            buffer_keys,
-            buffer_values,
-            delete_buffer_set,
-            view,
-        ) = self._get_status_info(
-            return_buffer_dict=True,
-            return_view=False if self._cache_all_db else True,
-            decode_raw=decode_raw,
-        )
-
-        if self._cache_all_db:
-            _db_dict = self._cache_dict.copy()
-        else:
-            _db_dict = {}
-            cursor = view.cursor()
-            for key, value in cursor.iternext(keys=True, values=True):
-                dk = decode_key(key)
-                if dk not in delete_buffer_set:
-                    _db_dict[dk] = decode(value)
-            self._db_manager.close_static_view(view)
-
-        if _db_dict:
-            _db_dict.update(buffer_dict)
-        else:
-            _db_dict = buffer_dict
-        return _db_dict
+            for key_or_value in cursor.iternext(keys=include_key, values=include_value):
+                yield key_or_value
 
     def set_mapsize(self, map_size):
         """Change the maximum size of the map file.
@@ -854,25 +879,6 @@ class LMDBDict(BaseDBDict):
             'marked_delete': len(self.delete_buffer_set),
         }
 
-    def _get_db_data_dict(self, decode_raw=True):
-        (
-            buffer_dict,
-            buffer_keys,
-            buffer_values,
-            delete_buffer_set,
-            view,
-        ) = self._get_status_info(
-            return_buffer_dict=True, return_view=True, decode_raw=decode_raw
-        )
-        db_dict = {}
-        cursor = view.cursor()
-        for key, value in cursor.iternext(keys=True, values=True):
-            dk = decode_key(key)
-            if dk not in delete_buffer_set:
-                db_dict[dk] = decode(value)
-        self._db_manager.close_static_view(view)
-        return db_dict
-
 
 class LevelDBDict(BaseDBDict):
     """
@@ -891,141 +897,23 @@ class LevelDBDict(BaseDBDict):
             **kwargs,
         )
 
-    def keys(self, decode_raw=True):
-        (
-            buffer_dict,
-            buffer_keys,
-            buffer_values,
-            delete_buffer_set,
-            view,
-        ) = self._get_status_info(return_key=True, decode_raw=decode_raw)
+    def _iter_db_view(self, view, include_key=True, include_value=True):
+        """
+        Iterates over the items in the database view.
 
-        for key in buffer_keys:
-            if key not in delete_buffer_set:
-                yield key
-
-        if self._cache_all_db:
-            # `view` is None
-            for key in self._cache_dict.keys():
-                if key not in delete_buffer_set and key not in buffer_keys:
-                    yield key
-        else:
-            for key, _ in view.iterator():
-                d_key = decode_key(key)
-                if d_key not in delete_buffer_set and key not in buffer_keys:
-                    yield d_key
-            self._db_manager.close_static_view(view)
-
-    def items(self, decode_raw=True):
-        (
-            buffer_dict,
-            buffer_keys,
-            buffer_values,
-            delete_buffer_set,
-            view,
-        ) = self._get_status_info(
-            return_key=True,
-            return_buffer_dict=True,
-            return_view=False if self._cache_all_db else True,
-            decode_raw=decode_raw,
-        )
-        for key, value in buffer_dict.items():
-            if key not in delete_buffer_set:
+        Args:
+            view: The database view to iterate over.
+        """
+        if include_key and include_value:
+            for key, value in view.iterator(
+                include_key=include_key, include_value=include_value
+            ):
                 yield key, value
-
-        if self._cache_all_db:
-            for (
-                key,
-                value,
-            ) in self._cache_dict.items():  # Attention: dict.items() is a dynamic view
-                if key not in delete_buffer_set and key not in buffer_keys:
-                    yield key, value
         else:
-            _db_dict = {}
-            for key, value in view.iterator():
-                dk = decode_key(key)
-                if dk not in delete_buffer_set and key not in buffer_keys:
-                    yield dk, decode(value)
-            self._db_manager.close_static_view(view)
-
-    def db_dict(self, decode_raw=True):
-        (
-            buffer_dict,
-            buffer_keys,
-            buffer_values,
-            delete_buffer_set,
-            view,
-        ) = self._get_status_info(
-            return_buffer_dict=True,
-            return_view=False if self._cache_all_db else True,
-            decode_raw=decode_raw,
-        )
-
-        if self._cache_all_db:
-            _db_dict = self._cache_dict.copy()
-        else:
-            _db_dict = {}
-            for key, value in view.iterator():
-                dk = decode_key(key)
-                if dk not in delete_buffer_set:
-                    _db_dict[dk] = decode(value)
-
-        if _db_dict:
-            _db_dict.update(buffer_dict)
-        else:
-            _db_dict = buffer_dict
-
-        self._db_manager.close_static_view(view)
-        return _db_dict
-
-    def parts_db_dict(self, decode_raw=True):
-        (
-            buffer_dict,
-            buffer_keys,
-            buffer_values,
-            delete_buffer_set,
-            view,
-        ) = self._get_status_info(
-            return_buffer_dict=True,
-            return_view=False if self._cache_all_db else True,
-            decode_raw=decode_raw,
-        )
-
-        if self._cache_all_db:
-            _db_dict = self._cache_dict.copy()
-        else:
-            _db_dict = {}
-            for key, value in view.iterator():
-                dk = decode_key(key)
-                if dk not in delete_buffer_set:
-                    _db_dict[dk] = decode(value)
-
-        if _db_dict:
-            _db_dict.update(buffer_dict)
-        else:
-            _db_dict = buffer_dict
-
-        self._db_manager.close_static_view(view)
-        return _db_dict, buffer_dict
-
-    def _get_db_data_dict(self, decode_raw=True):
-        (
-            buffer_dict,
-            buffer_keys,
-            buffer_values,
-            delete_buffer_set,
-            view,
-        ) = self._get_status_info(
-            return_buffer_dict=True, return_view=True, decode_raw=decode_raw
-        )
-        data_dict = {}
-        for key, value in view.iterator():
-            dk = decode_key(key)
-            if dk not in delete_buffer_set:
-                data_dict[dk] = decode(value)
-
-        self._db_manager.close_static_view(view)
-        return data_dict
+            for key_or_value in view.iterator(
+                include_key=include_key, include_value=include_value
+            ):
+                yield key_or_value
 
     def stat(self):
         buffer_keys = set(self.buffer_dict.keys())
@@ -1034,10 +922,10 @@ class LevelDBDict(BaseDBDict):
             db_keys = set(self._cache_dict.keys())
         else:
             with self._buffer_lock:
-                snapshot = self._db_manager.new_static_view()
+                view = self._db_manager.new_static_view()
 
-            db_keys = set([key for key, _ in snapshot.iterator()])
-            snapshot.close()
+            db_keys = set([key for key in view.iterator(include_value=False)])
+            view.close()
 
         db_count = len(db_keys)
         db_valid_keys = db_keys - self.delete_buffer_set
@@ -1075,6 +963,19 @@ class RemoteDBDict(BaseDBDict):
             rebuild=rebuild,
             **kwargs,
         )
+
+    def _iter_db_view(self, view, include_key=True, include_value=True):
+        """
+        Iterates over the items in the database view.
+
+        Args:
+            view: The database view to iterate over.
+        """
+
+        if include_key and include_value:
+            ...
+        else:
+            ...
 
     def keys(self, fetch_all=True, decode_raw=True):
         (
@@ -1160,17 +1061,14 @@ class RemoteDBDict(BaseDBDict):
         # self._db_manager.close_static_view(view)
         return _db_dict
 
-    def _get_db_data_dict(self, decode_raw=True):
+    def _pull_db_data_to_cache(self, decode_raw=True):
         (
             buffer_dict,
             buffer_keys,
             buffer_values,
             delete_buffer_set,
             view,
-        ) = self._get_status_info(
-            return_buffer_dict=False, return_view=True, decode_raw=decode_raw
-        )
-        data_dict = {}
+        ) = self._get_status_info(return_view=True, decode_raw=decode_raw)
         with view.client.stream("GET", f"/dict_stream?db_name={self._db_name}") as r:
             data_stream = b""
             for data in r.iter_bytes():
@@ -1179,8 +1077,7 @@ class RemoteDBDict(BaseDBDict):
         remote_db_dict = decode(data_stream)
         for dk, dv in remote_db_dict.items():
             if dk not in delete_buffer_set:
-                data_dict[dk] = dv
-        return data_dict
+                self._cache_dict[dk] = dv
 
     def stat(self):
         if self._cache_all_db:
