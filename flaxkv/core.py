@@ -127,7 +127,7 @@ class BaseDBDict(ABC):
         # Start the background worker
         self._start()
 
-        self._cache_dict = {}
+        self._cache_dict = {}  # DB data that marked_delete has been deleted
         if self._cache_all_db:
             # load from db
             self._pull_db_data_to_cache()
@@ -429,10 +429,6 @@ class BaseDBDict(ABC):
         with self._db_manager.write() as wb:
             try:
                 for key in delete_buffer_set_snapshot:
-                    # delete from cache dict
-                    if self._cache_all_db:
-                        cache_dict.pop(key)
-
                     # delete from db
                     key = self._encode_key(key)
                     wb.delete(key)
@@ -512,6 +508,9 @@ class BaseDBDict(ABC):
                 if key in self.buffer_dict:
                     del self.buffer_dict[key]
                     return
+                else:
+                    if self._cache_all_db:
+                        self._cache_dict.pop(key)
         else:
             raise KeyError(f"Key `{key}` not found in the database.")
 
@@ -538,9 +537,12 @@ class BaseDBDict(ABC):
                     else:
                         return value
                 else:
-                    key = self._encode_key(key)
-                    value = self._static_view.get(key)
-                    return decode(value)
+                    if self._cache_all_db:
+                        value = self._cache_dict.pop(key)
+                    else:
+                        key = self._encode_key(key)
+                        value = decode(self._static_view.get(key))
+                    return value
         else:
             return default
 
@@ -633,16 +635,16 @@ class BaseDBDict(ABC):
             delete_buffer_set = self.delete_buffer_set.copy()
 
         if self._raw and decode_raw:
-            delete_buffer_set = set([decode_key(i) for i in delete_buffer_set])
+            delete_buffer_set = {decode_key(i) for i in delete_buffer_set}
 
         if return_key:
             if self._raw and decode_raw:
-                buffer_keys_set = set([decode_key(i) for i in buffer_dict.keys()])
+                buffer_keys_set = {decode_key(i) for i in buffer_dict.keys()}
             else:
                 buffer_keys_set = set(buffer_dict.keys())
         if return_value:
             if self._raw and decode_raw:
-                buffer_values_list = list([decode(i) for i in buffer_dict.values()])
+                buffer_values_list = [decode(i) for i in buffer_dict.values()]
             else:
                 buffer_values_list = list(self.buffer_dict.values())
         if not return_buffer_dict:
@@ -924,7 +926,7 @@ class LevelDBDict(BaseDBDict):
             with self._buffer_lock:
                 view = self._db_manager.new_static_view()
 
-            db_keys = set([key for key in view.iterator(include_value=False)])
+            db_keys = {key for key in view.iterator(include_value=False)}
             view.close()
 
         db_count = len(db_keys)
@@ -1004,11 +1006,11 @@ class RemoteDBDict(BaseDBDict):
                 with view.client.stream(
                     "GET", f"/keys_stream?db_name={self._db_name}"
                 ) as r:
-                    data_stream = b""
+                    buffer = bytearray()
                     for data in r.iter_bytes():
-                        data_stream += data
+                        buffer.extend(data)
 
-                db_keys = set(decode_key(data_stream))
+                db_keys = set(decode_key(bytes(buffer)))
                 for key in db_keys - delete_buffer_set - buffer_keys:
                     yield key
 
@@ -1019,8 +1021,7 @@ class RemoteDBDict(BaseDBDict):
 
     def items(self, fetch_all=True, decode_raw=True):
         if fetch_all:
-            _db_dict = self.db_dict(decode_raw=decode_raw)
-            return _db_dict.items()
+            return self.db_dict(decode_raw=decode_raw).items()
         else:
             raise NotImplementedError
 
@@ -1044,11 +1045,11 @@ class RemoteDBDict(BaseDBDict):
             with view.client.stream(
                 "GET", f"/dict_stream?db_name={self._db_name}"
             ) as r:
-                data_stream = b""
+                buffer = bytearray()
                 for data in r.iter_bytes():
-                    data_stream += data
+                    buffer.extend(data)
 
-            remote_db_dict = decode(data_stream)
+            remote_db_dict = decode(bytes(buffer))
             for dk, dv in remote_db_dict.items():
                 if dk not in delete_buffer_set:
                     _db_dict[dk] = dv
@@ -1070,11 +1071,11 @@ class RemoteDBDict(BaseDBDict):
             view,
         ) = self._get_status_info(return_view=True, decode_raw=decode_raw)
         with view.client.stream("GET", f"/dict_stream?db_name={self._db_name}") as r:
-            data_stream = b""
+            buffer = bytearray()
             for data in r.iter_bytes():
-                data_stream += data
+                buffer.extend(data)
 
-        remote_db_dict = decode(data_stream)
+        remote_db_dict = decode(bytes(buffer))
         for dk, dv in remote_db_dict.items():
             if dk not in delete_buffer_set:
                 self._cache_dict[dk] = dv
@@ -1094,17 +1095,6 @@ class RemoteDBDict(BaseDBDict):
             'db': db_count,
             'marked_delete': len(self.delete_buffer_set),
         }
-
-    def get_with_cache(self, key, default=None):
-
-        with self._buffer_lock:
-            if key in self.delete_buffer_set:
-                return default
-
-            if key in self.buffer_dict:
-                return self.buffer_dict[key]
-
-            return self._cache_dict.get(key, default)
 
     def __repr__(self):
         return str({"keys": self.stat()['count']})
