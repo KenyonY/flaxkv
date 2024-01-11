@@ -89,7 +89,7 @@ class DBManager:
                 db_name=self.db_name,
                 backend=kwargs.pop("backend", "leveldb"),
                 rebuild=self._rebuild,
-                timeout=kwargs.pop("timeout", 15),
+                timeout=kwargs.pop("timeout", 10),  # refers to connect timeout
                 **kwargs,
             )
         else:
@@ -214,13 +214,16 @@ class RemoteTransaction:
         db_name: str,
         backend="leveldb",
         rebuild=False,
-        timeout=15,
+        timeout=10,
         **kwargs,
     ):
         import httpx
 
         self.client = kwargs.pop(
-            "client", httpx.Client(base_url=base_url, timeout=timeout)
+            "client",
+            httpx.Client(
+                base_url=base_url, timeout=httpx.Timeout(None, connect=timeout)
+            ),
         )
         self.db_name = db_name
 
@@ -283,6 +286,8 @@ class RemoteTransaction:
         response = self.client.post(
             url, content=encode({"keys": list(self.delete_buffer_set)})
         )
+        self.client.stream(timeout=1)
+
         if not response.is_success:
             # todo: retry
             raise RuntimeError
