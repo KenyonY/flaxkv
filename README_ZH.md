@@ -73,17 +73,17 @@ pip install flaxkv
 ### 使用
 
 ```python
-from flaxkv import dictdb
+from flaxkv import FlaxKV
 import numpy as np
 
-db = dictdb('test_db')
+db = FlaxKV('test_db')
 
 """
 或者作为服务端启动
 >>> flaxkv run --port 8000
 
 客户端调用:
-db = dictdb('test_db', root_path_or_url='http://localhost:8000')
+db = FlaxKV('test_db', root_path_or_url='http://localhost:8000')
 """
 
 db[1] = 1
@@ -115,8 +115,6 @@ print(len(db))
 
 - `flaxkv`作为持久化数据库提供了接近原生字典(内存)存取的性能！(见下文benchmark)
 - 也许你注意到在前面的示例代码中并没有使用到`db.close()`来进行资源释放！因为这一切都将被`flaxkv`自动处理。 当然也可以手动调用 `db.close()` 来立即释放资源
-- 由于`flaxkv`通过缓冲写入的方式来保存数据，这种延迟写入的特性在一些场景(如jupyter中)下将不能及时将数据写入磁盘，
-此时可使用`db.write_immediately()`来立即触发写入操作。
 
 ### Benchmark
 ![benchmark](.github/img/benchmark.png)

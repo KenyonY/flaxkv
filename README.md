@@ -70,16 +70,16 @@ pip install flaxkv
 ### Usage
 
 ```python
-from flaxkv import dictdb
+from flaxkv import FlaxKV
 import numpy as np
 
-db = dictdb('test_db')
+db = FlaxKV('test_db')
 """
 Or start as a server
 >>> flaxkv run --port 8000
 
 Client call:
-db = dictdb('test_db', root_path_or_url='http://localhost:8000')
+db = FlaxKV('test_db', root_path_or_url='http://localhost:8000')
 """
 
 db[1] = 1
@@ -109,8 +109,6 @@ print(len(db))
 ### Tips
 - `flaxkv` provides performance close to native dictionary (in-memory) access as a persistent database! (See benchmark below)
 - You may have noticed that in the previous example code, `db.close()` was not used to release resources! Because all this will be automatically handled by `flaxkv`. Of course, you can also manually call db.close() to immediately release resources.
-- Since `flaxkv` saves data by buffered writing, this feature of delayed writing may not write data to the disk in time in some scenarios (such as in Jupyter),
-in this case, you can use `db.write_immediately()` to immediately trigger a write operation.
 
 ### Benchmark
 ![benchmark](.github/img/benchmark.png)
