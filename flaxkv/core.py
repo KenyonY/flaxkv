@@ -1034,7 +1034,7 @@ class RemoteDBDict(BaseDBDict):
             view,
         ) = self._get_status_info(
             return_buffer_dict=True,
-            return_view=False if self._cache_all_db else True,
+            return_view=True,
             decode_raw=decode_raw,
         )
 

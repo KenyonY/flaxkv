@@ -89,7 +89,9 @@ class DBManager:
                 db_name=self.db_name,
                 backend=kwargs.pop("backend", "leveldb"),
                 rebuild=self._rebuild,
-                timeout=kwargs.pop("timeout", 10),  # refers to connect timeout
+                timeout=kwargs.pop(
+                    "timeout", 10
+                ),  # `timeout` refers to connection timeout
                 **kwargs,
             )
         else:
