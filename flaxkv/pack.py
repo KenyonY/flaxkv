@@ -29,27 +29,52 @@ class NPArray(msgspec.Struct, gc=False, array_like=True):
     data: bytes
 
 
-numpy_array_encoder = msgspec.msgpack.Encoder()
-numpy_array_decoder = msgspec.msgpack.Decoder(type=NPArray)
+np_encoder = msgspec.msgpack.Encoder()
+np_decoder = msgspec.msgpack.Decoder(type=NPArray)
+
+try:
+    import pandas as pd
+    import pyarrow
+
+    def check_pandas_type(obj):
+        if type(obj).__name__ == "DataFrame":
+            return True
+        else:
+            return False
+
+except ImportError:
+
+    def check_pandas_type(obj):
+        if type(obj).__name__ == "DataFrame":
+            return True
+        else:
+            return False
 
 
 def encode_hook(obj):
     if isinstance(obj, np.ndarray):
         return msgspec.msgpack.Ext(
             1,
-            numpy_array_encoder.encode(
+            np_encoder.encode(
                 NPArray(dtype=obj.dtype.str, shape=obj.shape, data=obj.data)
             ),
         )
+    # elif isinstance(obj, DataFrame):
+    elif check_pandas_type(obj):
+        buffer = pyarrow.serialize_pandas(obj)
+        return msgspec.msgpack.Ext(2, buffer.to_pybytes())
     return obj
 
 
 def ext_hook(type, data: memoryview):
     if type == 1:
-        serialized_array_rep = numpy_array_decoder.decode(data)
+        serialized_array_rep = np_decoder.decode(data)
         return np.frombuffer(
             serialized_array_rep.data, dtype=serialized_array_rep.dtype
         ).reshape(serialized_array_rep.shape)
+    elif type == 2:
+        buffer = pyarrow.py_buffer(data.tobytes())
+        return pyarrow.deserialize_pandas(buffer)
     return data
 
 

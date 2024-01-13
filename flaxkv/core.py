@@ -30,7 +30,7 @@ from .decorators import class_measure_time
 from .helper import SimpleQueue
 from .log import setting_log
 from .manager import DBManager
-from .pack import decode, decode_key, encode
+from .pack import check_pandas_type, decode, decode_key, encode
 
 if TYPE_CHECKING:
     from httpx import Response
@@ -179,6 +179,9 @@ class BaseDBDict(ABC):
                 if isinstance(value, np.ndarray):
                     if not np.array_equal(value, b[key]):
                         result[key] = value
+                elif check_pandas_type(value):
+                    if not value.equals(b[key]):
+                        result[key] = value
                 else:
                     if value != b[key]:
                         result[key] = value
@@ -216,6 +219,7 @@ class BaseDBDict(ABC):
             except:
                 # todo:
                 self._logger.warning(f"Write buffer to db failed. error")
+                traceback.print_exc()
 
             self._write_complete.put(True)
 
@@ -954,7 +958,7 @@ class RemoteDBDict(BaseDBDict):
         root_path_or_url: str,
         db_name: str,
         rebuild=False,
-        backend='lmdb',
+        backend='leveldb',
         **kwargs,
     ):
         super().__init__(
