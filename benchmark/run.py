@@ -58,22 +58,22 @@ def startup_and_shutdown(request):
 @pytest.fixture(
     params=[
         "dict",
-        "Redis",
+        # "Redis",
         "RocksDict",
-        # "Shelve",
-        # "Sqlite3",
-        # "flaxkv-LMDB",
+        "Shelve",
+        "Sqlite3",
+        "flaxkv-LMDB",
         "flaxkv-LevelDB",
-        "flaxkv-REMOTE",
+        # "flaxkv-REMOTE",
     ]
 )
 def temp_db(request):
     if request.param == "flaxkv-LMDB":
         db = FlaxKV('benchmark', backend='lmdb')
     elif request.param == "flaxkv-LevelDB":
-        db = FlaxKV('benchmark', backend='leveldb')
+        db = FlaxKV('benchmark', backend='leveldb', cache=True)
     elif request.param == "flaxkv-REMOTE":
-        db = FlaxKV('benchmark', "http://localhost:8000")
+        db = FlaxKV('benchmark', "http://localhost:8000", cache=True)
     elif request.param == "RocksDict":
         db = RocksDict()
     elif request.param == "Shelve":
@@ -103,7 +103,7 @@ def benchmark(db, db_name, n=200):
         db[key] = value
 
     if isinstance(db, BaseDBDict):
-        db.write_immediately()
+        db.write_immediately(block=True)
     write_cost = mt.show_interval(f"{db_name} write")
 
     mt.start()
