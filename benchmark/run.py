@@ -29,7 +29,6 @@ def prepare_data(n, key_only=False):
         if key_only:
             yield f'vector-{i}'
         else:
-            # yield (f'vector-{i}', f"{i}")
             yield (f'vector-{i}', np.random.rand(1000))
 
 
@@ -58,22 +57,22 @@ def startup_and_shutdown(request):
 @pytest.fixture(
     params=[
         "dict",
-        "Redis",
+        # "Redis",
         "RocksDict",
-        # "Shelve",
-        # "Sqlite3",
-        # "flaxkv-LMDB",
+        "Shelve",
+        "Sqlite3",
+        "flaxkv-LMDB",
         "flaxkv-LevelDB",
-        "flaxkv-REMOTE",
+        # "flaxkv-REMOTE",
     ]
 )
 def temp_db(request):
     if request.param == "flaxkv-LMDB":
         db = FlaxKV('benchmark', backend='lmdb')
     elif request.param == "flaxkv-LevelDB":
-        db = FlaxKV('benchmark', backend='leveldb')
+        db = FlaxKV('benchmark', backend='leveldb', cache=False)
     elif request.param == "flaxkv-REMOTE":
-        db = FlaxKV('benchmark', "http://localhost:8000")
+        db = FlaxKV('benchmark', "http://localhost:8000", cache=False)
     elif request.param == "RocksDict":
         db = RocksDict()
     elif request.param == "Shelve":
@@ -113,10 +112,6 @@ def benchmark(db, db_name, n=200):
     idx = 0
     for key, value in db.items():
         idx += 1
-        # print(key, value)
-        # assert value == db[key]
-        # if idx >= 1000:
-        #     break
     read_cost = mt.show_interval(f"{db_name} read (traverse elements) ")
     print("--------------------------")
     return write_cost, read_cost

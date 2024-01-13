@@ -51,8 +51,14 @@ test = [
     "pytest-aiohttp",
     "uvicorn",
     "httpx",
+    "pandas",
+    "pyarrow",
 ]
 
+pandas = [
+    "pandas",
+    "pyarrow",
+]
 
 server = [
     "uvicorn",

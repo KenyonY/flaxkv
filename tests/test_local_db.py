@@ -5,6 +5,7 @@ import tempfile
 import time
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from flaxkv import FlaxKV
@@ -50,9 +51,6 @@ def temp_db(request):
 
 
 def test_set_get_write(temp_db):
-    if temp_db is None:
-        pytest.skip("Skipping")
-
     target_dict = dict(
         [
             ("string", "string"),
@@ -116,6 +114,29 @@ def test_numpy_array(temp_db):
 
     for key, value in target_dict.items():
         assert np.array_equal(temp_db[key], value)
+
+
+def test_pandas(temp_db):
+    target_dict = {
+        'df1': pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]}),
+        'df2': pd.DataFrame({'c': [1, 2, 3], 'd': [4, 5, 6]}),
+    }
+    for key, value in target_dict.items():
+        temp_db[key] = value
+
+    for key, value in target_dict.items():
+        assert temp_db[key].equals(value)
+    temp_db.write_immediately(block=True)
+
+    assert temp_db.stat()['db'] == len(target_dict)
+    assert temp_db.stat()['buffer'] == 0
+
+    for key, value in target_dict.items():
+        assert temp_db[key].equals(value)
+
+    temp_db['dict'] = {'df': pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})}
+    temp_db.write_immediately(block=True)
+    assert temp_db['dict']['df'].equals(target_dict['df1'])
 
 
 def test_large_value(temp_db):
