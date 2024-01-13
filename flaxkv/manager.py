@@ -288,7 +288,6 @@ class RemoteTransaction:
         response = self.client.post(
             url, content=encode({"keys": list(self.delete_buffer_set)})
         )
-        self.client.stream(timeout=1)
 
         if not response.is_success:
             # todo: retry
