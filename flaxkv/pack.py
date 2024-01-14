@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pickle
+
 import msgpack
 import msgspec.msgpack
 import numpy as np
@@ -34,7 +36,6 @@ np_decoder = msgspec.msgpack.Decoder(type=NPArray)
 
 try:
     import pandas as pd
-    import pyarrow
 
     def check_pandas_type(obj):
         return isinstance(obj, pd.DataFrame)
@@ -54,8 +55,8 @@ def encode_hook(obj):
             ),
         )
     elif check_pandas_type(obj):
-        buffer = pyarrow.serialize_pandas(obj)
-        return msgspec.msgpack.Ext(2, buffer.to_pybytes())
+        # return msgspec.msgpack.Ext(2, pyarrow.serialize_pandas(obj).to_pybytes())
+        return msgspec.msgpack.Ext(2, pickle.dumps(obj))
     return obj
 
 
@@ -66,8 +67,8 @@ def ext_hook(type, data: memoryview):
             serialized_array_rep.data, dtype=serialized_array_rep.dtype
         ).reshape(serialized_array_rep.shape)
     elif type == 2:
-        buffer = pyarrow.py_buffer(data.tobytes())
-        return pyarrow.deserialize_pandas(buffer)
+        # return pyarrow.deserialize_pandas(pyarrow.py_buffer(data.tobytes()))
+        return pickle.loads(data.tobytes())
     return data
 
 

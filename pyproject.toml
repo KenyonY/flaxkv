@@ -52,12 +52,6 @@ test = [
     "uvicorn",
     "httpx",
     "pandas",
-    "pyarrow",
-]
-
-pandas = [
-    "pandas",
-    "pyarrow",
 ]
 
 server = [
