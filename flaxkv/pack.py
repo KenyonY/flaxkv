@@ -37,18 +37,12 @@ try:
     import pyarrow
 
     def check_pandas_type(obj):
-        if type(obj).__name__ == "DataFrame":
-            return True
-        else:
-            return False
+        return isinstance(obj, pd.DataFrame)
 
 except ImportError:
 
     def check_pandas_type(obj):
-        if type(obj).__name__ == "DataFrame":
-            return True
-        else:
-            return False
+        return type(obj).__name__ == "DataFrame"
 
 
 def encode_hook(obj):
@@ -59,7 +53,6 @@ def encode_hook(obj):
                 NPArray(dtype=obj.dtype.str, shape=obj.shape, data=obj.data)
             ),
         )
-    # elif isinstance(obj, DataFrame):
     elif check_pandas_type(obj):
         buffer = pyarrow.serialize_pandas(obj)
         return msgspec.msgpack.Ext(2, buffer.to_pybytes())
