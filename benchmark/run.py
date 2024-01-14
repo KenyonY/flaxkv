@@ -23,17 +23,30 @@ N = 1000
 
 
 def prepare_data(n, key_only=False):
-    import numpy as np
+    global large_df
 
     for i in range(n):
         if key_only:
             yield f'vector-{i}'
         else:
             yield (f'vector-{i}', np.random.rand(1000))
+            # yield (f'vector-{i}', large_df)
+
+
+def gen_large_df():
+    global large_df
+    num_rows = 100_000
+    num_cols = 10
+    data = {
+        f'col{i}': random.sample(range(num_rows), num_rows) for i in range(num_cols)
+    }
+    large_df = pd.DataFrame(data)
 
 
 @pytest.fixture(scope="session", autouse=True)
 def startup_and_shutdown(request):
+    # gen_large_df()
+
     process = subprocess.Popen(["flaxkv", "run"])
     try:
         wait_for_server_to_start(url="http://localhost:8000/healthz")
@@ -61,7 +74,7 @@ def startup_and_shutdown(request):
         "RocksDict",
         "Shelve",
         "Sqlite3",
-        "flaxkv-LMDB",
+        # "flaxkv-LMDB",
         "flaxkv-LevelDB",
         # "flaxkv-REMOTE",
     ]
@@ -104,6 +117,9 @@ def benchmark(db, db_name, n=200):
     if isinstance(db, BaseDBDict):
         db.write_immediately()
     write_cost = mt.show_interval(f"{db_name} write")
+
+    if isinstance(db, BaseDBDict):
+        db.write_immediately(block=True)
 
     mt.start()
     for key in db.keys():

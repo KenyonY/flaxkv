@@ -40,7 +40,7 @@
 
 
 
-`flaxkv` 提供了一个非常类似字典的接口，用于与高性能键值数据库进行交互。更重要的是，它作为持久化数据库提供了接近原生字典(内存)存取的性能。
+`flaxkv` 提供了一个非常类似字典的接口，用于与高性能键值数据库进行交互。更重要的是，它作为持久化数据库提供了接近原生字典(内存)的写入性能。
 你可以直接将它当成python字典来使用而不必担心在任何时候操作数据库时会阻塞你的用户进程。
 
 ---
@@ -75,6 +75,7 @@ pip install flaxkv
 ```python
 from flaxkv import FlaxKV
 import numpy as np
+import pandas as pd
 
 db = FlaxKV('test_db')
 
@@ -93,6 +94,7 @@ db['a dict'] = {'a': 1, 'b': [1, 2, 3]}
 db['a list'] = [1, 2, 3, {'a': 1}]
 db[(1, 2, 3)] = [1, 2, 3]
 db['numpy array'] = np.random.randn(100, 100)
+db['df'] = pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
 
 db.setdefault('key', 'value_2')
 assert db['key'] == 'value'
@@ -105,7 +107,7 @@ db.pop("key1")
 assert 'key1' not in db
 
 for key, value in db.items():
-    print(key, value)
+  print(key, value)
 
 print(len(db))
 ```
@@ -119,7 +121,7 @@ print(len(db))
 ### Benchmark
 ![benchmark](.github/img/benchmark.png)
 
-测试内容：对N=10,000 条1000维的numpy array进行写入和遍历读取
+测试内容：对N条1000维的numpy array进行写入和遍历读取
 
 执行测试:
 ```bash
