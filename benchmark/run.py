@@ -116,7 +116,7 @@ def benchmark(db, db_name, n=200):
 
     if isinstance(db, BaseDBDict):
         db.write_immediately()
-    write_cost = mt.show_interval(f"{db_name} write")
+    write_cost = float(mt.show_interval(f"{db_name} write"))
 
     if isinstance(db, BaseDBDict):
         db.write_immediately(block=True)
@@ -128,7 +128,7 @@ def benchmark(db, db_name, n=200):
     idx = 0
     for key, value in db.items():
         idx += 1
-    read_cost = mt.show_interval(f"{db_name} read (traverse elements) ")
+    read_cost = float(mt.show_interval(f"{db_name} read (traverse elements) "))
     print("--------------------------")
     return write_cost, read_cost
 
