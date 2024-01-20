@@ -132,6 +132,13 @@ Very suitable for scenarios that require high-frequency insertion/update of data
 - **Machine Learning:**
 `flaxkv` is very suitable for saving various large datasets of embeddings, images, texts, and other key-value structures in machine learning.
 
+### Limitations
+* In the current version, due to the delayed writing feature, in a multi-process environment, 
+one process cannot read the data written by another process in real-time (usually delayed by a few seconds). 
+If immediate writing is desired, the .write_immediately() method must be called. 
+This limitation does not exist in a single-process environment.
+* By default, the value does not support the `Tuple`, `Set` types. If these types are forcibly set, they will be deserialized into a `List`.
+ 
 ## Citation
 If `FlaxKV` has been helpful to your research, please cite:
 ```bibtex
