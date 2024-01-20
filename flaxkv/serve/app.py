@@ -33,7 +33,7 @@ def on_shutdown():
 app = Litestar(
     route_handlers=[
         healthz,
-        attach,
+        connect,
         detach,
         get_,
         get_batch_stream_,
@@ -47,6 +47,7 @@ app = Litestar(
         dict_,
         dict_stream_,
         stat_,
+        check_db,
     ],
     on_startup=[on_startup],
     on_shutdown=[on_shutdown],

@@ -29,7 +29,7 @@ from loguru import logger
 from .decorators import class_measure_time
 from .helper import SimpleQueue
 from .log import setting_log
-from .manager import DBManager
+from .manager import DBManager, RemoteTransaction
 from .pack import check_pandas_type, decode, decode_key, encode
 
 if TYPE_CHECKING:
@@ -74,12 +74,17 @@ class BaseDBDict(ABC):
             raw (bool): Only used by the server.
         """
         log_level = kwargs.pop('log', None)
-        if log_level:
+        stdout = kwargs.pop("stdout", True)
+        if log_level and stdout:
             log_configs = setting_log(
                 level="DEBUG" if log_level is True else log_level,
-                stdout=kwargs.pop("stdout", False),
+                stdout=stdout,
                 save_file=kwargs.pop('save_log', False),
             )
+            try:
+                logger.remove(0)
+            except Exception:
+                pass
             log_ids = [logger.add(**log_conf) for log_conf in log_configs]
             self._logger = logger.bind(flaxkv=True)
 
@@ -970,18 +975,40 @@ class RemoteDBDict(BaseDBDict):
             **kwargs,
         )
 
+    def _start(self):
+        """
+        Starts the background worker thread.
+        """
+
+        self._thread_sync_notify = threading.Thread(target=self._attach_db)
+        self._thread_sync_notify.daemon = True
+        self._thread_sync_notify.start()
+
+        self._thread_running = True
+        self._thread.start()
+        self._thread_write_monitor.start()
+
+    def _attach_db(self):
+        def set_cache(data):
+            if data.type == "buffer_dict":
+                buffer_dict = data.data
+                for raw_key, raw_value in buffer_dict.items():
+                    self._cache_dict[decode_key(raw_key)] = decode(raw_value)
+            elif data.type == "delete_keys":
+                for raw_key in data.data.keys():
+                    self._cache_dict.pop(decode_key(raw_key))
+            else:
+                raise ValueError(f"Unknown data type: {data['type']}")
+
+        view: RemoteTransaction = self._db_manager.new_static_view()
+
+        for data in view.attach_db():
+            set_cache(data)
+
     def _iter_db_view(self, view, include_key=True, include_value=True):
         """
-        Iterates over the items in the database view.
-
-        Args:
-            view: The database view to iterate over.
+        Just a placeholder, now we don't use it.
         """
-
-        if include_key and include_value:
-            ...
-        else:
-            ...
 
     def keys(self, fetch_all=True, decode_raw=True):
         (
@@ -1020,8 +1047,6 @@ class RemoteDBDict(BaseDBDict):
 
             else:
                 raise NotImplementedError
-
-            # self._db_manager.close_static_view(view)
 
     def items(self, fetch_all=True, decode_raw=True):
         if fetch_all:
@@ -1063,7 +1088,6 @@ class RemoteDBDict(BaseDBDict):
         else:
             _db_dict = buffer_dict
 
-        # self._db_manager.close_static_view(view)
         return _db_dict
 
     def _pull_db_data_to_cache(self, decode_raw=True):
@@ -1074,6 +1098,8 @@ class RemoteDBDict(BaseDBDict):
             delete_buffer_set,
             view,
         ) = self._get_status_info(return_view=True, decode_raw=decode_raw)
+        view: RemoteTransaction
+        view.check_db_exist()
         with view.client.stream("GET", f"/dict_stream?db_name={self._db_name}") as r:
             buffer = bytearray()
             for data in r.iter_bytes():
@@ -1101,4 +1127,6 @@ class RemoteDBDict(BaseDBDict):
         }
 
     def __repr__(self):
+        if self._cache_all_db:
+            return str(self._cache_dict)
         return str({"keys": self.stat()['count']})

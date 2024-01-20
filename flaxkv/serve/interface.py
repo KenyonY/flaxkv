@@ -28,6 +28,7 @@ class AttachRequest:
     db_name: str
     backend: str
     rebuild: bool
+    client_id: str
 
 
 @dataclass
@@ -42,6 +43,8 @@ class StructSetData(msgspec.Struct):
 
 class StructSetBatchData(msgspec.Struct):
     data: Dict[bytes, bytes]
+    client_id: str
+    time: float
 
 
 class StructGetBatchData(msgspec.Struct):
@@ -50,3 +53,11 @@ class StructGetBatchData(msgspec.Struct):
 
 class StructDeleteBatchData(msgspec.Struct):
     keys: List[bytes]
+    client_id: str
+    time: float
+
+
+class StructUpdateData(msgspec.Struct):
+    type: str
+    data: Dict[bytes, bytes]
+    time: float

@@ -21,10 +21,12 @@ from .. import FlaxKV, LevelDBDict, LMDBDict
 
 
 class DBManager:
-    def __init__(self, root_path="./FLAXKV_DB", raw_mode=True):
+    def __init__(self, root_path="./FLAXKV_DB", raw_mode=True, log_level="DEBUG"):
         self._db_dict = {}
+        self.subscribers = {}
         self._raw_mode = raw_mode
         self._root_path = Path(root_path)
+        self._log_level = log_level
         if not self._root_path.exists():
             self._root_path.mkdir(parents=True, exist_ok=True)
 
@@ -38,7 +40,7 @@ class DBManager:
             backend=backend,
             rebuild=rebuild,
             raw=self._raw_mode,
-            log=True,
+            log=self._log_level,
         )
 
     def get(self, db_name: str, raise_key_error=False) -> LMDBDict | LevelDBDict | None:

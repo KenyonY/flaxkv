@@ -15,9 +15,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import io
+import os
 import traceback
+from asyncio import Queue
 from typing import AsyncGenerator
 
 import msgspec
@@ -27,6 +28,7 @@ from litestar.enums import RequestEncodingType
 from litestar.exceptions import HTTPException
 from litestar.params import Body
 from litestar.response import Stream
+from rich import print
 from typing_extensions import Annotated
 
 from ..pack import encode
@@ -40,17 +42,20 @@ from .interface import (
 )
 from .manager import DBManager
 
-# from typing import Any, Dict
 # from litestar.serialization import decode_json, decode_msgpack
 
 
-_db_manager = DBManager(root_path="./FLAXKV_DB", raw_mode=True)
+_db_manager = DBManager(
+    root_path="./FLAXKV_DB",
+    raw_mode=True,
+    log_level=os.environ.get("FLAXKV_LOG_LEVEL", "INFO"),
+)
 
 
 def _get_db(db_name: str):
     db = _db_manager.get(db_name)
     if db is None:
-        raise HTTPException(status_code=404, detail="db not found")
+        raise HTTPException(status_code=500, detail="db not found")
     return db
 
 
@@ -65,11 +70,24 @@ async def healthz() -> str:
     return "OK"
 
 
-@post(path="/attach")
-async def attach(data: AttachRequest) -> dict:
-    # todo switch `post` to `get`
+@get("/check_db")
+async def check_db(db_name: str) -> bool:
+    return _get_db(db_name) is not None
+
+
+@post(path="/connect")
+async def connect(data: AttachRequest) -> Stream:
     try:
         db = _db_manager.get(data.db_name)
+        q = Queue()
+        client = {"db_name": data.db_name, "update_data": q}
+        client_id = data.client_id
+        _db_manager.subscribers[client_id] = client
+
+        print(f"{' Client connected ':*^60}")
+        print(f"{client_id=}")
+        print(f"Current subscribers: {_db_manager.subscribers.keys()}")
+
         if db is None:
             _db_manager.set_db(
                 db_name=data.db_name, backend=data.backend, rebuild=data.rebuild
@@ -79,10 +97,50 @@ async def attach(data: AttachRequest) -> dict:
             _db_manager.set_db(
                 db_name=data.db_name, backend=data.backend, rebuild=False
             )
+
+        async def stream() -> AsyncGenerator:
+            try:
+                chunk_size = 1024 * 1024
+                while True:
+                    data_dict = await q.get()
+                    assert client_id != data_dict['client_id']
+                    buffer_dict = data_dict.get("buffer_dict")
+                    if buffer_dict:
+                        bytes_data = msgspec.msgpack.encode(
+                            {
+                                "type": 'buffer_dict',
+                                'data': buffer_dict,
+                                'time': data_dict['time'],
+                            }
+                        )
+                    else:
+                        delete_list = data_dict['delete_keys']
+                        bytes_data = msgspec.msgpack.encode(
+                            {
+                                "type": 'delete_keys',
+                                'data': {key: b"" for key in delete_list},
+                                'time': data_dict['time'],
+                            }
+                        )
+
+                    for i in range(0, len(bytes_data), chunk_size):
+                        yield bytes_data[i : i + chunk_size]
+                    yield b"data: end\n\n"
+            finally:
+                print(f"{' Client disconnected ':*^60}")
+                _db_manager.subscribers.pop(data.client_id)
+                print(f"Current subscribers: {_db_manager.subscribers.keys()}")
+
+        return Stream(stream())
+
     except Exception as e:
+
+        async def stream_error(e):
+
+            yield bytes(f"error {data.client_id} {e}\n", "utf-8")
+
         traceback.print_exc()
-        return {"success": False, "info": str(e)}
-    return {"success": True}
+        return Stream(stream_error(e))
 
 
 @post(path="/detach")
@@ -124,14 +182,30 @@ async def set_batch_stream_(
     data: Annotated[UploadFile, Body(media_type=RequestEncodingType.MULTI_PART)],
 ) -> None:
     # litestar >= 2.5.0 fixed: https://github.com/litestar-org/litestar/issues/2939
-    content = await data.read()
+    raw_data = await data.read()
     db_name = data.filename
     db = _get_db(db_name)
 
     try:
-        content = msgspec.msgpack.decode(content, type=StructSetBatchData)
+        content = msgspec.msgpack.decode(raw_data, type=StructSetBatchData)
+        assert db_name == _db_manager.subscribers[content.client_id]['db_name']
+        clients = [
+            client
+            for client_id, client in _db_manager.subscribers.items()
+            if client_id != content.client_id
+        ]
+        # print(f"{clients=}")
         for key, value in content.data.items():
             db[key] = value
+        for client in clients:
+            await client['update_data'].put(
+                {
+                    "buffer_dict": content.data,
+                    'time': content.time,
+                    "client_id": content.client_id,
+                }
+            )
+
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -172,9 +246,27 @@ async def delete_batch_(db_name: str, request: Request) -> None:
     db = _get_db(db_name)
     data = await request.body()
     try:
+
         data = msgspec.msgpack.decode(data, type=StructDeleteBatchData)
+        assert db_name == _db_manager.subscribers[data.client_id]['db_name']
+
         for key in data.keys:
             db.pop(key)
+
+        clients = [
+            client
+            for client_id, client in _db_manager.subscribers.items()
+            if client_id != data.client_id
+        ]
+        for client in clients:
+            await client['update_data'].put(
+                {
+                    "delete_keys": data.keys,
+                    'time': data.time,
+                    "client_id": data.client_id,
+                }
+            )
+
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -235,7 +327,6 @@ async def get_batch_stream_(db_name: str, request: Request) -> Stream:
 
 @get("/dict_stream", media_type=MediaType.TEXT)
 async def dict_stream_(db_name: str) -> Stream:
-
     db = _get_db(db_name)
     try:
         result_bin = encode(db.db_dict())

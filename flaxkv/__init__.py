@@ -19,7 +19,7 @@ import re
 
 from .core import LevelDBDict, LMDBDict, RemoteDBDict
 
-__version__ = "0.2.6"
+__version__ = "0.2.7-alpha"
 
 __all__ = [
     "FlaxKV",
