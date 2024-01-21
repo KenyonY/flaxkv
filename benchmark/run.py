@@ -18,7 +18,7 @@ from flaxkv.core import BaseDBDict
 
 benchmark_info = {}
 
-N = 1000
+N = 1500
 
 
 def prepare_data(n, key_only=False):
@@ -46,7 +46,7 @@ def gen_large_df():
 def startup_and_shutdown(request):
     # gen_large_df()
 
-    process = subprocess.Popen(["flaxkv", "run"])
+    process = subprocess.Popen(["flaxkv", "run", "--log", "warning", "--port", "8000"])
     try:
         wait_for_server_to_start(url="http://localhost:8000/healthz")
         yield

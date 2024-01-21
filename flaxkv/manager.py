@@ -269,7 +269,6 @@ class RemoteTransaction:
                     else:
                         buffer.extend(chunk)
             except Exception as e:
-                print(f"{e=}")
                 # traceback.print_exc()
                 yield None
 
@@ -280,7 +279,7 @@ class RemoteTransaction:
             if not response.is_success:
                 raise ValueError(response.json())
         except Exception as e:
-            print(f"warning: {e=}")
+            ...
 
     @retry(max_retries=3, delay=0.2, backoff=2)
     def detach_db(self, db_name=None):
