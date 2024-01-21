@@ -15,10 +15,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import traceback
-from asyncio import Queue
 from typing import AsyncGenerator
 
 import msgspec
@@ -75,12 +75,28 @@ async def check_db(db_name: str) -> bool:
     return _get_db(db_name) is not None
 
 
+@get("/disconnect")
+async def disconnect(client_id: str) -> dict:
+    try:
+        _db_manager.subscribers[client_id]['disconnect_event'].set()
+        return {"success": True}
+    except KeyError:
+        ...
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @post(path="/connect")
 async def connect(data: AttachRequest) -> Stream:
     try:
         db = _db_manager.get(data.db_name)
-        q = Queue()
-        client = {"db_name": data.db_name, "update_data": q}
+        q = asyncio.Queue()
+        client = {
+            "db_name": data.db_name,
+            "update_data": q,
+            "disconnect_event": asyncio.Event(),
+        }
         client_id = data.client_id
         _db_manager.subscribers[client_id] = client
 
@@ -98,40 +114,55 @@ async def connect(data: AttachRequest) -> Stream:
                 db_name=data.db_name, backend=data.backend, rebuild=False
             )
 
-        async def stream() -> AsyncGenerator:
+        async def stream(client: dict) -> AsyncGenerator:
             try:
                 chunk_size = 1024 * 1024
                 while True:
-                    data_dict = await q.get()
-                    assert client_id != data_dict['client_id']
-                    buffer_dict = data_dict.get("buffer_dict")
-                    if buffer_dict:
-                        bytes_data = msgspec.msgpack.encode(
-                            {
-                                "type": 'buffer_dict',
-                                'data': buffer_dict,
-                                'time': data_dict['time'],
-                            }
-                        )
-                    else:
-                        delete_list = data_dict['delete_keys']
-                        bytes_data = msgspec.msgpack.encode(
-                            {
-                                "type": 'delete_keys',
-                                'data': {key: b"" for key in delete_list},
-                                'time': data_dict['time'],
-                            }
-                        )
+                    done, pending = await asyncio.wait(
+                        [q.get(), client['disconnect_event'].wait()],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if client['disconnect_event'].is_set():
+                        for task in pending:
+                            task.cancel()
+                        break
 
-                    for i in range(0, len(bytes_data), chunk_size):
-                        yield bytes_data[i : i + chunk_size]
-                    yield b"data: end\n\n"
+                    else:
+                        data_dict = done.pop().result()
+                        # print(f"{data_dict=}")
+                        # data_dict = await q.get()
+                        assert client_id != data_dict['client_id']
+                        buffer_dict = data_dict.get("buffer_dict")
+                        if buffer_dict:
+                            bytes_data = msgspec.msgpack.encode(
+                                {
+                                    "type": 'buffer_dict',
+                                    'data': buffer_dict,
+                                    'time': data_dict['time'],
+                                }
+                            )
+                        else:
+                            delete_list = data_dict['delete_keys']
+                            bytes_data = msgspec.msgpack.encode(
+                                {
+                                    "type": 'delete_keys',
+                                    'data': {key: b"" for key in delete_list},
+                                    'time': data_dict['time'],
+                                }
+                            )
+
+                        for i in range(0, len(bytes_data), chunk_size):
+                            yield bytes_data[i : i + chunk_size]
+                        yield b"data: end\n\n"
             finally:
+                if isinstance(pending, set):
+                    for task in pending:
+                        task.cancel()
                 print(f"{' Client disconnected ':*^60}")
                 _db_manager.subscribers.pop(data.client_id)
                 print(f"Current subscribers: {_db_manager.subscribers.keys()}")
 
-        return Stream(stream())
+        return Stream(stream(client))
 
     except Exception as e:
 

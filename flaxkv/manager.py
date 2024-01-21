@@ -19,6 +19,7 @@ import io
 import os
 import re
 import shutil
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -232,11 +233,11 @@ class RemoteTransaction:
         self.delete_buffer_set = set()
 
     @retry(
-        max_retries=10,
+        max_retries=3,
         delay=0.2,
         backoff=2,
     )
-    def attach_db(self):
+    def attach_db(self, event: threading.Event):
         from .serve.interface import StructUpdateData
 
         with self.client.stream(
@@ -252,15 +253,34 @@ class RemoteTransaction:
             from httpx import Response
 
             r: Response
+            if r.is_success:
+                event.set()
+
             buffer = bytearray()
             chunk_size = 1024 * 1024
-            for chunk in r.iter_raw(chunk_size=chunk_size):
-                if chunk == b"data: end\n\n":
-                    print(f"{buffer=}")
-                    yield msgspec.msgpack.decode(bytes(buffer), type=StructUpdateData)
-                    buffer = bytearray()
-                else:
-                    buffer.extend(chunk)
+            try:
+                for chunk in r.iter_raw(chunk_size=chunk_size):
+                    if chunk == b"data: end\n\n":
+                        print(f"{buffer=}")
+                        yield msgspec.msgpack.decode(
+                            bytes(buffer), type=StructUpdateData
+                        )
+                        buffer = bytearray()
+                    else:
+                        buffer.extend(chunk)
+            except Exception as e:
+                print(f"{e=}")
+                # traceback.print_exc()
+                yield None
+
+    def close_connection(self):
+        url = f"/disconnect?client_id={self.client_id}"
+        try:
+            response = self.client.get(url)
+            if not response.is_success:
+                raise ValueError(response.json())
+        except Exception as e:
+            print(f"warning: {e=}")
 
     @retry(max_retries=3, delay=0.2, backoff=2)
     def detach_db(self, db_name=None):

@@ -966,6 +966,8 @@ class RemoteDBDict(BaseDBDict):
         backend='leveldb',
         **kwargs,
     ):
+        self._start_event = threading.Event()
+
         super().__init__(
             "remote",
             root_path_or_url=root_path_or_url,
@@ -974,6 +976,7 @@ class RemoteDBDict(BaseDBDict):
             rebuild=rebuild,
             **kwargs,
         )
+        self._start_event.wait()
 
     def _start(self):
         """
@@ -1002,8 +1005,34 @@ class RemoteDBDict(BaseDBDict):
 
         view: RemoteTransaction = self._db_manager.new_static_view()
 
-        for data in view.attach_db():
+        for data in view.attach_db(self._start_event):
+            if data is None:
+                break
             set_cache(data)
+
+    def _pull_db_data_to_cache(self, decode_raw=True):
+
+        self._start_event.wait()
+
+        (
+            buffer_dict,
+            buffer_keys,
+            buffer_values,
+            delete_buffer_set,
+            view,
+        ) = self._get_status_info(return_view=True, decode_raw=decode_raw)
+
+        view: RemoteTransaction
+        view.check_db_exist()
+        with view.client.stream("GET", f"/dict_stream?db_name={self._db_name}") as r:
+            buffer = bytearray()
+            for data in r.iter_bytes():
+                buffer.extend(data)
+
+        remote_db_dict = decode(bytes(buffer))
+        for dk, dv in remote_db_dict.items():
+            if dk not in delete_buffer_set:
+                self._cache_dict[dk] = dv
 
     def _iter_db_view(self, view, include_key=True, include_value=True):
         """
@@ -1090,26 +1119,6 @@ class RemoteDBDict(BaseDBDict):
 
         return _db_dict
 
-    def _pull_db_data_to_cache(self, decode_raw=True):
-        (
-            buffer_dict,
-            buffer_keys,
-            buffer_values,
-            delete_buffer_set,
-            view,
-        ) = self._get_status_info(return_view=True, decode_raw=decode_raw)
-        view: RemoteTransaction
-        view.check_db_exist()
-        with view.client.stream("GET", f"/dict_stream?db_name={self._db_name}") as r:
-            buffer = bytearray()
-            for data in r.iter_bytes():
-                buffer.extend(data)
-
-        remote_db_dict = decode(bytes(buffer))
-        for dk, dv in remote_db_dict.items():
-            if dk not in delete_buffer_set:
-                self._cache_dict[dk] = dv
-
     def stat(self):
         if self._cache_all_db:
             db_count = len(self._cache_dict)
@@ -1130,3 +1139,24 @@ class RemoteDBDict(BaseDBDict):
         if self._cache_all_db:
             return str(self._cache_dict)
         return str({"keys": self.stat()['count']})
+
+    def clear(self, wait=True):
+        raise NotImplementedError
+
+    def destroy(self):
+        raise NotImplementedError
+
+    def close(self, write=True, wait=False):
+        """
+        Closes the database and stops the background worker.
+
+        Args:
+            write (bool, optional): Whether to write the buffer to the database before closing. Defaults to True.
+            wait (bool, optional): Whether to wait for the background worker to finish. Defaults to False.
+        """
+        self._close_background_worker(write=write, block=wait)
+
+        self._db_manager.close_static_view(self._static_view)
+        self._db_manager.close()
+        self._db_manager.env.close_connection()
+        self._logger.info(f"Closed ({self._db_manager.db_type.upper()}) successfully")

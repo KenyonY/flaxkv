@@ -34,6 +34,7 @@ app = Litestar(
     route_handlers=[
         healthz,
         connect,
+        disconnect,
         detach,
         get_,
         get_batch_stream_,
