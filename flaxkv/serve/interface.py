@@ -55,9 +55,3 @@ class StructDeleteBatchData(msgspec.Struct):
     keys: List[bytes]
     client_id: str
     time: float
-
-
-class StructUpdateData(msgspec.Struct):
-    type: str
-    data: Dict[bytes, bytes]
-    time: float

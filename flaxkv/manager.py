@@ -23,6 +23,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Dict
 from uuid import uuid4
 
 import msgspec
@@ -30,6 +31,12 @@ from loguru import logger
 
 from .decorators import retry
 from .pack import decode, decode_key, encode
+
+
+class StructUpdateData(msgspec.Struct):
+    type: str
+    data: Dict[bytes, bytes]
+    time: float
 
 
 class DBManager:
@@ -238,7 +245,6 @@ class RemoteTransaction:
         backoff=2,
     )
     def attach_db(self, event: threading.Event):
-        from .serve.interface import StructUpdateData
 
         with self.client.stream(
             "POST",

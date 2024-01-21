@@ -50,7 +50,7 @@ test = [
     "pytest",
     "pytest-aiohttp",
     "uvicorn",
-    "httpx",
+    "httpx[http2]",
     "pandas",
     "hypercorn",
     "uvloop; sys_platform == 'linux'",
@@ -61,11 +61,11 @@ server = [
     "hypercorn",
     "uvloop; sys_platform == 'linux'",
     "litestar>=2.5.0",
-    "httpx",
+    "httpx[http2]",
 ]
 
 client = [
-    "httpx",
+    "httpx[http2]",
 ]
 
 
