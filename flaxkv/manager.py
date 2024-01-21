@@ -19,11 +19,16 @@ import io
 import os
 import re
 import shutil
+import threading
+import time
 import traceback
 from pathlib import Path
+from uuid import uuid4
 
+import msgspec
 from loguru import logger
 
+from .decorators import retry
 from .pack import decode, decode_key, encode
 
 
@@ -184,17 +189,6 @@ class DBManager:
             traceback.print_exc()
             raise ValueError(f"Unsupported DB type {self.db_type}.")
 
-    # def pull(self):
-    #     if self.db_type == "lmdb":
-    #         ...
-    #     elif self.db_type == "leveldb":
-    #         ...
-    #     elif self.db_type == "remote":
-    #         ...
-    #     else:
-    #         traceback.print_exc()
-    #         raise ValueError(f"Unsupported DB type {self.db_type}.")
-
     def close(self):
         """
         Closes the database connection.
@@ -217,6 +211,7 @@ class RemoteTransaction:
         backend="leveldb",
         rebuild=False,
         timeout=10,
+        http2=True,
         **kwargs,
     ):
         import httpx
@@ -224,23 +219,70 @@ class RemoteTransaction:
         self.client = kwargs.pop(
             "client",
             httpx.Client(
-                base_url=base_url, timeout=httpx.Timeout(None, connect=timeout)
+                base_url=base_url,
+                timeout=httpx.Timeout(None, connect=timeout),
+                http2=http2,
             ),
         )
         self.db_name = db_name
+        self._backend = backend
+        self._rebuild = rebuild
+        self.client_id = str(uuid4())
 
-        self._attach_db(db_name=db_name, rebuild=rebuild, backend=backend)
         self.put_buffer_dict = {}
         self.delete_buffer_set = set()
 
-    def _attach_db(self, db_name: str, rebuild: bool, backend: str):
-        response = self.client.post(
-            "/attach", json={"db_name": db_name, "backend": backend, "rebuild": rebuild}
-        )
-        if not response.is_success:
-            raise ValueError
-        return response.json()
+    @retry(
+        max_retries=3,
+        delay=0.2,
+        backoff=2,
+    )
+    def attach_db(self, event: threading.Event):
+        from .serve.interface import StructUpdateData
 
+        with self.client.stream(
+            "POST",
+            f"/connect",
+            json={
+                "db_name": self.db_name,
+                "backend": self._backend,
+                "rebuild": self._rebuild,
+                "client_id": self.client_id,
+            },
+        ) as r:
+            from httpx import Response
+
+            r: Response
+            if r.is_success:
+                event.set()
+
+            buffer = bytearray()
+            chunk_size = 1024 * 1024
+            try:
+                for chunk in r.iter_raw(chunk_size=chunk_size):
+                    if chunk == b"data: end\n\n":
+                        print(f"{buffer=}")
+                        yield msgspec.msgpack.decode(
+                            bytes(buffer), type=StructUpdateData
+                        )
+                        buffer = bytearray()
+                    else:
+                        buffer.extend(chunk)
+            except Exception as e:
+                print(f"{e=}")
+                # traceback.print_exc()
+                yield None
+
+    def close_connection(self):
+        url = f"/disconnect?client_id={self.client_id}"
+        try:
+            response = self.client.get(url)
+            if not response.is_success:
+                raise ValueError(response.json())
+        except Exception as e:
+            print(f"warning: {e=}")
+
+    @retry(max_retries=3, delay=0.2, backoff=2)
     def detach_db(self, db_name=None):
         if db_name is None:
             db_name = self.db_name
@@ -251,46 +293,54 @@ class RemoteTransaction:
             raise ValueError
         return response.json()
 
-    def _put(self, key: bytes, value: bytes):
-        url = f"/set?db_name={self.db_name}"
-        data = {"key": key, "value": value}
-        response = self.client.post(url, content=encode(data))
-        if not response.is_success:
-            raise RuntimeError
+    @retry(max_retries=3, delay=0.2, backoff=2)
+    def check_db_exist(self):
+        response = self.client.get(f"/check_db?db_name={self.db_name}")
+        content = response.json()
+        assert response.is_success, f"error: {content}"
+        assert content is True
 
+    @retry(max_retries=3, delay=0.2, backoff=2)
     def put(self, key: bytes, value: bytes):
         self.put_buffer_dict[key] = value
-
-    def _delete(self, key: bytes):
-        url = f"/delete?db_name={self.db_name}"
-        response = self.client.post(url, content=key)
-        if not response.is_success:
-            # todo: retry
-            raise RuntimeError
 
     def delete(self, key: bytes):
         self.delete_buffer_set.add(key)
 
+    @retry(max_retries=3, delay=0.5, backoff=2)
     def _put_batch(self):
-        byte_data = encode({"data": self.put_buffer_dict})
+        byte_data = encode(
+            {
+                "data": self.put_buffer_dict,
+                "client_id": self.client_id,
+                "time": time.time(),
+            }
+        )
         with io.BytesIO(byte_data) as f:
-            url = "/set_batch_stream"
+            url = f"/set_batch_stream"
             files = {'file': (self.db_name, f)}
             response = self.client.post(url, files=files)
 
         if not response.is_success:
-            # todo: retry
             raise RuntimeError
         self.put_buffer_dict = {}
 
+    @retry(max_retries=3, delay=0.5, backoff=2)
     def _delete_batch(self):
         url = f"/delete_batch?db_name={self.db_name}"
+        # todo: use stream
         response = self.client.post(
-            url, content=encode({"keys": list(self.delete_buffer_set)})
+            url,
+            content=encode(
+                {
+                    "keys": list(self.delete_buffer_set),
+                    "client_id": self.client_id,
+                    "time": time.time(),
+                }
+            ),
         )
 
         if not response.is_success:
-            # todo: retry
             raise RuntimeError
         self.delete_buffer_set = set()
 
@@ -335,19 +385,3 @@ class RemoteTransaction:
         if not response.is_success:
             raise RuntimeError
         return decode(response.read())
-
-
-# class Transaction:
-#     def __init__(self, env):
-#         self.env = env
-#
-#     def abort(self):
-#         ...
-#     def commit(self):
-#         ...
-#     def rollback(self):
-#         ...
-#     def __enter__(self):
-#         ...
-#     def __exit__(self, exc_type, exc_value, traceback):
-#         ...

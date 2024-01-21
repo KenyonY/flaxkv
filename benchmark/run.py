@@ -3,7 +3,6 @@ from __future__ import annotations
 import random
 import shutil
 import subprocess
-import time
 
 import numpy as np
 import pandas as pd
@@ -76,7 +75,7 @@ def startup_and_shutdown(request):
         "Sqlite3",
         # "flaxkv-LMDB",
         "flaxkv-LevelDB",
-        # "flaxkv-REMOTE",
+        "flaxkv-REMOTE",
     ]
 )
 def temp_db(request):
@@ -122,12 +121,13 @@ def benchmark(db, db_name, n=200):
         db.write_immediately(block=True)
 
     mt.start()
+    keys = []
     for key in db.keys():
-        ...
+        keys.append(key)
     mt.show_interval(f"{db_name} read (keys only)")
-    idx = 0
-    for key, value in db.items():
-        idx += 1
+
+    for key in keys:
+        value = db[key]
     read_cost = float(mt.show_interval(f"{db_name} read (traverse elements) "))
     print("--------------------------")
     return write_cost, read_cost

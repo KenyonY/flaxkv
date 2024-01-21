@@ -12,22 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import os
 import platform
 
 import fire
-import uvicorn
+
+try:
+    import uvloop
+
+    uvloop.install()
+except:
+    ...
 
 
 class Cli:
     @staticmethod
-    def run(port=8000, workers=1, **kwargs):
+    def run(port=8000, **kwargs):
         """
         Runs the application using the Uvicorn server.
 
         Args:
             port (int): The port number on which to run the server. Default is 8000.
-            workers (int): The number of worker processes to run. Default is 1.
 
         Returns:
             None
@@ -36,17 +42,34 @@ class Cli:
         if platform.system() == "Windows":
             os.environ["TZ"] = ""
 
-        uvicorn.run(
-            app="flaxkv.serve.app:app",
-            host=kwargs.get("host", "0.0.0.0"),
-            port=port,
-            workers=workers,
-            app_dir="..",
-            ssl_keyfile=kwargs.get("ssl_keyfile", None),
-            ssl_certfile=kwargs.get("ssl_certfile", None),
-            use_colors=False,
-            log_level="info",
-        )
+        log_level = kwargs.get("log", "info")
+        os.environ['FLAXKV_LOG_LEVEL'] = log_level.upper()
+
+        http2 = kwargs.get("http2", False)
+        if http2:
+            print("use http2")
+            from hypercorn.asyncio import serve
+            from hypercorn.config import Config
+
+            from flaxkv.serve.app import app
+
+            config = Config()
+            config.bind = [f"0.0.0.0:{port}"]
+            asyncio.run(serve(app, config))
+        else:
+            import uvicorn
+
+            uvicorn.run(
+                app="flaxkv.serve.app:app",
+                host=kwargs.get("host", "0.0.0.0"),
+                port=port,
+                workers=1,
+                app_dir="..",
+                ssl_keyfile=kwargs.get("ssl_keyfile", None),
+                ssl_certfile=kwargs.get("ssl_certfile", None),
+                use_colors=True,
+                log_level=log_level.lower(),
+            )
 
 
 def main():

@@ -52,10 +52,14 @@ test = [
     "uvicorn",
     "httpx",
     "pandas",
+    "hypercorn",
+    "uvloop; sys_platform == 'linux'",
 ]
 
 server = [
     "uvicorn",
+    "hypercorn",
+    "uvloop; sys_platform == 'linux'",
     "litestar>=2.5.0",
     "httpx",
 ]

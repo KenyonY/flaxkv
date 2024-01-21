@@ -72,9 +72,25 @@ def ext_hook(type, data: memoryview):
     return data
 
 
-encode = msgspec.msgpack.Encoder(enc_hook=encode_hook).encode
-decode = msgspec.msgpack.Decoder(ext_hook=ext_hook).decode
+msg_encoder = msgspec.msgpack.Encoder(enc_hook=encode_hook)
 
 
-def decode_key(value):
+def encode(obj, use_pickle=False):
+    if use_pickle:
+        return pickle.dumps(obj)
+    return msg_encoder.encode(obj)
+
+
+msg_decoder = msgspec.msgpack.Decoder(ext_hook=ext_hook)
+
+
+def decode(data, use_pickle=False):
+    if use_pickle:
+        return pickle.loads(data)
+    return msg_decoder.decode(data)
+
+
+def decode_key(value, use_pickle=False):
+    if use_pickle:
+        return pickle.loads(value)
     return msgpack.unpackb(value, use_list=False)

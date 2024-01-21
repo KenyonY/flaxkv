@@ -61,3 +61,41 @@ def msg_encoder(func):
         return encode(result)
 
     return wrapper
+
+
+def retry(max_retries=3, delay=1, backoff=2, exceptions=(Exception,)):
+    """
+    A decorator for automatically retrying a function upon encountering specified exceptions.
+
+    Args:
+        max_retries (int): The maximum number of times to retry the function.
+        delay (float): The initial delay between retries in seconds.
+        backoff (float): The multiplier by which the delay should increase after each retry.
+        exceptions (tuple): A tuple of exception classes upon which to retry.
+
+    Returns:
+        The return value of the wrapped function, if it succeeds.
+        Raises the last encountered exception if the function never succeeds.
+    """
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            retries = 0
+            current_delay = delay
+            while retries <= max_retries:
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    retries += 1
+                    if retries == max_retries:
+                        raise
+                    print(
+                        f"Retrying `{func.__name__}` after {current_delay} seconds, retry : {retries}\n"
+                    )
+                    time.sleep(current_delay)
+                    current_delay *= backoff
+
+        return wrapper
+
+    return decorator

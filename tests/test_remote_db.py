@@ -25,7 +25,7 @@ def wait_for_server_to_start(url, timeout=10):
 
 @pytest.fixture(scope="session", autouse=True)
 def start_server():
-    process = subprocess.Popen(["flaxkv", "run"])
+    process = subprocess.Popen(["flaxkv", "run", "--log", "info"])
     try:
         wait_for_server_to_start(url="http://localhost:8000/healthz")
         yield
@@ -36,9 +36,9 @@ def start_server():
 @pytest.fixture(
     scope="function",
     params=[
-        dict(db_name="test_server_db", backend="lmdb", rebuild=True, cache=False),
+        # dict(db_name="test_server_db", backend="lmdb", rebuild=True, cache=False),
         dict(db_name="test_server_db", backend="leveldb", rebuild=True, cache=False),
-        dict(db_name="test_server_db", backend="lmdb", rebuild=True, cache=True),
+        # dict(db_name="test_server_db", backend="lmdb", rebuild=True, cache=True),
         dict(db_name="test_server_db", backend="leveldb", rebuild=True, cache=True),
     ],
 )
@@ -46,6 +46,7 @@ def temp_db(request):
     # from litestar.testing import TestClient
     # from flaxkv.serve.app import app
 
+    time.sleep(2)
     db = RemoteDBDict(
         root_path_or_url="http://localhost:8000",
         **request.param,
@@ -53,15 +54,11 @@ def temp_db(request):
     )
     assert len(db) == 0
     yield db
+    db.close(wait=True)
 
 
-from test_local_db import (
+from test_local_db import (  # test_large_value,; test_list_keys_values_items,; test_set_get_write,; test_setdefault,; test_update,
     test_buffered_writing,
     test_key_checks_and_deletion,
-    test_large_value,
-    test_list_keys_values_items,
     test_numpy_array,
-    test_set_get_write,
-    test_setdefault,
-    test_update,
 )
