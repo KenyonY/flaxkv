@@ -18,7 +18,8 @@ from flaxkv.core import BaseDBDict
 
 benchmark_info = {}
 
-N = 1500
+N = 1000
+dim = 1000
 
 
 def prepare_data(n, key_only=False):
@@ -28,7 +29,8 @@ def prepare_data(n, key_only=False):
         if key_only:
             yield f'vector-{i}'
         else:
-            yield (f'vector-{i}', np.random.rand(1000))
+            yield (f'vector-{i}', np.random.rand(dim))
+            # yield (f'vector-{i}', f"{i}")
             # yield (f'vector-{i}', large_df)
 
 
@@ -60,7 +62,7 @@ def startup_and_shutdown(request):
         df = pd.DataFrame(benchmark_info).T
         df = df.sort_values(by="write", ascending=True)
         print("\n", df)
-        title = f"Read and Write ({N=}) 1000-dim vectors"
+        title = f"Read and Write ({N=}) {dim}-dim vectors"
         plot(df, title, log=True)
 
     request.addfinalizer(process_result)
@@ -72,19 +74,20 @@ def startup_and_shutdown(request):
         # "Redis",
         "RocksDict",
         "Shelve",
-        "Sqlite3",
+        # "Sqlite3",
         # "flaxkv-LMDB",
         "flaxkv-LevelDB",
         "flaxkv-REMOTE",
     ]
 )
 def temp_db(request):
+    cache = False
     if request.param == "flaxkv-LMDB":
-        db = FlaxKV('benchmark', backend='lmdb')
+        db = FlaxKV('benchmark', backend='lmdb', cache=cache)
     elif request.param == "flaxkv-LevelDB":
-        db = FlaxKV('benchmark', backend='leveldb', cache=False)
+        db = FlaxKV('benchmark', backend='leveldb', cache=cache)
     elif request.param == "flaxkv-REMOTE":
-        db = FlaxKV('benchmark', "http://localhost:8000", cache=False)
+        db = FlaxKV('benchmark', "http://localhost:8000", cache=cache)
     elif request.param == "RocksDict":
         db = RocksDict()
     elif request.param == "Shelve":
