@@ -61,8 +61,6 @@ else:
         # 发送消息并记录发送时间
         # start_time = asyncio.get_event_loop().time()
         await socket.send(subscriber_id.encode())
-
-        # 接收来自ROUTER的消息
         message = await socket.recv()
         # end_time = asyncio.get_event_loop().time()
 
