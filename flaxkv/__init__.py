@@ -19,10 +19,11 @@ import re
 
 from .core import LevelDBDict, LMDBDict, RemoteDBDict
 
-__version__ = "0.2.7.1"
+__version__ = "0.2.8"
 
 __all__ = [
     "FlaxKV",
+    "Flaxkv",
     "dbdict",
     "dictdb",
     "LMDBDict",
@@ -79,3 +80,4 @@ def FlaxKV(
 
 dbdict = FlaxKV
 dictdb = FlaxKV
+Flaxkv = FlaxKV

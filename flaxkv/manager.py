@@ -23,7 +23,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Literal
 from uuid import uuid4
 
 import msgspec

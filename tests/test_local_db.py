@@ -47,7 +47,7 @@ def temp_db(request):
     db = FlaxKV(**request.param)
 
     yield db
-    db.destroy()
+    db.clear(wait=True)
 
 
 def test_set_get_write(temp_db):

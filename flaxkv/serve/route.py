@@ -109,9 +109,9 @@ async def connect(data: AttachRequest) -> Stream:
                 db_name=data.db_name, backend=data.backend, rebuild=data.rebuild
             )
         elif data.rebuild:
-            db.destroy()
+            db.clear(wait=True)
             _db_manager.set_db(
-                db_name=data.db_name, backend=data.backend, rebuild=False
+                db_name=data.db_name, backend=data.backend, rebuild=data.rebuild
             )
 
         async def stream(client: dict) -> AsyncGenerator:
