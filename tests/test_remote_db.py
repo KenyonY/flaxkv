@@ -36,9 +36,9 @@ def start_server():
 @pytest.fixture(
     scope="function",
     params=[
-        # dict(db_name="test_server_db", backend="lmdb", rebuild=True, cache=False),
+        dict(db_name="test_server_db", backend="lmdb", rebuild=True, cache=False),
         dict(db_name="test_server_db", backend="leveldb", rebuild=True, cache=False),
-        # dict(db_name="test_server_db", backend="lmdb", rebuild=True, cache=True),
+        dict(db_name="test_server_db", backend="lmdb", rebuild=True, cache=True),
         dict(db_name="test_server_db", backend="leveldb", rebuild=True, cache=True),
     ],
 )
@@ -57,8 +57,13 @@ def temp_db(request):
     db.close(wait=True)
 
 
-from test_local_db import (  # test_large_value,; test_list_keys_values_items,; test_set_get_write,; test_setdefault,; test_update,
+from test_local_db import (
     test_buffered_writing,
     test_key_checks_and_deletion,
+    test_large_value,
+    test_list_keys_values_items,
     test_numpy_array,
+    test_set_get_write,
+    test_setdefault,
+    test_update,
 )

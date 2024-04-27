@@ -410,6 +410,17 @@ class BaseDBDict(ABC):
             self._buffered_count = 0
             self.write_immediately()
 
+    def from_dict(self, d: dict, clear=False):
+        """
+        Updates the buffer with the given dictionary.
+
+        Args:
+            d (dict): A dictionary of key-value pairs to update.
+        """
+        if clear:
+            self.clear(wait=True)
+        self.update(d)
+
     # @class_measure_time()
     def _write_buffer_to_db(
         self,
@@ -831,6 +842,14 @@ class LMDBDict(BaseDBDict):
         value: int, float, bool, str, list, dict, and np.ndarray,
     """
 
+    _instances = {}
+
+    def __new__(cls, db_name: str, root_path: str, rebuild=False, **kwargs):
+        name = db_name + str(root_path)
+        if name not in cls._instances:
+            cls._instances[name] = super().__new__(cls)
+        return cls._instances[name]
+
     def __init__(
         self,
         db_name: str,
@@ -839,15 +858,17 @@ class LMDBDict(BaseDBDict):
         rebuild=False,
         **kwargs,
     ):
-        super().__init__(
-            "lmdb",
-            root_path,
-            db_name,
-            max_dbs=1,
-            map_size=map_size,
-            rebuild=rebuild,
-            **kwargs,
-        )
+        if not hasattr(self, '_initialized'):
+            super().__init__(
+                "lmdb",
+                root_path,
+                db_name,
+                max_dbs=1,
+                map_size=map_size,
+                rebuild=rebuild,
+                **kwargs,
+            )
+            self._initialized = True
 
     def _iter_db_view(self, view, include_key=True, include_value=True):
         """
@@ -899,14 +920,25 @@ class LevelDBDict(BaseDBDict):
         value: int, float, bool, str, list, dict and np.ndarray,
     """
 
+    _instances = {}
+
+    def __new__(cls, db_name: str, root_path: str, rebuild=False, **kwargs):
+        name = db_name + str(root_path)
+        if name not in cls._instances:
+            cls._instances[name] = super().__new__(cls)
+        return cls._instances[name]
+
     def __init__(self, db_name: str, root_path: str, rebuild=False, **kwargs):
-        super().__init__(
-            "leveldb",
-            root_path_or_url=root_path,
-            db_name=db_name,
-            rebuild=rebuild,
-            **kwargs,
-        )
+        if not hasattr(self, '_initialized'):
+            super().__init__(
+                "leveldb",
+                root_path_or_url=root_path,
+                db_name=db_name,
+                rebuild=rebuild,
+                **kwargs,
+            )
+
+            self._initialized = True
 
     def _iter_db_view(self, view, include_key=True, include_value=True):
         """
