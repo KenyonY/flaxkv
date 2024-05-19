@@ -108,6 +108,7 @@ class BaseDBDict(ABC):
         self._static_view = self._db_manager.new_static_view()
 
         self.buffer_dict = {}
+        self._stat_buffer_num = 0
         self.delete_buffer_set = set()
 
         self._buffered_count = 0
@@ -289,6 +290,8 @@ class BaseDBDict(ABC):
         """
         with self._buffer_lock:
             if key in self.delete_buffer_set:
+                self.delete_buffer_set.discard(key)
+                self.buffer_dict[key] = default
                 return default
 
             if key in self.buffer_dict:
@@ -297,13 +300,16 @@ class BaseDBDict(ABC):
             if self._cache_all_db:
                 return self._cache_dict.get(key, default)
 
-            key = self._encode_key(key)
-            value = self._static_view.get(key)
+            _encode_key = self._encode_key(key)
+            value = self._static_view.get(_encode_key)
 
             if value is None:
+                self.buffer_dict[key] = default
                 return default
 
-            return value if self._raw else decode(value)
+            v = value if self._raw else decode(value)
+            self.buffer_dict[key] = v
+            return v
 
     def get_db_value(self, key: str):
         """
@@ -358,6 +364,7 @@ class BaseDBDict(ABC):
         with self._buffer_lock:
             self.buffer_dict[key] = value
             self.delete_buffer_set.discard(key)
+            self._stat_buffer_num = len(self.buffer_dict)
 
             self._buffered_count += 1
         self._last_set_time = time.time()
@@ -401,6 +408,7 @@ class BaseDBDict(ABC):
                 self.buffer_dict[key] = value
                 self.delete_buffer_set.discard(key)
 
+            self._stat_buffer_num = len(self.buffer_dict)
             self._buffered_count += 1
 
         self._last_set_time = time.time()
@@ -480,6 +488,7 @@ class BaseDBDict(ABC):
                 f"write {self._db_manager.db_type.upper()} buffer to db successfully! "
                 f"current_num={current_write_num} latest_num={self._latest_write_num}"
             )
+            self._stat_buffer_num = len(self.buffer_dict)
 
     def __iter__(self):
         """
@@ -527,6 +536,8 @@ class BaseDBDict(ABC):
                 self._last_set_time = time.time()
                 if key in self.buffer_dict:
                     del self.buffer_dict[key]
+                    # 如果在buffer中(可能是通过get获取), 则_stat_buffer_num -= 1，此时_stat_buffer_num 可以为负数
+                    self._stat_buffer_num -= 1
                     return
                 else:
                     if self._cache_all_db:
@@ -552,6 +563,7 @@ class BaseDBDict(ABC):
                 self._last_set_time = time.time()
                 if key in self.buffer_dict:
                     value = self.buffer_dict.pop(key)
+                    self._stat_buffer_num -= 1
                     if self._raw:
                         return decode(value)
                     else:
@@ -727,6 +739,13 @@ class BaseDBDict(ABC):
                     yield d_key
             self._db_manager.close_static_view(view)
 
+    def to_dict(self, decode_raw=True):
+        """
+        Retrieves all the key-value pairs in the database and buffer.
+        Returns: dict
+        """
+        return self.db_dict(decode_raw=decode_raw)
+
     def db_dict(self, decode_raw=True):
         """
         Retrieves all the key-value pairs in the database and buffer.
@@ -898,18 +917,26 @@ class LMDBDict(BaseDBDict):
     def stat(self):
         if self._cache_all_db:
             db_count = len(self._cache_dict)
+            count = db_count + self._stat_buffer_num
+            return {
+                'count': count,
+                'buffer': self._stat_buffer_num,
+                'db': db_count,
+                'marked_delete': len(self.delete_buffer_set),
+                "type": 'lmdb',
+            }
         else:
             env = self._db_manager.get_env()
             stats = env.stat()
             db_count = stats['entries']
-        buffer_count = len(self.buffer_dict.keys())
-        count = db_count + buffer_count
-        return {
-            'count': count,
-            'buffer': buffer_count,
-            'db': db_count,
-            'marked_delete': len(self.delete_buffer_set),
-        }
+            count = db_count + self._stat_buffer_num - len(self.delete_buffer_set)
+            return {
+                'count': count,
+                'buffer': self._stat_buffer_num,
+                'db': db_count,
+                'marked_delete': len(self.delete_buffer_set),
+                "type": 'lmdb',
+            }
 
 
 class LevelDBDict(BaseDBDict):
@@ -963,6 +990,15 @@ class LevelDBDict(BaseDBDict):
 
         if self._cache_all_db:
             db_keys = set(self._cache_dict.keys())
+            db_count = len(db_keys)
+            count = db_count + self._stat_buffer_num
+            return {
+                'count': count,
+                'buffer': self._stat_buffer_num,
+                'db': db_count,
+                'marked_delete': len(self.delete_buffer_set),
+                "type": 'leveldb',
+            }
         else:
             with self._buffer_lock:
                 view = self._db_manager.new_static_view()
@@ -971,12 +1007,17 @@ class LevelDBDict(BaseDBDict):
             view.close()
 
         db_count = len(db_keys)
-        db_valid_keys = db_keys - self.delete_buffer_set
-        intersection_count = len(buffer_keys.intersection(db_valid_keys))
-        buffer_count = len(buffer_keys)
-        count = len(db_valid_keys) + buffer_count - intersection_count
-
-        return {'count': count, 'buffer': buffer_count, "db": db_count}
+        # db_valid_keys = db_keys - self.delete_buffer_set
+        # intersection_count = len(buffer_keys.intersection(db_valid_keys))
+        # count = len(db_valid_keys) + self._stat_buffer_num - intersection_count
+        count = db_count + self._stat_buffer_num - len(self.delete_buffer_set)
+        return {
+            'count': count,
+            'buffer': self._stat_buffer_num,
+            "db": db_count,
+            'marked_delete': len(self.delete_buffer_set),
+            'type': 'leveldb',
+        }
 
 
 class RemoteDBDict(BaseDBDict):
@@ -1158,13 +1199,13 @@ class RemoteDBDict(BaseDBDict):
             env = self._db_manager.get_env()
             stats = env.stat()
             db_count = stats['count']
-        buffer_count = len(self.buffer_dict.keys())
-        count = db_count + buffer_count
+        count = db_count + self._stat_buffer_num
         return {
             'count': count,
-            'buffer': buffer_count,
+            'buffer': self._stat_buffer_num,
             'db': db_count,
             'marked_delete': len(self.delete_buffer_set),
+            'type': 'remote',
         }
 
     def __repr__(self):

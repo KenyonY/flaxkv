@@ -13,14 +13,18 @@
 # limitations under the License.
 
 
+from __future__ import annotations
+
 import logging
 import time
 from functools import wraps
+from typing import TYPE_CHECKING
 
 from rich import print
 from rich.text import Text
 
-from .pack import encode
+if TYPE_CHECKING:
+    from flaxkv import FlaxKV
 
 ENABLED_MEASURE_TIME_DECORATOR = True
 
@@ -55,6 +59,8 @@ def class_measure_time(logger=None, level=logging.INFO, prec=3):
 
 
 def msg_encoder(func):
+    from .pack import encode
+
     @wraps(func)
     async def wrapper(*args, **kwargs):
         result = await func(*args, **kwargs)
@@ -99,3 +105,36 @@ def retry(max_retries=3, delay=1, backoff=2, exceptions=(Exception,)):
         return wrapper
 
     return decorator
+
+
+def cache(db: FlaxKV = None):
+    """Keep a cache of previous function calls."""
+
+    if db is None:
+        db = {}
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            key = (args, tuple(sorted(kwargs.items())))
+            if key in db:
+                return db[key]
+            result = func(*args, **kwargs)
+            db[key] = result
+            return result
+
+        return wrapper
+
+    return decorator
+
+
+def singleton(cls):
+    instances = {}
+
+    @wraps(cls)
+    def get_instance(*args, **kwargs):
+        if cls not in instances:
+            instances[cls] = cls(*args, **kwargs)
+        return instances[cls]
+
+    return get_instance

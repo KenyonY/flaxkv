@@ -65,6 +65,7 @@ def test_set_get_write(temp_db):
             ("test_key", "test_value"),
             ('dict', {'a': 1, 'b': 2}),
             # ('set', {1, 2, 3, '1', '2', '3'}), # do not support currently
+            # ('tuple', (1, 2, 3, '1', '2', '3')),
             ('list', [1, 2, 3, '1', '2', '3']),
             ('nest_dict', {'a': {'b': 1, 'c': 2, 'd': {'e': 1, 'f': '2', 'g': 3}}}),
         ]
@@ -202,22 +203,74 @@ def test_buffered_writing(temp_db):
     assert temp_db.stat()['db'] == data_len - extra_len
 
 
+def test_get_cache(temp_db):
+    from sparrow import MeasureTime
+
+    if temp_db is None:
+        pytest.skip("Skipping")
+    assert len(temp_db) == 0
+
+    def gen_large_value():
+        return [str(i) for i in range(100 * 100 * 100)]
+
+    target_dict = {
+        'l1': gen_large_value(),
+        'l2': gen_large_value(),
+    }
+    temp_db.from_dict(target_dict)
+
+    assert len(temp_db) == 2
+    assert "l1" in temp_db
+
+    l1 = temp_db['l1']
+    l2 = temp_db['l2']
+    mt = MeasureTime().start()
+    idx = 0
+    for i, j in zip(l1, l2):
+        assert i == j == str(idx)
+        idx += 1
+    dt = mt.show_interval('\nread traverse')
+
+    temp_db.write_immediately(block=True)
+    mt.start()
+    l1 = temp_db['l1']
+    l2 = temp_db['l2']
+    mt.show_interval('decode large value')
+    idx = 0
+    for i, j in zip(l1, l2):
+        assert i == j == str(idx)
+        l1[idx] = str(100 + idx)
+        l2[idx] = str(100 + idx)
+        idx += 1
+
+    assert l1[0] == "100"
+    assert l2[0] == "100"
+    assert temp_db['l1'] == l1
+    assert temp_db['l2'] == l2
+    dt = mt.show_interval('read traverse')
+
+
 def test_key_checks_and_deletion(temp_db):
     if temp_db is None:
         pytest.skip("Skipping")
     assert len(temp_db) == 0
     target_dict = {"key1": "value1", "key2": "value2", "key3": "value3"}
     temp_db.update(target_dict)
+    assert len(temp_db) == 3
     assert "key1" in temp_db
     temp_db.write_immediately(block=True)
+    assert len(temp_db) == 3
     assert "key1" in temp_db
 
     del temp_db["key1"]
+    assert len(temp_db) == 2
     assert "key1" not in temp_db
     temp_db.write_immediately(block=True)
+    assert len(temp_db) == 2
     assert "key1" not in temp_db
 
     value = temp_db.pop("key2")
+    assert len(temp_db) == 1
     assert value == "value2"
 
     assert "key2" not in temp_db
