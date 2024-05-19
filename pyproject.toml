@@ -49,6 +49,7 @@ test = [
     "litestar>=2.5.0",
     "pytest",
     "pytest-aiohttp",
+    "sparrow-python",
     "uvicorn",
     "httpx[http2]",
     "pandas",

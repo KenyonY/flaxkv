@@ -409,7 +409,7 @@ class BaseDBDict(ABC):
                 self.delete_buffer_set.discard(key)
 
             self._stat_buffer_num = len(self.buffer_dict)
-            self._buffered_count += 1
+            self._buffered_count += len(d)
 
         self._last_set_time = time.time()
         # Trigger immediate write if buffer size exceeds MAX_BUFFER_SIZE
@@ -987,7 +987,6 @@ class LevelDBDict(BaseDBDict):
                 yield key_or_value
 
     def stat(self):
-        buffer_keys = set(self.buffer_dict.keys())
 
         if self._cache_all_db:
             db_keys = set(self._cache_dict.keys())
@@ -1009,9 +1008,13 @@ class LevelDBDict(BaseDBDict):
 
         db_count = len(db_keys)
         # db_valid_keys = db_keys - self.delete_buffer_set
+        # buffer_keys = set(self.buffer_dict.keys())
         # intersection_count = len(buffer_keys.intersection(db_valid_keys))
         # count = len(db_valid_keys) + self._stat_buffer_num - intersection_count
         count = db_count + self._stat_buffer_num - len(self.delete_buffer_set)
+
+        # db_valid_keys = db_keys.union(buffer_keys) - self.delete_buffer_set
+        # count = len(db_valid_keys)
         return {
             'count': count,
             'buffer': self._stat_buffer_num,
@@ -1196,14 +1199,19 @@ class RemoteDBDict(BaseDBDict):
     def stat(self):
         if self._cache_all_db:
             db_count = len(self._cache_dict)
+            buffer_num = self._stat_buffer_num
+            count = db_count + buffer_num
         else:
+            # fixme:
             env = self._db_manager.get_env()
             stats = env.stat()
             db_count = stats['count']
-        count = db_count + self._stat_buffer_num
+            buffer_num = self._stat_buffer_num
+            count = db_count + buffer_num - len(self.delete_buffer_set)
+
         return {
             'count': count,
-            'buffer': self._stat_buffer_num,
+            'buffer': buffer_num,
             'db': db_count,
             'marked_delete': len(self.delete_buffer_set),
             'type': 'remote',
