@@ -536,7 +536,8 @@ class BaseDBDict(ABC):
                 self._last_set_time = time.time()
                 if key in self.buffer_dict:
                     del self.buffer_dict[key]
-                    # 如果在buffer中(可能是通过get获取), 则_stat_buffer_num -= 1，此时_stat_buffer_num 可以为负数
+                    # If it is in the buffer (possibly obtained through get), then _stat_buffer_num -= 1,
+                    # and _stat_buffer_num can be negative
                     self._stat_buffer_num -= 1
                     return
                 else:

@@ -23,7 +23,7 @@ __version__ = "0.2.8"
 
 __all__ = [
     "FlaxKV",
-    "FlaxKV",
+    "Flaxkv",
     "dbdict",
     "dictdb",
     "LMDBDict",
@@ -80,4 +80,4 @@ def FlaxKV(
 
 dbdict = FlaxKV
 dictdb = FlaxKV
-FlaxKV = FlaxKV
+Flaxkv = FlaxKV
