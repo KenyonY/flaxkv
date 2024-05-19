@@ -46,6 +46,10 @@ except ImportError:
         return type(obj).__name__ == "DataFrame"
 
 
+# def check_ext_type(obj):
+#     return isinstance(obj, (tuple, set))
+
+
 def encode_hook(obj):
     if isinstance(obj, np.ndarray):
         return msgspec.msgpack.Ext(
@@ -54,8 +58,7 @@ def encode_hook(obj):
                 NPArray(dtype=obj.dtype.str, shape=obj.shape, data=obj.data)
             ),
         )
-    elif check_pandas_type(obj):
-        # return msgspec.msgpack.Ext(2, pyarrow.serialize_pandas(obj).to_pybytes())
+    else:
         return msgspec.msgpack.Ext(2, pickle.dumps(obj))
     return obj
 
@@ -67,7 +70,6 @@ def ext_hook(type, data: memoryview):
             serialized_array_rep.data, dtype=serialized_array_rep.dtype
         ).reshape(serialized_array_rep.shape)
     elif type == 2:
-        # return pyarrow.deserialize_pandas(pyarrow.py_buffer(data.tobytes()))
         return pickle.loads(data.tobytes())
     return data
 
