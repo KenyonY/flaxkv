@@ -119,7 +119,10 @@ async def connect(data: AttachRequest) -> Stream:
                 chunk_size = 1024 * 1024
                 while True:
                     done, pending = await asyncio.wait(
-                        [q.get(), client['disconnect_event'].wait()],
+                        [
+                            asyncio.create_task(q.get()),
+                            asyncio.create_task(client['disconnect_event'].wait()),
+                        ],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     if client['disconnect_event'].is_set():
