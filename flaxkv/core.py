@@ -53,6 +53,7 @@ class BaseDBDict(ABC):
         tuple = b't'
         dict = b'd'
         array = b'a'
+        ttl = b'x'  # prefix for ttl metadata
 
     def __init__(
         self,
@@ -103,6 +104,11 @@ class BaseDBDict(ABC):
         self._cache_all_db = cache
         self._register_auto_close()
         self._init()
+        
+        # Initialize TTL related attributes
+        self._ttl_dict = {}  # In-memory cache of expiry times
+        self._ttl_check_interval = 1  # Check expiry every 1 second
+        self._last_ttl_check = time.time()
 
     def _init(self):
         self._static_view = self._db_manager.new_static_view()
@@ -117,6 +123,9 @@ class BaseDBDict(ABC):
         self._stop_event = threading.Event()
 
         self._last_set_time = None
+        self._last_ttl_check = time.time()  # Initialize TTL check time
+        self._ttl_check_interval = 1  # Check expiry every 1 second
+        self._ttl_dict = {}  # In-memory cache of expiry times
 
         self._write_complete = SimpleQueue(maxsize=1)
         self._write_event = threading.Event()
@@ -204,9 +213,39 @@ class BaseDBDict(ABC):
 
     def _background_worker(self):
         """
-        Background worker function to periodically write buffer to the database.
+        Background worker function to periodically write buffer to the database and clean expired keys.
         """
         while self._thread_running or not self._write_queue.empty():
+            now = time.time()
+            
+            # Check for expired keys
+            if now - self._last_ttl_check >= self._ttl_check_interval:
+                self._last_ttl_check = now
+                # Check in-memory TTLs
+                expired_keys = []
+                with self._buffer_lock:
+                    for key, expiry_time in self._ttl_dict.items():
+                        if now > expiry_time:
+                            expired_keys.append(key)
+                    for key in expired_keys:
+                        self.__delitem__(key)
+                
+                # Check database TTLs
+                if self._cache_all_db:
+                    # For cached mode, we already have all data in memory
+                    for key in list(self._cache_dict.keys()):
+                        self._check_expiry(key)
+                else:
+                    # For non-cached mode, we need to scan the database
+                    # This is a potentially expensive operation, so we do it less frequently
+                    if now - self._last_ttl_check >= self._ttl_check_interval * 10:
+                        prefix = self._enc_prefix.ttl
+                        for ttl_key, ttl_value in self._iter_db_view(self._static_view):
+                            if ttl_key.startswith(prefix):
+                                key = ttl_key[len(prefix):]  # Remove TTL prefix
+                                expiry_time = float(decode(ttl_value))
+                                if now > expiry_time:
+                                    self.__delitem__(decode_key(key))
 
             self._write_event.wait(timeout=self.COMMIT_TIME_INTERVAL)
             self._write_event.clear()
@@ -221,9 +260,7 @@ class BaseDBDict(ABC):
 
             try:
                 self._write_buffer_to_db(current_write_num=self._latest_write_num)
-
             except:
-                # todo:
                 self._logger.warning(f"Write buffer to db failed. error")
                 traceback.print_exc()
 
@@ -277,6 +314,109 @@ class BaseDBDict(ABC):
         else:
             return encode(value)
 
+    def _encode_ttl_key(self, key):
+        """Encode a key for TTL storage"""
+        if self._raw:
+            return self._enc_prefix.ttl + key
+        else:
+            encoded_key = encode(key)
+            if not isinstance(encoded_key, bytes):
+                encoded_key = str(encoded_key).encode()
+            return self._enc_prefix.ttl + encoded_key
+
+    def _check_expiry(self, key):
+        """Check if a key has expired"""
+        # First check if the key exists at all
+        if not self.__contains__(key):
+            return False
+            
+        ttl_key = self._encode_ttl_key(key)
+        ttl_value = self._static_view.get(ttl_key)
+        
+        if ttl_value is not None:
+            expiry_time = float(decode(ttl_value))
+            if time.time() > expiry_time:
+                # Key has expired, delete it
+                self.__delitem__(key)
+                return True
+        return False
+
+    def set(self, key, value, ex=None):
+        """Set a key with optional expiry time in seconds"""
+        with self._buffer_lock:
+            self.buffer_dict[key] = value
+            self.delete_buffer_set.discard(key)
+            self._stat_buffer_num = len(self.buffer_dict)
+            self._buffered_count += 1
+            
+            if ex is not None:
+                expiry_time = time.time() + ex
+                ttl_key = self._encode_ttl_key(key)
+                self._ttl_dict[key] = expiry_time
+                self.buffer_dict[ttl_key] = str(expiry_time)
+                self._buffered_count += 1
+                
+            self._last_set_time = time.time()
+            
+        # Trigger immediate write if buffer size exceeds MAX_BUFFER_SIZE
+        if self._buffered_count >= self.MAX_BUFFER_SIZE:
+            self._logger.debug("Trigger immediate write")
+            self._buffered_count = 0
+            self.write_immediately()
+
+    def expire(self, key, ex):
+        """Set expiry time for an existing key"""
+        if key in self:
+            expiry_time = time.time() + ex
+            ttl_key = self._encode_ttl_key(key)
+            with self._buffer_lock:
+                self._ttl_dict[key] = expiry_time
+                self.buffer_dict[ttl_key] = str(expiry_time)
+                self._buffered_count += 1
+            self._last_set_time = time.time()
+            return True
+        return False
+
+    def ttl(self, key):
+        """Get remaining time to live for a key in seconds"""
+        if key not in self:
+            return None
+            
+        ttl_key = self._encode_ttl_key(key)
+        # First check the buffer
+        if ttl_key in self.buffer_dict:
+            expiry_time = float(self.buffer_dict[ttl_key])
+            remaining = expiry_time - time.time()
+            return max(0, remaining) if remaining > 0 else None
+            
+        # Then check the database
+        ttl_value = self._static_view.get(ttl_key)
+        if ttl_value is not None:
+            expiry_time = float(decode(ttl_value))
+            remaining = expiry_time - time.time()
+            return max(0, remaining) if remaining > 0 else None
+        return None
+
+    def persist(self, key):
+        """Remove expiry from a key"""
+        if key in self:
+            ttl_key = self._encode_ttl_key(key)
+            with self._buffer_lock:
+                # Remove from in-memory TTL dict
+                self._ttl_dict.pop(key, None)
+                # Mark TTL key for deletion in both buffer and database
+                self.delete_buffer_set.add(ttl_key)
+                # Remove from buffer if it exists there
+                if ttl_key in self.buffer_dict:
+                    del self.buffer_dict[ttl_key]
+                self._buffered_count += 1
+                self._last_set_time = time.time()
+                
+            # Trigger immediate write to ensure TTL is removed from database
+            self.write_immediately()
+            return True
+        return False
+
     def get(self, key: Any, default=None):
         """
         Retrieves the value associated with the given key.
@@ -286,8 +426,12 @@ class BaseDBDict(ABC):
             default: The default value to set if the key does not exist.
 
         Returns:
-            value: The value associated with the key, or None if the key is not found.
+            value: The value associated with the key, or default if the key is not found.
         """
+        # Check expiry before returning value
+        if self._check_expiry(key):
+            return default
+
         with self._buffer_lock:
             if key in self.delete_buffer_set:
                 self.delete_buffer_set.discard(key)
@@ -453,21 +597,53 @@ class BaseDBDict(ABC):
                 buffer_dict_snapshot = self.buffer_dict.copy()
                 delete_buffer_set_snapshot = self.delete_buffer_set.copy()
                 cache_dict = self._cache_dict.copy()
+                ttl_dict_snapshot = self._ttl_dict.copy()
+
         # ensure atomicity
         with self._db_manager.write() as wb:
             try:
+                # First handle deletions
                 for key in delete_buffer_set_snapshot:
                     # delete from db
-                    key = self._encode_key(key)
-                    wb.delete(key)
+                    if isinstance(key, bytes) and key.startswith(self._enc_prefix.ttl):
+                        # TTL key is already encoded
+                        wb.delete(key)
+                    else:
+                        # Normal key needs encoding
+                        wb.delete(self._encode_key(key))
+                        # Also delete its TTL if exists
+                        wb.delete(self._encode_ttl_key(key))
+
+                # Then handle normal key-value pairs
                 for key, value in buffer_dict_snapshot.items():
+                    if isinstance(key, bytes) and key.startswith(self._enc_prefix.ttl):
+                        # Skip TTL keys for now
+                        continue
+                        
                     # set key, value to cache
                     if self._cache_all_db:
                         cache_dict[key] = value
 
                     # set key, value to db
-                    key, value = self._encode_key(key), self._encode_value(value)
-                    wb.put(key, value)
+                    encoded_key = self._encode_key(key)
+                    encoded_value = self._encode_value(value)
+                    wb.put(encoded_key, encoded_value)
+
+                # Finally handle TTL data
+                now = time.time()
+                # First from buffer_dict
+                for key, value in buffer_dict_snapshot.items():
+                    if isinstance(key, bytes) and key.startswith(self._enc_prefix.ttl):
+                        expiry_time = float(value)
+                        if expiry_time > now:  # Only write non-expired TTLs
+                            wb.put(key, encode(str(expiry_time)))
+                
+                # Then from ttl_dict
+                for key, expiry_time in ttl_dict_snapshot.items():
+                    if expiry_time > now:  # Only write non-expired TTLs
+                        ttl_key = self._encode_ttl_key(key)
+                        if ttl_key not in buffer_dict_snapshot:  # Avoid writing twice
+                            wb.put(ttl_key, encode(str(expiry_time)))
 
             except Exception as e:
                 traceback.print_exc()
@@ -481,6 +657,7 @@ class BaseDBDict(ABC):
             self.delete_buffer_set = self.delete_buffer_set - delete_buffer_set_snapshot
             self.buffer_dict = self._diff_buffer(self.buffer_dict, buffer_dict_snapshot)
             self._cache_dict = cache_dict
+            self._ttl_dict = {k:v for k,v in self._ttl_dict.items() if k not in ttl_dict_snapshot}
 
             self._db_manager.close_static_view(self._static_view)
             self._static_view = self._db_manager.new_static_view()
@@ -532,6 +709,10 @@ class BaseDBDict(ABC):
         if key in self:
             with self._buffer_lock:
                 self.delete_buffer_set.add(key)
+                # Also delete the TTL key
+                ttl_key = self._encode_ttl_key(key)
+                self.delete_buffer_set.add(ttl_key)
+                self._ttl_dict.pop(key, None)
                 self._buffered_count += 1
                 self._last_set_time = time.time()
                 if key in self.buffer_dict:
