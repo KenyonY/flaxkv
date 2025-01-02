@@ -8,7 +8,6 @@ description = "A high-performance dictionary database."
 authors = [
     { name = "K.Y", email = "beidongjiedeguang@gmail.com" },
 ]
-license-files = { paths = ["LICENSE"] }
 readme = "README.md"
 keywords = ["persistent-storage", "on-disk dict", "lmdb", "leveldb", "Machine Learning", "NLP"]
 classifiers = [
@@ -33,7 +32,7 @@ dependencies = [
     "plyvel>=1.5.0; sys_platform == 'linux'",
     "plyvel-ci>=1.5.0; sys_platform == 'win32'",
     "plyvel-ci>=1.5.0; sys_platform == 'darwin'",
-    "typing-extensions>=4.7.1; python_version<'3.11'",
+    "typing-extensions>=4.7.1; python_version<'3.11'"
 ]
 
 dynamic = ["version"]
@@ -54,7 +53,7 @@ test = [
     "httpx[http2]",
     "pandas",
     "hypercorn",
-    "uvloop; sys_platform == 'linux'",
+    "uvloop; sys_platform == 'linux'"
 ]
 
 server = [
@@ -62,13 +61,12 @@ server = [
     "hypercorn",
     "uvloop; sys_platform == 'linux'",
     "litestar>=2.5.0",
-    "httpx[http2]",
+    "httpx[http2]"
 ]
 
 client = [
-    "httpx[http2]",
+    "httpx[http2]"
 ]
-
 
 [project.scripts]
 flaxkv = "flaxkv.__main__:main"
@@ -81,10 +79,37 @@ profile = "black"
 
 [tool.hatch.build]
 include = [
-    "flaxkv/**/*.py",
-]
-exclude = [
+    "flaxkv/**/*.py"
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["flaxkv"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+select = ["E", "F", "B", "I"]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+
+[tool.black]
+line-length = 120
+target-version = ["py311"] 
+
+[tool.pixi.project]
+channels = ["conda-forge"]
+platforms = ["osx-arm64"]
+
+[tool.pixi.pypi-dependencies]
+flaxkv = { path = ".", editable = true }
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+client = { features = ["client"], solve-group = "default" }
+server = { features = ["server"], solve-group = "default" }
+test = { features = ["test"], solve-group = "default" }
+
+[tool.pixi.tasks]
