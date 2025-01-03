@@ -154,6 +154,49 @@ class BaseDBDict(ABC):
         if self._cache_all_db:
             # load from db
             self._pull_db_data_to_cache()
+            
+        # Clean up expired keys at startup
+        self._cleanup_expired_keys()
+
+    def _cleanup_expired_keys(self):
+        """Clean up expired keys at startup"""
+        now = time.time()
+        expired_keys = []
+        
+        # Check all TTL entries
+        if self._cache_all_db:
+            # For cached mode, we can directly iterate over the cache
+            for key in list(self._cache_dict.keys()):
+                ttl_value = self._ttl_static_view.get(self._encode_key(key))
+                if ttl_value is not None:
+                    expiry_time = float(decode(ttl_value))
+                    if now > expiry_time:
+                        expired_keys.append(key)
+        else:
+            # For non-cached mode, we need to scan the TTL database
+            view = self._ttl_db_manager.new_static_view()
+            try:
+                for key, value in self._iter_db_view(view):
+                    expiry_time = float(decode(value))
+                    if now > expiry_time:
+                        # Get original key
+                        expired_keys.append(decode_key(key))
+            finally:
+                self._ttl_db_manager.close_static_view(view)
+        
+        # Delete expired keys
+        if expired_keys:
+            with self._buffer_lock:
+                for key in expired_keys:
+                    self.delete_buffer_set.add(key)
+                    if key in self.buffer_dict:
+                        del self.buffer_dict[key]
+                    if self._cache_all_db and key in self._cache_dict:
+                        del self._cache_dict[key]
+                self._buffered_count += len(expired_keys)
+                self._last_set_time = now
+            # Write changes immediately
+            self.write_immediately(block=True)
 
     def _register_auto_close(self, func=None):
         if func is None:
@@ -232,28 +275,35 @@ class BaseDBDict(ABC):
                 # Check in-memory TTLs
                 expired_keys = []
                 with self._buffer_lock:
-                    for key, expiry_time in self._ttl_dict.items():
-                        if now > expiry_time:
-                            expired_keys.append(key)
-                    for key in expired_keys:
-                        self.__delitem__(key)
-                
-                # Check database TTLs
-                if self._cache_all_db:
-                    # For cached mode, we already have all data in memory
-                    for key in list(self._cache_dict.keys()):
-                        self._check_expiry(key)
-                else:
-                    # For non-cached mode, we need to scan the database
-                    # This is a potentially expensive operation, so we do it less frequently
-                    if now - self._last_ttl_check >= self._ttl_check_interval * 10:
-                        prefix = self._enc_prefix.ttl
-                        for ttl_key, ttl_value in self._iter_db_view(self._static_view):
-                            if ttl_key.startswith(prefix):
-                                key = ttl_key[len(prefix):]  # Remove TTL prefix
+                    # First check buffered TTLs
+                    for key, value in self._ttl_buffer_dict.items():
+                        if value is not None:  # Skip deletion markers
+                            expiry_time = float(value)
+                            if now > expiry_time:
+                                expired_keys.append(key)
+                    
+                    # Then check database TTLs for keys in memory
+                    for key in self.buffer_dict.keys():
+                        if key not in self._ttl_buffer_dict:
+                            ttl_value = self._ttl_static_view.get(self._encode_key(key))
+                            if ttl_value is not None:
                                 expiry_time = float(decode(ttl_value))
                                 if now > expiry_time:
-                                    self.__delitem__(decode_key(key))
+                                    expired_keys.append(key)
+                    
+                    # Delete expired keys
+                    for key in expired_keys:
+                        self.delete_buffer_set.add(key)
+                        if key in self.buffer_dict:
+                            del self.buffer_dict[key]
+                        if self._cache_all_db and key in self._cache_dict:
+                            del self._cache_dict[key]
+                        self._ttl_dict.pop(key, None)
+                        self._ttl_buffer_dict[key] = None  # Mark for deletion
+                    
+                    if expired_keys:
+                        self._buffered_count += len(expired_keys)
+                        self._last_set_time = now
 
             self._write_event.wait(timeout=self.COMMIT_TIME_INTERVAL)
             self._write_event.clear()

@@ -45,8 +45,8 @@ print(db)
 ttl=  db.ttl("tt")
 print(ttl)
 if ttl:
-    time.sleep(ttl + 0.1)
-    print("sleep", db)
+    time.sleep(ttl + 1)
+    print(f"sleep:{ttl}\n", db)
 db.clear(wait=True)
 # db['key3'] = 'v3'
 print(db)
