@@ -92,6 +92,7 @@ class BaseDBDict(ABC):
         else:
             logger.disable('flaxkv')
 
+        # Main database for key-value pairs
         self._db_manager = DBManager(
             db_type=db_type,
             root_path_or_url=root_path_or_url,
@@ -99,19 +100,25 @@ class BaseDBDict(ABC):
             rebuild=rebuild,
             **kwargs,
         )
+        
+        # TTL database for expiry times
+        self._ttl_db_manager = DBManager(
+            db_type=db_type,
+            root_path_or_url=root_path_or_url,
+            db_name=f"{db_name}_ttl",
+            rebuild=rebuild,
+            **kwargs,
+        )
+        
         self._db_name = self._db_manager.db_name
         self._raw = raw
         self._cache_all_db = cache
         self._register_auto_close()
         self._init()
-        
-        # Initialize TTL related attributes
-        self._ttl_dict = {}  # In-memory cache of expiry times
-        self._ttl_check_interval = 1  # Check expiry every 1 second
-        self._last_ttl_check = time.time()
 
     def _init(self):
         self._static_view = self._db_manager.new_static_view()
+        self._ttl_static_view = self._ttl_db_manager.new_static_view()
 
         self.buffer_dict = {}
         self._stat_buffer_num = 0
@@ -123,9 +130,10 @@ class BaseDBDict(ABC):
         self._stop_event = threading.Event()
 
         self._last_set_time = None
-        self._last_ttl_check = time.time()  # Initialize TTL check time
+        self._last_ttl_check = time.time()
         self._ttl_check_interval = 1  # Check expiry every 1 second
         self._ttl_dict = {}  # In-memory cache of expiry times
+        self._ttl_buffer_dict = {}  # Buffer for TTL operations
 
         self._write_complete = SimpleQueue(maxsize=1)
         self._write_event = threading.Event()
@@ -330,8 +338,7 @@ class BaseDBDict(ABC):
         if not self.__contains__(key):
             return False
             
-        ttl_key = self._encode_ttl_key(key)
-        ttl_value = self._static_view.get(ttl_key)
+        ttl_value = self._ttl_static_view.get(self._encode_key(key))
         
         if ttl_value is not None:
             expiry_time = float(decode(ttl_value))
@@ -351,9 +358,8 @@ class BaseDBDict(ABC):
             
             if ex is not None:
                 expiry_time = time.time() + ex
-                ttl_key = self._encode_ttl_key(key)
                 self._ttl_dict[key] = expiry_time
-                self.buffer_dict[ttl_key] = str(expiry_time)
+                self._ttl_buffer_dict[key] = str(expiry_time)
                 self._buffered_count += 1
                 
             self._last_set_time = time.time()
@@ -368,10 +374,9 @@ class BaseDBDict(ABC):
         """Set expiry time for an existing key"""
         if key in self:
             expiry_time = time.time() + ex
-            ttl_key = self._encode_ttl_key(key)
             with self._buffer_lock:
                 self._ttl_dict[key] = expiry_time
-                self.buffer_dict[ttl_key] = str(expiry_time)
+                self._ttl_buffer_dict[key] = str(expiry_time)
                 self._buffered_count += 1
             self._last_set_time = time.time()
             return True
@@ -382,15 +387,14 @@ class BaseDBDict(ABC):
         if key not in self:
             return None
             
-        ttl_key = self._encode_ttl_key(key)
         # First check the buffer
-        if ttl_key in self.buffer_dict:
-            expiry_time = float(self.buffer_dict[ttl_key])
+        if key in self._ttl_buffer_dict:
+            expiry_time = float(self._ttl_buffer_dict[key])
             remaining = expiry_time - time.time()
             return max(0, remaining) if remaining > 0 else None
             
         # Then check the database
-        ttl_value = self._static_view.get(ttl_key)
+        ttl_value = self._ttl_static_view.get(self._encode_key(key))
         if ttl_value is not None:
             expiry_time = float(decode(ttl_value))
             remaining = expiry_time - time.time()
@@ -400,15 +404,12 @@ class BaseDBDict(ABC):
     def persist(self, key):
         """Remove expiry from a key"""
         if key in self:
-            ttl_key = self._encode_ttl_key(key)
             with self._buffer_lock:
                 # Remove from in-memory TTL dict
                 self._ttl_dict.pop(key, None)
                 # Mark TTL key for deletion in both buffer and database
-                self.delete_buffer_set.add(ttl_key)
-                # Remove from buffer if it exists there
-                if ttl_key in self.buffer_dict:
-                    del self.buffer_dict[ttl_key]
+                encoded_key = self._encode_key(key)
+                self._ttl_buffer_dict[encoded_key] = None  # Mark for deletion
                 self._buffered_count += 1
                 self._last_set_time = time.time()
                 
@@ -587,7 +588,7 @@ class BaseDBDict(ABC):
         with self._buffer_lock:
             self._logger.debug(f"Trigger write")
             self._logger.debug(f"{current_write_num=}")
-            if not (self.buffer_dict or self.delete_buffer_set):
+            if not (self.buffer_dict or self.delete_buffer_set or self._ttl_buffer_dict):
                 self._logger.debug(
                     f"buffer is empty and delete_buffer_set is empty: {self._latest_write_num=} {current_write_num=}"
                 )
@@ -597,29 +598,20 @@ class BaseDBDict(ABC):
                 buffer_dict_snapshot = self.buffer_dict.copy()
                 delete_buffer_set_snapshot = self.delete_buffer_set.copy()
                 cache_dict = self._cache_dict.copy()
-                ttl_dict_snapshot = self._ttl_dict.copy()
+                ttl_buffer_dict_snapshot = self._ttl_buffer_dict.copy()
 
         # ensure atomicity
-        with self._db_manager.write() as wb:
+        with self._db_manager.write() as wb, self._ttl_db_manager.write() as ttl_wb:
             try:
                 # First handle deletions
                 for key in delete_buffer_set_snapshot:
-                    # delete from db
-                    if isinstance(key, bytes) and key.startswith(self._enc_prefix.ttl):
-                        # TTL key is already encoded
-                        wb.delete(key)
-                    else:
-                        # Normal key needs encoding
-                        wb.delete(self._encode_key(key))
-                        # Also delete its TTL if exists
-                        wb.delete(self._encode_ttl_key(key))
+                    # delete from main db
+                    wb.delete(self._encode_key(key))
+                    # Also delete its TTL if exists
+                    ttl_wb.delete(self._encode_key(key))
 
                 # Then handle normal key-value pairs
                 for key, value in buffer_dict_snapshot.items():
-                    if isinstance(key, bytes) and key.startswith(self._enc_prefix.ttl):
-                        # Skip TTL keys for now
-                        continue
-                        
                     # set key, value to cache
                     if self._cache_all_db:
                         cache_dict[key] = value
@@ -631,19 +623,14 @@ class BaseDBDict(ABC):
 
                 # Finally handle TTL data
                 now = time.time()
-                # First from buffer_dict
-                for key, value in buffer_dict_snapshot.items():
-                    if isinstance(key, bytes) and key.startswith(self._enc_prefix.ttl):
+                for key, value in ttl_buffer_dict_snapshot.items():
+                    encoded_key = self._encode_key(key)
+                    if value is None:  # TTL deletion marker
+                        ttl_wb.delete(encoded_key)
+                    else:
                         expiry_time = float(value)
                         if expiry_time > now:  # Only write non-expired TTLs
-                            wb.put(key, encode(str(expiry_time)))
-                
-                # Then from ttl_dict
-                for key, expiry_time in ttl_dict_snapshot.items():
-                    if expiry_time > now:  # Only write non-expired TTLs
-                        ttl_key = self._encode_ttl_key(key)
-                        if ttl_key not in buffer_dict_snapshot:  # Avoid writing twice
-                            wb.put(ttl_key, encode(str(expiry_time)))
+                            ttl_wb.put(encoded_key, encode(str(expiry_time)))
 
             except Exception as e:
                 traceback.print_exc()
@@ -657,10 +644,13 @@ class BaseDBDict(ABC):
             self.delete_buffer_set = self.delete_buffer_set - delete_buffer_set_snapshot
             self.buffer_dict = self._diff_buffer(self.buffer_dict, buffer_dict_snapshot)
             self._cache_dict = cache_dict
-            self._ttl_dict = {k:v for k,v in self._ttl_dict.items() if k not in ttl_dict_snapshot}
+            self._ttl_dict = {k:v for k,v in self._ttl_dict.items() if k not in ttl_buffer_dict_snapshot}
+            self._ttl_buffer_dict = {}
 
             self._db_manager.close_static_view(self._static_view)
+            self._ttl_db_manager.close_static_view(self._ttl_static_view)
             self._static_view = self._db_manager.new_static_view()
+            self._ttl_static_view = self._ttl_db_manager.new_static_view()
             self._logger.info(
                 f"write {self._db_manager.db_type.upper()} buffer to db successfully! "
                 f"current_num={current_write_num} latest_num={self._latest_write_num}"
@@ -789,10 +779,10 @@ class BaseDBDict(ABC):
         """
         Clears the database and resets the buffer.
         """
-
         self.close(write=False, wait=wait)
 
         self._db_manager.rebuild_db()
+        self._ttl_db_manager.rebuild_db()
         self._init()
 
     def destroy(self):
@@ -802,6 +792,7 @@ class BaseDBDict(ABC):
         self.close(write=False)
         self._unregister_auto_close()
         self._db_manager.destroy()
+        self._ttl_db_manager.destroy()
         self._logger.info(f"Destroyed database successfully.")
 
     def __del__(self):
@@ -827,7 +818,9 @@ class BaseDBDict(ABC):
         self._close_background_worker(write=write, block=wait)
 
         self._db_manager.close_static_view(self._static_view)
+        self._ttl_db_manager.close_static_view(self._ttl_static_view)
         self._db_manager.close()
+        self._ttl_db_manager.close()
         self._logger.info(f"Closed ({self._db_manager.db_type.upper()}) successfully")
 
     def _get_status_info(
