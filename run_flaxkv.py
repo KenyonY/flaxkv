@@ -42,13 +42,12 @@ db = FlaxKV('test_db')
 # 设置3秒过期时间，并在3秒后检查键值是否存在
 print("\n设置key3的过期时间为3秒")
 print(db)
-ttl=  db.ttl("tt")
+ttl = db.ttl("tt")
 print(ttl)
 if ttl:
     time.sleep(ttl + 1)
     print(f"sleep:{ttl}\n", db)
 db.clear(wait=True)
-# db['key3'] = 'v3'
 print(db)
 db.set('key3', 'value3', ex=3)
 print(db)
@@ -62,6 +61,24 @@ for key, value in db.items():
 print("等待3秒...")
 time.sleep(2)
 print("3秒后，key3的值:", db.get('key3',))
-# print(db['key3'])
 
-db.set("tt", 'ttt', 10)
+db.set("tt", 'ttt', 3)
+# 确保完全关闭数据库
+db.close(wait=True)
+
+print("重新打开数据库")
+# 重新创建一个全新的实例
+new_db = FlaxKV('test_db')
+print(new_db)
+ttl = new_db.ttl("tt")
+print(f"tt的ttl值:{ttl}")
+
+time.sleep(ttl + 0.1)
+print(f"sleep {ttl + 0.1}s")
+print("判断tt是否存在", "tt" in new_db)
+
+print("遍历所有键值对")
+for key, value in new_db.items():
+    print(key, value)
+
+print("获取tt的值", new_db.get("tt"))

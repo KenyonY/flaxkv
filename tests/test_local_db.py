@@ -23,21 +23,7 @@ from flaxkv import FlaxKV
         dict(
             db_name="test_db",
             root_path_or_url=tempfile.mkdtemp(),
-            backend='lmdb',
-            rebuild=True,
-            cache=False,
-        ),
-        dict(
-            db_name="test_db",
-            root_path_or_url=tempfile.mkdtemp(),
             backend='leveldb',
-            rebuild=True,
-            cache=True,
-        ),
-        dict(
-            db_name="test_db",
-            root_path_or_url=tempfile.mkdtemp(),
-            backend='lmdb',
             rebuild=True,
             cache=True,
         ),
@@ -47,7 +33,7 @@ def temp_db(request):
     db = FlaxKV(**request.param)
 
     yield db
-    db.clear(wait=True)
+    db.destroy(wait=True)
 
 
 def test_set_get_write(temp_db):

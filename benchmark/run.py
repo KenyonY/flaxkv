@@ -73,15 +73,12 @@ def startup_and_shutdown(request):
         "RocksDict",
         "Shelve",
         "Sqlite3",
-        # "flaxkv-LMDB",
         "flaxkv-LevelDB",
         "flaxkv-REMOTE",
     ]
 )
 def temp_db(request):
-    if request.param == "flaxkv-LMDB":
-        db = FlaxKV('benchmark', backend='lmdb')
-    elif request.param == "flaxkv-LevelDB":
+    if request.param == "flaxkv-LevelDB":
         db = FlaxKV('benchmark', backend='leveldb', cache=False)
     elif request.param == "flaxkv-REMOTE":
         db = FlaxKV('benchmark', "http://localhost:8000", cache=False)

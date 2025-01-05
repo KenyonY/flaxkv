@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .. import FlaxKV, LevelDBDict, LMDBDict
+from .. import FlaxKV, LevelDBDict
 
 
 class DBManager:
@@ -43,7 +43,7 @@ class DBManager:
             log=self._log_level,
         )
 
-    def get(self, db_name: str, raise_key_error=False) -> LMDBDict | LevelDBDict | None:
+    def get(self, db_name: str, raise_key_error=False) -> LevelDBDict | None:
         if raise_key_error:
             return self._db_dict[db_name]
         else:

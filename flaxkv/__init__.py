@@ -17,16 +17,15 @@ from __future__ import annotations
 
 import re
 
-from .core import LevelDBDict, LMDBDict, RemoteDBDict
+from .core import LevelDBDict, RemoteDBDict
 
-__version__ = "0.2.9"
+__version__ = "0.3.0"
 
 __all__ = [
     "FlaxKV",
     "Flaxkv",
     "dbdict",
     "dictdb",
-    "LMDBDict",
     "LevelDBDict",
     "RemoteDBDict",
 ]
@@ -42,7 +41,7 @@ def FlaxKV(
     raw=False,
     cache=False,
     **kwargs,
-) -> LMDBDict | LevelDBDict | RemoteDBDict:
+) -> LevelDBDict | RemoteDBDict:
     if url_pattern.match(root_path_or_url):
         return RemoteDBDict(
             root_path_or_url=root_path_or_url,
@@ -54,17 +53,7 @@ def FlaxKV(
             **kwargs,
         )
 
-    if backend == 'lmdb':
-        return LMDBDict(
-            root_path=root_path_or_url,
-            db_name=db_name,
-            rebuild=rebuild,
-            raw=raw,
-            cache=cache,
-            **kwargs,
-        )
-
-    elif backend == 'leveldb':
+    if backend == 'leveldb':
         return LevelDBDict(
             root_path=root_path_or_url,
             db_name=db_name,

@@ -1,3 +1,7 @@
+.aider.*
+.env
+test_db*
+
 examples/
 CACHE_LMDB
 CHACHE_SQLITE3.db

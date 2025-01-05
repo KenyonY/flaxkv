@@ -186,9 +186,7 @@ class DBManager:
         Returns:
             wb: A write transaction object based on the specified DB type.
         """
-        if self.db_type == "lmdb":
-            return self.env.begin(write=True)
-        elif self.db_type == "leveldb":
+        if self.db_type == "leveldb":
             return self.env.write_batch()
         elif self.db_type == "remote":
             return self.env
@@ -200,9 +198,7 @@ class DBManager:
         """
         Closes the database connection.
         """
-        if self.db_type == "lmdb":
-            return self.env.close()
-        elif self.db_type == "leveldb":
+        if self.db_type == "leveldb":
             return self.env.close()
         elif self.db_type == "remote":
             return self.env.close()

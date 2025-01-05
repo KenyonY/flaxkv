@@ -384,17 +384,36 @@ class BaseDBDict(ABC):
 
     def _check_expiry(self, key):
         """Check if a key has expired"""
-        # First check if the key exists at all
-        if not self.__contains__(key):
+        # First check TTL buffer
+        if key in self._ttl_buffer_dict:
+            ttl_value = self._ttl_buffer_dict[key]
+            if ttl_value is not None:
+                expiry_time = float(ttl_value)
+                if time.time() > expiry_time:
+                    # Key has expired, mark it for deletion
+                    with self._buffer_lock:
+                        self.delete_buffer_set.add(key)
+                        if key in self.buffer_dict:
+                            del self.buffer_dict[key]
+                        if self._cache_all_db and key in self._cache_dict:
+                            del self._cache_dict[key]
+                        self._ttl_buffer_dict[key] = None  # Mark for deletion
+                    return True
             return False
-            
+
+        # Then check TTL database
         ttl_value = self._ttl_static_view.get(self._encode_key(key))
-        
         if ttl_value is not None:
             expiry_time = float(decode(ttl_value))
             if time.time() > expiry_time:
-                # Key has expired, delete it
-                self.__delitem__(key)
+                # Key has expired, mark it for deletion
+                with self._buffer_lock:
+                    self.delete_buffer_set.add(key)
+                    if key in self.buffer_dict:
+                        del self.buffer_dict[key]
+                    if self._cache_all_db and key in self._cache_dict:
+                        del self._cache_dict[key]
+                    self._ttl_buffer_dict[key] = None  # Mark for deletion
                 return True
         return False
 
@@ -458,13 +477,12 @@ class BaseDBDict(ABC):
                 # Remove from in-memory TTL dict
                 self._ttl_dict.pop(key, None)
                 # Mark TTL key for deletion in both buffer and database
-                encoded_key = self._encode_key(key)
-                self._ttl_buffer_dict[encoded_key] = None  # Mark for deletion
+                self._ttl_buffer_dict[key] = None  # Mark for deletion
                 self._buffered_count += 1
                 self._last_set_time = time.time()
                 
             # Trigger immediate write to ensure TTL is removed from database
-            self.write_immediately()
+            self.write_immediately(block=True)  # 确保写入完成
             return True
         return False
 
@@ -746,7 +764,7 @@ class BaseDBDict(ABC):
         Args:
             key: The key to delete.
         """
-        if key in self:
+        if self._check_key_exists(key, check_ttl=False):
             with self._buffer_lock:
                 self.delete_buffer_set.add(key)
                 # Also delete the TTL key
@@ -757,8 +775,6 @@ class BaseDBDict(ABC):
                 self._last_set_time = time.time()
                 if key in self.buffer_dict:
                     del self.buffer_dict[key]
-                    # If it is in the buffer (possibly obtained through get), then _stat_buffer_num -= 1,
-                    # and _stat_buffer_num can be negative
                     self._stat_buffer_num -= 1
                     return
                 else:
@@ -800,15 +816,9 @@ class BaseDBDict(ABC):
         else:
             return default
 
-    def __contains__(self, key):
+    def _check_key_exists(self, key, check_ttl=True):
         """
-        Checks if a key exists in the buffer or database.
-
-        Args:
-            key: The key to check.
-
-        Returns:
-            bool: True if the key exists, False otherwise.
+        Internal method to check if a key exists without triggering TTL cleanup.
         """
         with self._buffer_lock:
             if key in self.buffer_dict:
@@ -821,9 +831,21 @@ class BaseDBDict(ABC):
                 return key in self._cache_dict
 
             key = self._encode_key(key)
-            return (
-                self._static_view.get(key) is not None
-            )  # self._static_view.get() return a binary value or None
+            return self._static_view.get(key) is not None
+
+    def __contains__(self, key):
+        """
+        Checks if a key exists in the buffer or database.
+
+        Args:
+            key: The key to check.
+
+        Returns:
+            bool: True if the key exists and has not expired, False otherwise.
+        """
+        if self._check_expiry(key):
+            return False
+        return self._check_key_exists(key, check_ttl=False)
 
     def clear(self, wait=True):
         """
@@ -835,11 +857,14 @@ class BaseDBDict(ABC):
         self._ttl_db_manager.rebuild_db()
         self._init()
 
-    def destroy(self):
+    def destroy(self, wait=True):
         """
         Destroys the database by closing and deleting it.
+
+        Args:
+            wait (bool, optional): Whether to wait for the background worker to finish. Defaults to False.
         """
-        self.close(write=False)
+        self.close(write=False, wait=wait)
         self._unregister_auto_close()
         self._db_manager.destroy()
         self._ttl_db_manager.destroy()
@@ -950,17 +975,17 @@ class BaseDBDict(ABC):
         )
 
         for key in buffer_keys:
-            yield key
+            if key not in delete_buffer_set and not self._check_expiry(key):
+                yield key
 
         if self._cache_all_db:
-            # `view` is None
             for key in self._cache_dict.keys():
-                if key not in delete_buffer_set and key not in buffer_keys:
+                if key not in delete_buffer_set and key not in buffer_keys and not self._check_expiry(key):
                     yield key
         else:
             for key in self._iter_db_view(view, include_value=False):
                 d_key = decode_key(key)
-                if d_key not in delete_buffer_set and key not in buffer_keys:
+                if d_key not in delete_buffer_set and key not in buffer_keys and not self._check_expiry(d_key):
                     yield d_key
             self._db_manager.close_static_view(view)
 
@@ -988,19 +1013,24 @@ class BaseDBDict(ABC):
             decode_raw=decode_raw,
         )
 
+        _db_dict = {}
+
+        # First add items from the database
         if self._cache_all_db:
-            _db_dict = self._cache_dict.copy()
+            for key, value in self._cache_dict.items():
+                if key not in delete_buffer_set and not self._check_expiry(key):
+                    _db_dict[key] = value
         else:
-            _db_dict = {}
             for key, value in self._iter_db_view(view):
                 dk = decode_key(key)
-                if dk not in delete_buffer_set:
+                if dk not in delete_buffer_set and not self._check_expiry(dk):
                     _db_dict[dk] = decode(value)
 
-        if _db_dict:
-            _db_dict.update(buffer_dict)
-        else:
-            _db_dict = buffer_dict
+        # Then add items from the buffer
+        if buffer_dict:
+            for key, value in buffer_dict.items():
+                if not self._check_expiry(key):
+                    _db_dict[key] = value
 
         self._db_manager.close_static_view(view)
         return _db_dict
@@ -1025,22 +1055,18 @@ class BaseDBDict(ABC):
             decode_raw=decode_raw,
         )
         for key, value in buffer_dict.items():
-            if key not in delete_buffer_set:
+            if key not in delete_buffer_set and not self._check_expiry(key):
                 yield key, value
 
         if self._cache_all_db:
-            for (
-                key,
-                value,
-            ) in self._cache_dict.items():  # Attention: dict.items() is a dynamic view
-                if key not in delete_buffer_set and key not in buffer_keys:
+            for key, value in self._cache_dict.items():
+                if key not in delete_buffer_set and key not in buffer_keys and not self._check_expiry(key):
                     yield key, value
         else:
             for key, value in self._iter_db_view(view):
-                # for key, value in view.iterator():
-                dk = decode_key(key)
-                if dk not in delete_buffer_set and key not in buffer_keys:
-                    yield dk, decode(value)
+                d_key = decode_key(key)
+                if d_key not in delete_buffer_set and key not in buffer_keys and not self._check_expiry(d_key):
+                    yield d_key, decode(value)
             self._db_manager.close_static_view(view)
 
     def _pull_db_data_to_cache(self, decode_raw=True):
@@ -1078,92 +1104,6 @@ class BaseDBDict(ABC):
         """
 
 
-class LMDBDict(BaseDBDict):
-    """
-    A dictionary-like class that stores key-value pairs in an LMDB database.
-    Type:
-        key: int, float, bool, str, tuple
-        value: int, float, bool, str, list, dict, and np.ndarray,
-    """
-
-    _instances = {}
-
-    def __new__(cls, db_name: str, root_path: str, rebuild=False, **kwargs):
-        name = db_name + str(root_path)
-        if name not in cls._instances:
-            cls._instances[name] = super().__new__(cls)
-        return cls._instances[name]
-
-    def __init__(
-        self,
-        db_name: str,
-        root_path: str = './',
-        map_size=1024**3,
-        rebuild=False,
-        **kwargs,
-    ):
-        if not hasattr(self, '_initialized'):
-            super().__init__(
-                "lmdb",
-                root_path,
-                db_name,
-                max_dbs=1,
-                map_size=map_size,
-                rebuild=rebuild,
-                **kwargs,
-            )
-            self._initialized = True
-
-    def _iter_db_view(self, view, include_key=True, include_value=True):
-        """
-        Iterates over the items in the database view.
-
-        Args:
-            view: The database view to iterate over.
-        """
-
-        cursor = view.cursor()
-        if include_key and include_value:
-            for key, value in cursor.iternext(keys=include_key, values=include_value):
-                yield key, value
-        else:
-            for key_or_value in cursor.iternext(keys=include_key, values=include_value):
-                yield key_or_value
-
-    def set_mapsize(self, map_size):
-        """Change the maximum size of the map file.
-        This function will fail if any transactions are active in the current process.
-        """
-        try:
-            self._db_manager.env.set_mapsize(map_size)
-        except Exception as e:
-            self._logger.error(f"Error setting map size: {e}")
-
-    def stat(self):
-        if self._cache_all_db:
-            db_count = len(self._cache_dict)
-            count = db_count + self._stat_buffer_num
-            return {
-                'count': count,
-                'buffer': self._stat_buffer_num,
-                'db': db_count,
-                'marked_delete': len(self.delete_buffer_set),
-                "type": 'lmdb',
-            }
-        else:
-            env = self._db_manager.get_env()
-            stats = env.stat()
-            db_count = stats['entries']
-            count = db_count + self._stat_buffer_num - len(self.delete_buffer_set)
-            return {
-                'count': count,
-                'buffer': self._stat_buffer_num,
-                'db': db_count,
-                'marked_delete': len(self.delete_buffer_set),
-                "type": 'lmdb',
-            }
-
-
 class LevelDBDict(BaseDBDict):
     """
     A dictionary-like class that stores key-value pairs in a LevelDB database.
@@ -1181,6 +1121,7 @@ class LevelDBDict(BaseDBDict):
         return cls._instances[name]
 
     def __init__(self, db_name: str, root_path: str, rebuild=False, **kwargs):
+        self._instance_key = db_name + str(root_path)  # 保存实例键
         if not hasattr(self, '_initialized'):
             super().__init__(
                 "leveldb",
@@ -1189,7 +1130,6 @@ class LevelDBDict(BaseDBDict):
                 rebuild=rebuild,
                 **kwargs,
             )
-
             self._initialized = True
 
     def _iter_db_view(self, view, include_key=True, include_value=True):
@@ -1246,6 +1186,20 @@ class LevelDBDict(BaseDBDict):
             'marked_delete': len(self.delete_buffer_set),
             'type': 'leveldb',
         }
+
+    def close(self, write=True, wait=False):
+        """
+        Closes the database and stops the background worker.
+        Also removes this instance from the _instances dictionary.
+
+        Args:
+            write (bool, optional): Whether to write the buffer to the database before closing. Defaults to True.
+            wait (bool, optional): Whether to wait for the background worker to finish. Defaults to False.
+        """
+        super().close(write=write, wait=wait)
+        # 从 _instances 字典中移除这个实例
+        if hasattr(self, '_instance_key'):
+            self.__class__._instances.pop(self._instance_key, None)
 
 
 class RemoteDBDict(BaseDBDict):
@@ -1354,12 +1308,12 @@ class RemoteDBDict(BaseDBDict):
         )
 
         for key in buffer_keys:
-            if key not in delete_buffer_set:
+            if key not in delete_buffer_set and not self._check_expiry(key):
                 yield key
 
         if self._cache_all_db:
             for key in self._cache_dict.keys():
-                if key not in delete_buffer_set and key not in buffer_keys:
+                if key not in delete_buffer_set and key not in buffer_keys and not self._check_expiry(key):
                     yield key
 
         else:
@@ -1397,27 +1351,26 @@ class RemoteDBDict(BaseDBDict):
             decode_raw=decode_raw,
         )
 
+        _db_dict = {}
+
+        # First add items from the database
         if self._cache_all_db:
-            _db_dict = self._cache_dict.copy()
+            for key, value in self._cache_dict.items():
+                if key not in delete_buffer_set and not self._check_expiry(key):
+                    _db_dict[key] = value
         else:
-            _db_dict = {}
-            with view.client.stream(
-                "GET", f"/dict_stream?db_name={self._db_name}"
-            ) as r:
-                buffer = bytearray()
-                for data in r.iter_bytes():
-                    buffer.extend(data)
+            for key, value in self._iter_db_view(view):
+                dk = decode_key(key)
+                if dk not in delete_buffer_set and not self._check_expiry(dk):
+                    _db_dict[dk] = decode(value)
 
-            remote_db_dict = decode(bytes(buffer))
-            for dk, dv in remote_db_dict.items():
-                if dk not in delete_buffer_set:
-                    _db_dict[dk] = dv
+        # Then add items from the buffer
+        if buffer_dict:
+            for key, value in buffer_dict.items():
+                if not self._check_expiry(key):
+                    _db_dict[key] = value
 
-        if _db_dict:
-            _db_dict.update(buffer_dict)
-        else:
-            _db_dict = buffer_dict
-
+        self._db_manager.close_static_view(view)
         return _db_dict
 
     def stat(self):
@@ -1449,8 +1402,18 @@ class RemoteDBDict(BaseDBDict):
     def clear(self, wait=True):
         raise NotImplementedError
 
-    def destroy(self):
-        raise NotImplementedError
+    def destroy(self, wait=False):
+        """
+        Destroys the database by closing and deleting it.
+
+        Args:
+            wait (bool, optional): Whether to wait for the background worker to finish. Defaults to False.
+        """
+        self.close(write=False, wait=wait)
+        self._unregister_auto_close()
+        self._db_manager.destroy()
+        self._ttl_db_manager.destroy()
+        self._logger.info(f"Destroyed database successfully.")
 
     def close(self, write=True, wait=False):
         """

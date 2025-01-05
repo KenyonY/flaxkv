@@ -1,4 +1,3 @@
-
 <h1 align="center">
     <br>
     🗲  FlaxKV
@@ -51,7 +50,7 @@ You can use it just like a Python dictionary without having to worry about block
 
 - **Buffered Writing**: Data is buffered and scheduled for write to the database, reducing the overhead of frequent database writes.
 
-- **High-Performance Database Backend**: Uses the high-performance key-value database LevelDB as its default backend.
+- **High-Performance Database Backend**: Uses the high-performance key-value database LevelDB as its backend.
 
 - **Atomic Operations**: Ensures that write operations are atomic, safeguarding data integrity.
 
