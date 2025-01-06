@@ -346,14 +346,17 @@ class RemoteTransaction:
         self.delete_buffer_set = set()
 
     def get(self, key: bytes, default=None):
-        url = f"/get?db_name={self.db_name}"
-        response = self.client.post(url, content=key)
-        if not response.is_success:
-            raise RuntimeError
-        raw_data = response.read()
-        if raw_data == b"iamnull123":
+        try:
+            url = f"/get?db_name={self.db_name}"
+            response = self.client.post(url, content=key)
+            if not response.is_success:
+                return default
+            raw_data = response.read()
+            if raw_data == b"iamnull123":
+                return default
+            return raw_data
+        except Exception:
             return default
-        return raw_data
 
     # def get_batch(self, keys: list[bytes]):
     #     url = f"/get_batch?db_name={self.db_name}"

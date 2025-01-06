@@ -183,6 +183,12 @@ async def detach(data: DetachRequest) -> dict:
     db = _db_manager.detach(db_name=data.db_name)
     if db is None:
         return {"success": False, "info": "db not found"}
+    # 确保数据库正确关闭
+    try:
+        db.close(write=True, wait=True)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
     return {"success": True}
 
 

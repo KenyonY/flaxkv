@@ -402,7 +402,7 @@ class BaseDBDict(ABC):
             return False
 
         # Then check TTL database
-        ttl_value = self._ttl_static_view.get(self._encode_key(key))
+        ttl_value = self._ttl_static_view.get(self._encode_ttl_key(key))
         if ttl_value is not None:
             expiry_time = float(decode(ttl_value))
             if time.time() > expiry_time:
@@ -1291,8 +1291,29 @@ class RemoteDBDict(BaseDBDict):
 
     def _iter_db_view(self, view, include_key=True, include_value=True):
         """
-        Just a placeholder, now we don't use it.
+        Iterate over the database view.
+        
+        Args:
+            view: The database view to iterate over
+            include_key: Whether to include keys in the iteration
+            include_value: Whether to include values in the iteration
+            
+        Returns:
+            Iterator over (key, value) pairs or just keys/values depending on include_key/include_value
         """
+        with view.client.stream("GET", f"/dict_stream?db_name={self._db_name}") as r:
+            buffer = bytearray()
+            for data in r.iter_bytes():
+                buffer.extend(data)
+            
+        remote_db_dict = decode(bytes(buffer))
+        for key, value in remote_db_dict.items():
+            if include_key and include_value:
+                yield key, value
+            elif include_key:
+                yield key
+            elif include_value:
+                yield value
 
     def keys(self, fetch_all=True, decode_raw=True):
         (
