@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package flaxkv2;
+
+// The database service definition
+service DatabaseService {
+  // Get value by key
+  rpc Get (GetRequest) returns (GetResponse) {}
+  // Set key-value pair
+  rpc Set (SetRequest) returns (SetResponse) {}
+  // Delete key
+  rpc Delete (DeleteRequest) returns (DeleteResponse) {}
+  // Check if key exists
+  rpc Contains (ContainsRequest) returns (ContainsResponse) {}
+  // Get all keys
+  rpc Keys (KeysRequest) returns (KeysResponse) {}
+  // Get database info
+  rpc Info (InfoRequest) returns (InfoResponse) {}
+}
+
+// Request/Response messages
+message GetRequest {
+  bytes key = 1;
+}
+
+message GetResponse {
+  bytes value = 1;
+  bool found = 2;
+}
+
+message SetRequest {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message SetResponse {
+  bool success = 1;
+}
+
+message DeleteRequest {
+  bytes key = 1;
+}
+
+message DeleteResponse {
+  bool success = 1;
+}
+
+message ContainsRequest {
+  bytes key = 1;
+}
+
+message ContainsResponse {
+  bool exists = 1;
+}
+
+message KeysRequest {
+  string prefix = 1;  // Optional prefix filter
+}
+
+message KeysResponse {
+  repeated bytes keys = 1;
+}
+
+message InfoRequest {}
+
+message InfoResponse {
+  int64 size = 1;
+  string db_path = 2;
+  string storage_backend = 3;
+  string serializer = 4;
+} 
