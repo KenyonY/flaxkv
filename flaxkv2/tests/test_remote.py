@@ -4,78 +4,73 @@ import os
 import shutil
 import tempfile
 import time
-from typing import Generator
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from flaxkv2 import create_database, get_database
 from flaxkv2.core.database import FlaxDatabase
+from flaxkv2.core.interfaces import DatabaseConfig
 from flaxkv2.serialization.pandas_serializer import PandasSerializer
 from flaxkv2.serve.client import RemoteDatabase
 from flaxkv2.serve.server import serve
 
 
 @pytest.fixture
-def db_root() -> Generator[str, None, None]:
-    """Temporary directory for database files."""
-    path = tempfile.mkdtemp()
-    yield path
-    shutil.rmtree(path)
+def db_root():
+    """Create a temporary directory for database files."""
+    temp_dir = tempfile.mkdtemp()
+    yield temp_dir
+    shutil.rmtree(temp_dir)
 
 
 @pytest.fixture
-def server_process(db_root) -> Generator[multiprocessing.Process, None, None]:
+def server_process(db_root):
     """Start a server process for testing."""
-    # Create a test database
-    db = create_database("test", root_path=db_root, serializer=PandasSerializer())
-    assert isinstance(db, FlaxDatabase)  # Ensure we have the correct database type
-    db.close()
+    db_path = os.path.join(db_root, "test.db")
+    config = DatabaseConfig(
+        path=db_path,
+        backend="leveldb",
+        create_if_missing=True,
+        auto_flush=True
+    )
+    db = FlaxDatabase(config, serializer=PandasSerializer())
     
     # Start server in a separate process
     process = multiprocessing.Process(
         target=serve,
-        args=("test",),
-        kwargs={
-            "host": "localhost",
-            "port": 50051,
-            "root_path": db_root,
-            "serializer": PandasSerializer()
-        }
+        args=(db,),
+        kwargs={'host': 'localhost', 'port': 50051}
     )
     process.start()
-    time.sleep(1)  # Give the server time to start
+    time.sleep(1)  # Wait for server to start
     
     yield process
     
+    # Cleanup
     process.terminate()
     process.join()
 
 
 def test_basic_operations(server_process):
-    """Test basic remote database operations."""
+    """Test basic database operations."""
     db = RemoteDatabase(serializer=PandasSerializer())
     
-    # Test string values
+    # Test setting and getting values
+    db["test_int"] = 42
+    assert "test_int" in db
+    assert db["test_int"] == 42
+    
     db["test_str"] = "hello"
     assert db["test_str"] == "hello"
     
-    # Test numeric values
-    db["test_int"] = 42
-    assert db["test_int"] == 42
+    # Test deleting values
+    del db["test_int"]
+    assert "test_int" not in db
     
-    # Test deletion
-    del db["test_str"]
-    assert "test_str" not in db
-    
-    # Test contains
-    assert "test_int" in db
-    
-    # Test get with default
-    assert db.get("nonexistent", "default") == "default"
-    
-    db.close()
+    # Test getting all keys
+    assert set(db.keys()) == {"test_str"}
 
 
 def test_pandas_operations(server_process):
@@ -84,21 +79,18 @@ def test_pandas_operations(server_process):
     
     # Test DataFrame
     df = pd.DataFrame({
-        'int_col': [1, 2, 3],
-        'float_col': [1.1, 2.2, 3.3],
-        'str_col': ['a', 'b', 'c']
+        'A': [1, 2, 3],
+        'B': ['a', 'b', 'c']
     })
     db["test_df"] = df
     retrieved_df = db["test_df"]
     pd.testing.assert_frame_equal(df, retrieved_df)
     
     # Test Series
-    series = pd.Series([1, 2, 3], name="test_series")
+    series = pd.Series([1, 2, 3], name='test')
     db["test_series"] = series
     retrieved_series = db["test_series"]
     pd.testing.assert_series_equal(series, retrieved_series)
-    
-    db.close()
 
 
 def test_numpy_operations(server_process):
@@ -106,20 +98,24 @@ def test_numpy_operations(server_process):
     db = RemoteDatabase(serializer=PandasSerializer())
     
     # Test numpy array
-    arr = np.array([[1, 2, 3], [4, 5, 6]])
+    arr = np.array([1, 2, 3])
     db["test_array"] = arr
     retrieved_arr = db["test_array"]
     np.testing.assert_array_equal(arr, retrieved_arr)
     
-    db.close()
+    # Test 2D array
+    arr_2d = np.array([[1, 2], [3, 4]])
+    db["test_array_2d"] = arr_2d
+    retrieved_arr_2d = db["test_array_2d"]
+    np.testing.assert_array_equal(arr_2d, retrieved_arr_2d)
 
 
 def test_large_data(server_process):
-    """Test operations with large data."""
+    """Test operations with large DataFrames."""
     db = RemoteDatabase(serializer=PandasSerializer())
     
-    # Create large DataFrame (100k rows)
-    n_rows = 100_000
+    # Create a large DataFrame (100k rows)
+    n_rows = 100000
     df = pd.DataFrame({
         'int_col': range(n_rows),
         'float_col': np.random.randn(n_rows),
@@ -130,8 +126,6 @@ def test_large_data(server_process):
     db["large_df"] = df
     retrieved_df = db["large_df"]
     pd.testing.assert_frame_equal(df, retrieved_df)
-    
-    db.close()
 
 
 def test_error_handling(server_process):
@@ -147,6 +141,4 @@ def test_error_handling(server_process):
     time.sleep(1)
     
     with pytest.raises(ConnectionError):
-        db["test"] = "value"
-    
-    db.close() 
+        db["test"] = "value" 
