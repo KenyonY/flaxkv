@@ -349,18 +349,177 @@ with FlaxKV("my_db", "./data") as db:
 
 ### 5.3 远程数据库
 
+#### 5.3.1 启动服务器
+
+```python
+# 服务器端代码示例 (server.py)
+import os
+import uvicorn
+from flaxkv2.server.app import create_app
+
+# 设置数据存储目录
+os.environ["FLAXKV_DATA_DIR"] = "/path/to/data"
+
+# 创建应用
+app = create_app()
+
+# 启动服务器
+if __name__ == "__main__":
+    # 启动HTTP服务器
+    uvicorn.run(
+        app, 
+        host="0.0.0.0",  # 监听所有网络接口
+        port=8766,       # 服务端口
+        log_level="info" # 日志级别
+    )
+```
+
+#### 5.3.2 连接远程数据库
+
 ```python
 from flaxkv2 import FlaxKV
 
-# 连接远程数据库服务器
-db = FlaxKV("my_remote_db", "http://server:8000")
+# 方式1: 连接远程数据库服务器
+db = FlaxKV("my_remote_db", "http://server:8766")
 
-# 与本地数据库使用相同接口
-db["key"] = "value"
-print(db["key"])
+# 方式2: 显式指定根路径
+db = FlaxKV("my_remote_db", "http://server:8766", root_path="/path/on/server")
+
+# 使用与本地数据库相同的接口
+db["key1"] = "value1"
+db["key2"] = {"nested": "data", "number": 42}
+
+# 检查键是否存在
+if "key1" in db:
+    print("键存在:", db["key1"])  # 输出: 键存在: value1
+
+# 获取值，不存在时返回默认值
+value = db.get("nonexistent", "默认值")
+print(value)  # 输出: 默认值
+
+# 批量操作 - 更高效的远程批量更新
+batch_data = {f"batch_key{i}": f"batch_value{i}" for i in range(10)}
+db.update(batch_data)
+
+# 获取所有键
+keys = db.keys()
+print(f"数据库中有 {len(keys)} 个键")
+
+# 获取所有键值对
+items = db.items()
+print("前3个键值对:")
+for k, v in list(items)[:3]:
+    print(f"  {k}: {v}")
+
+# 支持TTL功能
+db["temp_key"] = "临时数据"
+db.set_ttl("temp_key", 60)  # 60秒后过期
+print(f"临时键剩余时间: {db.get_ttl('temp_key')}秒")
+
+# 使用默认TTL
+db_with_ttl = FlaxKV("ttl_remote_db", "http://server:8766", default_ttl=30)
+db_with_ttl["auto_ttl_key"] = "自动过期数据"  # 30秒后自动过期
 
 # 关闭连接
 db.close()
+```
+
+#### 5.3.3 远程数据库连接配置
+
+```python
+from flaxkv2 import FlaxKV
+
+# 配置超时和重试机制
+db = FlaxKV(
+    "reliable_remote_db", 
+    "http://server:8766",
+    # 高级连接选项
+    timeout=5.0,       # 请求超时时间（秒）
+    max_retries=5,     # 请求失败后最大重试次数
+    retry_delay=1.0,   # 重试延迟（秒）
+    root_path="/data", # 服务器上的数据存储路径
+)
+
+# 检查服务器连接状态
+if db.ping():
+    print("服务器连接正常")
+else:
+    print("无法连接到服务器")
+
+# 使用数据库
+db["key"] = "value"
+
+# 关闭连接
+db.close()
+```
+
+#### 5.3.4 完整的分布式应用示例
+
+```python
+# 演示完整的分布式应用流程
+
+# 服务器端
+# ----------
+# 1. 安装依赖
+# pip install flaxkv2[server]
+#
+# 2. 创建服务器启动脚本 (server.py)
+'''
+import os
+from flaxkv2.server.app import create_app
+import uvicorn
+
+# 配置数据目录
+os.environ["FLAXKV_DATA_DIR"] = "./data"
+# 可选: 配置调试模式
+os.environ["FLAXKV_DEBUG"] = "1"
+
+# 创建应用
+app = create_app()
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8766)
+'''
+# 3. 启动服务器
+# python server.py
+
+# 客户端
+# --------
+# 1. 安装依赖
+# pip install flaxkv2
+#
+# 2. 客户端代码
+'''
+from flaxkv2 import FlaxKV
+import time
+
+# 连接远程数据库
+db = FlaxKV("shared_db", "http://localhost:8766")
+
+# 添加数据
+db["app_name"] = "分布式示例应用"
+db["timestamp"] = time.time()
+db["config"] = {
+    "max_users": 1000,
+    "timeout": 30,
+    "features": ["search", "export", "import"]
+}
+
+# 批量添加数据
+db.update({
+    "user:1": {"name": "张三", "role": "admin"},
+    "user:2": {"name": "李四", "role": "user"},
+    "user:3": {"name": "王五", "role": "user"}
+})
+
+# 读取并处理数据
+users = [v for k, v in db.items() if k.startswith("user:")]
+admin_users = [user for user in users if user.get("role") == "admin"]
+print(f"管理员用户: {len(admin_users)}人")
+
+# 关闭连接
+db.close()
+'''
 ```
 
 ### 5.4 高级功能
