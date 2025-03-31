@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "flaxkv"
+name = "flaxkv2"
 description = "A high-performance dictionary database."
 authors = [
     { name = "K.Y", email = "beidongjiedeguang@gmail.com" },
@@ -20,6 +20,7 @@ classifiers = [
 requires-python = ">=3.8"
 
 dependencies = [
+    "mmh3",
     "loguru>=0.7.0",
     "orjson>=3.9",
     "rich",
@@ -34,15 +35,16 @@ dependencies = [
     "plyvel-ci>=1.5.0; sys_platform == 'win32'",
     "plyvel-ci>=1.5.0; sys_platform == 'darwin'",
     "typing-extensions>=4.7.1; python_version<'3.11'",
+    "litestar",
 ]
 
 dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://github.com/KenyonY/flaxkv"
-Documentation = "https://github.com/KenyonY/flaxkv#flaxkv"
-Issues = "https://github.com/KenyonY/flaxkv/issues"
-Source = "https://github.com/KenyonY/flaxkv"
+Homepage = "https://github.com/KenyonY/flaxkv2"
+Documentation = "https://github.com/KenyonY/flaxkv2#flaxkv2"
+Issues = "https://github.com/KenyonY/flaxkv2/issues"
+Source = "https://github.com/KenyonY/flaxkv2"
 
 [project.optional-dependencies]
 test = [
@@ -71,20 +73,20 @@ client = [
 
 
 [project.scripts]
-flaxkv = "flaxkv.__main__:main"
+flaxkv2 = "flaxkv2.__main__:main"
 
 [tool.hatch.version]
-path = "flaxkv/__init__.py"
+path = "flaxkv2/__init__.py"
 
 [tool.isort]
 profile = "black"
 
 [tool.hatch.build]
 include = [
-    "flaxkv/**/*.py",
+    "flaxkv2/**/*.py",
 ]
 exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["flaxkv"]
+packages = ["flaxkv2"]
