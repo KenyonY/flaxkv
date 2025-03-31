@@ -8,16 +8,13 @@ import tempfile
 import os
 
 from rocksdict import Options, Rdict
+import pickle
 
-try:
-    from flaxkv.pack import decode, encode
-except ImportError:
-    # Fallback encode/decode functions if flaxkv is not available
-    import pickle
-    def encode(obj):
-        return pickle.dumps(obj)
-    def decode(data):
-        return pickle.loads(data) if data else None
+
+def encode(obj):
+    return pickle.dumps(obj)
+def decode(data):
+    return pickle.loads(data) if data else None
 
 # Import FlaxKV2 classes
 try:
