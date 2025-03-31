@@ -455,17 +455,27 @@ async def get_stat(db_name: str) -> Dict[str, Any]:
         )
 
 
+@dataclass
+class SetTtlRequest:
+    """设置TTL的请求体"""
+    db_name: str
+    key: Any
+    ttl_seconds: int
+
+
 @post("/set_ttl")
-async def set_ttl(db_name: str, key: Any, ttl_seconds: int) -> Dict[str, Any]:
+async def set_ttl(data: SetTtlRequest = Body()) -> Dict[str, Any]:
     """
     设置键的过期时间
     
     Args:
-        db_name: 数据库名称
-        key: 键
-        ttl_seconds: 过期时间（秒）
+        data: 请求体包含数据库名称、键和TTL秒数
     """
     global db_manager
+    
+    db_name = data.db_name
+    key = data.key
+    ttl_seconds = data.ttl_seconds
     
     if db_name not in db_manager:
         return Response(
@@ -492,16 +502,25 @@ async def set_ttl(db_name: str, key: Any, ttl_seconds: int) -> Dict[str, Any]:
         )
 
 
+@dataclass
+class GetTtlRequest:
+    """获取TTL的请求体"""
+    db_name: str
+    key: Any
+
+
 @post("/get_ttl")
-async def get_ttl(db_name: str, key: Any) -> Dict[str, Any]:
+async def get_ttl(data: GetTtlRequest = Body()) -> Dict[str, Any]:
     """
     获取键的剩余过期时间
     
     Args:
-        db_name: 数据库名称
-        key: 键
+        data: 请求体包含数据库名称和键
     """
     global db_manager
+    
+    db_name = data.db_name
+    key = data.key
     
     if db_name not in db_manager:
         return Response(

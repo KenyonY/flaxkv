@@ -112,7 +112,7 @@ class RemoteDBDict(BaseDBDict):
             )
             
             # 检查响应
-            if response.status_code == 200:
+            if response.status_code in (200, 201):
                 result = response.json()
                 return result['value']
             elif response.status_code == 404:
@@ -387,6 +387,21 @@ class RemoteDBDict(BaseDBDict):
         if self._default_ttl is not None:
             self.set_ttl(key, self._default_ttl)
             
+    def set_with_ttl(self, key: Any, value: Any, ttl: int) -> None:
+        """
+        设置带有TTL的键值对
+        
+        Args:
+            key: 键
+            value: 值
+            ttl: 过期时间（秒）
+        """
+        # 先设置值
+        self[key] = value
+        
+        # 再设置TTL
+        self.set_ttl(key, ttl)
+            
     def set_ttl(self, key: Any, ttl_seconds: int) -> None:
         """
         设置键的过期时间
@@ -408,7 +423,7 @@ class RemoteDBDict(BaseDBDict):
                     }
                 )
                 
-                if response.status_code == 200:
+                if response.status_code in (200, 201):
                     return
                 elif response.status_code == 404:
                     raise KeyError(key)
@@ -445,7 +460,7 @@ class RemoteDBDict(BaseDBDict):
                     }
                 )
                 
-                if response.status_code == 200:
+                if response.status_code in (200, 201):
                     result = response.json()
                     return result.get('ttl')
                 elif response.status_code == 404:
@@ -477,4 +492,9 @@ class RemoteDBDict(BaseDBDict):
         # 如果设置了默认TTL，则为新键应用默认TTL
         if self._default_ttl is not None and new_keys:
             for key in new_keys:
-                self.set_ttl(key, self._default_ttl) 
+                try:
+                    self.set_ttl(key, self._default_ttl)
+                except Exception as e:
+                    logger.warning(f"为键 {key} 设置TTL失败: {e}")
+                    # 继续处理其他键
+                    continue 
