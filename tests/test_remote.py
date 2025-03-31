@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import threading
 import time
+import socket
 import pytest
 
 from flaxkv2 import FlaxKV
@@ -26,6 +27,9 @@ class TestRemoteDB:
         # 设置环境变量
         os.environ["FLAXKV_DATA_DIR"] = temp_dir
         
+        # 查找可用端口
+        port = self._find_free_port()
+        
         # 创建应用
         app = create_app()
         
@@ -35,7 +39,7 @@ class TestRemoteDB:
             kwargs={
                 "app": app,
                 "host": "127.0.0.1",
-                "port": 8765,
+                "port": port,
                 "log_level": "error"
             }
         )
@@ -45,8 +49,8 @@ class TestRemoteDB:
         # 等待服务器启动
         time.sleep(1)
         
-        # 连接远程数据库
-        db = FlaxKV("test_remote_db", "http://127.0.0.1:8765")
+        # 连接远程数据库，明确指定root_path参数
+        db = FlaxKV("test_remote_db", f"http://127.0.0.1:{port}", root_path=temp_dir)
         
         yield db
         
@@ -57,6 +61,12 @@ class TestRemoteDB:
             pass
             
         shutil.rmtree(temp_dir)
+    
+    def _find_free_port(self):
+        """查找一个空闲的端口"""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('127.0.0.1', 0))
+            return s.getsockname()[1]
     
     def test_basic_operations(self, server_and_db):
         """测试基本操作"""

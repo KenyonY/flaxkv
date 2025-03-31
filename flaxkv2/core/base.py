@@ -358,6 +358,7 @@ class FlaxKV:
         raw=False,
         cache=False,
         default_ttl=None,
+        root_path=None,
         **kwargs
     ):
         """
@@ -371,6 +372,7 @@ class FlaxKV:
             raw: 是否使用原始模式
             cache: 是否使用缓存模式
             default_ttl: 默认TTL，单位为秒。设置后，所有新增的键都会自动应用此TTL
+            root_path: 显式传递的根路径，主要用于远程连接
         """
         # 检查是否为远程模式
         is_remote = root_path_or_url.startswith(("http://", "https://"))
@@ -381,6 +383,7 @@ class FlaxKV:
                 db_name=db_name,
                 url=root_path_or_url,
                 default_ttl=default_ttl,
+                root_path=root_path,
                 **kwargs
             )
         

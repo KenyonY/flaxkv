@@ -492,14 +492,33 @@ class LevelDBDict(BaseDBDict):
         
     def __setitem__(self, key, value):
         """
-        设置键值对，如果设置了默认TTL，则自动应用
-        """
-        # 调用父类的__setitem__方法
-        super().__setitem__(key, value)
+        设置键值对
         
-        # 如果设置了默认TTL，则自动应用
-        if self._default_ttl is not None:
-            self._ttl_manager.set(key, self._default_ttl)
+        Args:
+            key: 键
+            value: 值
+        """
+        with self._db_lock:
+            # 如果使用缓存，先更新缓存
+            if self._use_cache:
+                self._cache[key] = value
+                
+            # 编码键值
+            key_bytes = self._encode_key(key)
+            value_bytes = self._encode_value(value)
+            
+            # 写入数据库
+            self._db.put(key_bytes, value_bytes)
+            
+            # 更新布隆过滤器
+            self._bloom_filter.add(key)
+            
+            # 更新索引
+            self._index_manager.update_indexes(key, value)
+            
+            # 如果设置了默认TTL，则应用
+            if self._default_ttl is not None:
+                self._ttl_manager.set_ttl(key, self._default_ttl)
     
     def update(self, d: Dict[Any, Any]):
         """

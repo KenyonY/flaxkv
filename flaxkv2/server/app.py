@@ -4,9 +4,10 @@ FlaxKV2 服务器应用
 
 from typing import Dict, Any, List, Optional
 import os
-
+from dataclasses import dataclass
 from litestar import Litestar, get, post
 from litestar.response import Response
+from litestar.params import Body
 from litestar.status_codes import HTTP_200_OK, HTTP_404_NOT_FOUND, HTTP_400_BAD_REQUEST
 from litestar.openapi.config import OpenAPIConfig
 from litestar.openapi.plugins import SwaggerRenderPlugin, RedocRenderPlugin, ScalarRenderPlugin, RapidocRenderPlugin, StoplightRenderPlugin, YamlRenderPlugin
@@ -27,17 +28,29 @@ async def health_check() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@dataclass
+class ConnectRequest:
+    db_name: str
+    create_if_missing: bool = True
+    root_path: Optional[str] = None
+
+
 @post("/connect")
-async def connect(db_name: str, create_if_missing: bool = True, root_path: str = None) -> Dict[str, Any]:
+async def connect(data: ConnectRequest = Body()) -> Dict[str, Any]:
     """
     连接数据库
     
     Args:
-        db_name: 数据库名称
-        create_if_missing: 如果数据库不存在则创建
-        root_path: 数据库根路径
+        data: 连接请求数据
+            - db_name: 数据库名称
+            - create_if_missing: 如果数据库不存在则创建
+            - root_path: 数据库根路径
     """
     global db_manager
+    
+    db_name = data.db_name
+    create_if_missing = data.create_if_missing
+    root_path = data.root_path
     
     # 检查数据库是否已连接
     if db_name in db_manager:
@@ -68,15 +81,23 @@ async def connect(db_name: str, create_if_missing: bool = True, root_path: str =
         )
 
 
+@dataclass
+class DisconnectRequest:
+    db_name: str
+
+
 @post("/disconnect")
-async def disconnect(db_name: str) -> Dict[str, Any]:
+async def disconnect(data: DisconnectRequest = Body()) -> Dict[str, Any]:
     """
     断开数据库连接
     
     Args:
-        db_name: 数据库名称
+        data: 断开连接请求
+            - db_name: 数据库名称
     """
     global db_manager
+    
+    db_name = data.db_name
     
     if db_name not in db_manager:
         return {"status": "not_connected", "db_name": db_name}
@@ -97,16 +118,26 @@ async def disconnect(db_name: str) -> Dict[str, Any]:
         )
 
 
+@dataclass
+class GetValueRequest:
+    db_name: str
+    key: Any
+
+
 @post("/get")
-async def get_value(db_name: str, key: Any) -> Dict[str, Any]:
+async def get_value(data: GetValueRequest = Body()) -> Dict[str, Any]:
     """
     获取键值
     
     Args:
-        db_name: 数据库名称
-        key: 键
+        data: 获取值请求
+            - db_name: 数据库名称
+            - key: 键
     """
     global db_manager
+    
+    db_name = data.db_name
+    key = data.key
     
     if db_name not in db_manager:
         return Response(
@@ -165,16 +196,26 @@ async def set_value(db_name: str, key: Any, value: Any) -> Dict[str, Any]:
         )
 
 
+@dataclass
+class DeleteValueRequest:
+    db_name: str
+    key: Any
+
+
 @post("/delete")
-async def delete_value(db_name: str, key: Any) -> Dict[str, Any]:
+async def delete_value(data: DeleteValueRequest = Body()) -> Dict[str, Any]:
     """
     删除键值
     
     Args:
-        db_name: 数据库名称
-        key: 键
+        data: 删除值请求
+            - db_name: 数据库名称
+            - key: 键
     """
     global db_manager
+    
+    db_name = data.db_name
+    key = data.key
     
     if db_name not in db_manager:
         return Response(
@@ -201,16 +242,26 @@ async def delete_value(db_name: str, key: Any) -> Dict[str, Any]:
         )
 
 
+@dataclass
+class SetBatchRequest:
+    db_name: str
+    items: Dict[str, Any]
+
+
 @post("/set_batch")
-async def set_batch(db_name: str, items: Dict[str, Any]) -> Dict[str, Any]:
+async def set_batch(data: SetBatchRequest = Body()) -> Dict[str, Any]:
     """
     批量设置键值
     
     Args:
-        db_name: 数据库名称
-        items: 键值对字典
+        data: 批量设置请求
+            - db_name: 数据库名称
+            - items: 键值对字典
     """
     global db_manager
+    
+    db_name = data.db_name
+    items = data.items
     
     if db_name not in db_manager:
         return Response(
@@ -220,6 +271,10 @@ async def set_batch(db_name: str, items: Dict[str, Any]) -> Dict[str, Any]:
     
     try:
         db = db_manager[db_name]
+        # 确保 items 是一个字典
+        if not isinstance(items, dict):
+            raise ValueError("Items must be a dictionary")
+        
         db.update(items)
         
         return {"status": "success", "count": len(items)}
@@ -232,16 +287,26 @@ async def set_batch(db_name: str, items: Dict[str, Any]) -> Dict[str, Any]:
         )
 
 
+@dataclass
+class DeleteBatchRequest:
+    db_name: str
+    keys: List[Any]
+
+
 @post("/delete_batch")
-async def delete_batch(db_name: str, keys: List[Any]) -> Dict[str, Any]:
+async def delete_batch(data: DeleteBatchRequest = Body()) -> Dict[str, Any]:
     """
     批量删除键值
     
     Args:
-        db_name: 数据库名称
-        keys: 键列表
+        data: 批量删除请求
+            - db_name: 数据库名称
+            - keys: 键列表
     """
     global db_manager
+    
+    db_name = data.db_name
+    keys = data.keys
     
     if db_name not in db_manager:
         return Response(
@@ -251,34 +316,47 @@ async def delete_batch(db_name: str, keys: List[Any]) -> Dict[str, Any]:
     
     try:
         db = db_manager[db_name]
-        # 逐个删除
+        # 确保 keys 是一个列表
+        if not isinstance(keys, list):
+            raise ValueError("Keys must be a list")
+        
+        # 逐个删除键
         deleted_count = 0
         for key in keys:
             try:
                 del db[key]
                 deleted_count += 1
             except KeyError:
+                # 忽略不存在的键
                 pass
         
         return {"status": "success", "count": deleted_count}
         
     except Exception as e:
-        logger.error(f"Error deleting batch keys: {e}")
+        logger.error(f"Error deleting batch: {e}")
         return Response(
             content={"status": "error", "message": str(e)},
             status_code=HTTP_400_BAD_REQUEST
         )
 
 
+@dataclass
+class GetKeysRequest:
+    db_name: str
+
+
 @post("/keys")
-async def get_keys(db_name: str) -> Dict[str, Any]:
+async def get_keys(data: GetKeysRequest = Body()) -> Dict[str, Any]:
     """
     获取所有键
     
     Args:
-        db_name: 数据库名称
+        data: 获取键请求
+            - db_name: 数据库名称
     """
     global db_manager
+    
+    db_name = data.db_name
     
     if db_name not in db_manager:
         return Response(
@@ -300,16 +378,26 @@ async def get_keys(db_name: str) -> Dict[str, Any]:
         )
 
 
+@dataclass
+class GetDictRequest:
+    db_name: str
+    max_items: Optional[int] = None
+
+
 @post("/dict")
-async def get_dict(db_name: str, max_items: Optional[int] = None) -> Dict[str, Any]:
+async def get_dict(data: GetDictRequest = Body()) -> Dict[str, Any]:
     """
     获取所有键值对
     
     Args:
-        db_name: 数据库名称
-        max_items: 最大返回条目数
+        data: 获取字典请求
+            - db_name: 数据库名称
+            - max_items: 最大返回条目数
     """
     global db_manager
+    
+    db_name = data.db_name
+    max_items = data.max_items
     
     if db_name not in db_manager:
         return Response(
@@ -367,6 +455,83 @@ async def get_stat(db_name: str) -> Dict[str, Any]:
         )
 
 
+@post("/set_ttl")
+async def set_ttl(db_name: str, key: Any, ttl_seconds: int) -> Dict[str, Any]:
+    """
+    设置键的过期时间
+    
+    Args:
+        db_name: 数据库名称
+        key: 键
+        ttl_seconds: 过期时间（秒）
+    """
+    global db_manager
+    
+    if db_name not in db_manager:
+        return Response(
+            content={"status": "error", "message": f"Database {db_name} not connected"},
+            status_code=HTTP_400_BAD_REQUEST
+        )
+    
+    try:
+        db = db_manager[db_name]
+        db.set_ttl(key, ttl_seconds)
+        
+        return {"status": "success"}
+        
+    except KeyError:
+        return Response(
+            content={"status": "error", "message": f"Key {key} not found"},
+            status_code=HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        logger.error(f"Error setting TTL for key {key}: {e}")
+        return Response(
+            content={"status": "error", "message": str(e)},
+            status_code=HTTP_400_BAD_REQUEST
+        )
+
+
+@post("/get_ttl")
+async def get_ttl(db_name: str, key: Any) -> Dict[str, Any]:
+    """
+    获取键的剩余过期时间
+    
+    Args:
+        db_name: 数据库名称
+        key: 键
+    """
+    global db_manager
+    
+    if db_name not in db_manager:
+        return Response(
+            content={"status": "error", "message": f"Database {db_name} not connected"},
+            status_code=HTTP_400_BAD_REQUEST
+        )
+    
+    try:
+        db = db_manager[db_name]
+        # 检查键是否存在
+        if key not in db:
+            raise KeyError(key)
+            
+        ttl = db.get_ttl(key)
+        
+        return {"status": "success", "ttl": ttl}
+        
+    except KeyError:
+        return Response(
+            content={"status": "error", "message": f"Key {key} not found"},
+            status_code=HTTP_404_NOT_FOUND
+        )
+    except Exception as e:
+        logger.error(f"Error getting TTL for key {key}: {e}")
+        return Response(
+            content={"status": "error", "message": str(e)},
+            status_code=HTTP_400_BAD_REQUEST
+        )
+
+
 def create_app() -> Litestar:
     """创建应用"""
     routes = [
@@ -380,7 +545,9 @@ def create_app() -> Litestar:
         delete_batch,
         get_keys,
         get_dict,
-        get_stat
+        get_stat,
+        set_ttl,
+        get_ttl
     ]
     # 创建OpenAPI配置
     openapi_config = OpenAPIConfig(

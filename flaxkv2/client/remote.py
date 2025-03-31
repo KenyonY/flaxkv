@@ -5,6 +5,7 @@ FlaxKV2 远程客户端实现
 import json
 import time
 import urllib.parse
+import os
 from typing import Any, Dict, List, Tuple, Optional, Iterator, Union
 
 import httpx
@@ -28,6 +29,7 @@ class RemoteDBDict(BaseDBDict):
         max_retries: int = 3,
         retry_delay: float = 0.5,
         default_ttl: int = None,
+        root_path: str = None,
         **kwargs
     ):
         """
@@ -40,12 +42,14 @@ class RemoteDBDict(BaseDBDict):
             max_retries: 最大重试次数
             retry_delay: 重试延迟（秒）
             default_ttl: 默认TTL，单位为秒。设置后，所有新增的键都会自动应用此TTL
+            root_path: 数据库根路径，用于远程连接
         """
         self.url = url.rstrip('/')
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self._default_ttl = default_ttl  # 默认TTL
+        self.root_path = root_path
         
         # HTTP客户端
         self._client = httpx.Client(timeout=timeout)
@@ -66,15 +70,19 @@ class RemoteDBDict(BaseDBDict):
         
         for attempt in range(self.max_retries):
             try:
+                # 使用self.root_path或环境变量
+                root_path = self.root_path or os.environ.get("FLAXKV_DATA_DIR", ".")
+                
                 response = self._client.post(
                     endpoint,
                     json={
                         'db_name': self.name,
-                        'create_if_missing': True
+                        'create_if_missing': True,
+                        'root_path': root_path
                     }
                 )
                 
-                if response.status_code == 200:
+                if response.status_code in (200, 201):
                     logger.info(f"Connected to remote database {self.name} at {self.url}")
                     return
                 
@@ -116,6 +124,9 @@ class RemoteDBDict(BaseDBDict):
             if e.response.status_code == 404:
                 raise KeyError(key)
             raise RuntimeError(f"HTTP error getting value: {e}")
+            
+        except KeyError:
+            raise
             
         except Exception as e:
             raise RuntimeError(f"Error getting value: {e}")
@@ -164,7 +175,7 @@ class RemoteDBDict(BaseDBDict):
                     }
                 )
                 
-                if response.status_code == 200:
+                if response.status_code in (200, 201):
                     return
                 
                 logger.warning(f"Failed to set batch: {response.text}")
@@ -191,7 +202,7 @@ class RemoteDBDict(BaseDBDict):
                     }
                 )
                 
-                if response.status_code == 200:
+                if response.status_code in (200, 201):
                     return
                 
                 logger.warning(f"Failed to delete batch: {response.text}")
@@ -217,7 +228,7 @@ class RemoteDBDict(BaseDBDict):
                 }
             )
             
-            if response.status_code == 200:
+            if response.status_code in (200, 201):
                 return
             elif response.status_code == 404:
                 raise KeyError(key)
@@ -228,6 +239,9 @@ class RemoteDBDict(BaseDBDict):
             if e.response.status_code == 404:
                 raise KeyError(key)
             raise RuntimeError(f"HTTP error deleting key: {e}")
+            
+        except KeyError:
+            raise
             
         except Exception as e:
             raise RuntimeError(f"Error deleting key: {e}")
@@ -266,7 +280,7 @@ class RemoteDBDict(BaseDBDict):
                 }
             )
             
-            if response.status_code == 200:
+            if response.status_code in (200, 201):
                 result = response.json()
                 return result['keys']
             else:
@@ -295,7 +309,7 @@ class RemoteDBDict(BaseDBDict):
                 }
             )
             
-            if response.status_code == 200:
+            if response.status_code in (200, 201):
                 result = response.json()
                 # 将字典转换为键值对列表
                 dict_data = result['dict']

@@ -188,7 +188,7 @@ class TTLManager:
                 with self._db._db_lock:
                     self._db._db.put(key_bytes, value_bytes)
             else:
-                # 如果没有_db属性，则可能是RemoteDBDict，尝试直接操作
+                # 如果没有_db属性，则是RemoteDBDict，尝试直接操作
                 self._db[ttl_key] = str(expiry_time)
         except Exception as e:
             import logging

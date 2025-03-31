@@ -108,17 +108,14 @@ class HashIndex(BaseIndex):
             key: 键
         """
         with self._lock:
-            if key in self._reverse_map:
-                field_value = self._reverse_map[key]
-                
+            # 从反向映射中获取字段值
+            field_value = self._reverse_map.get(key)
+            if field_value is not None:
                 # 从正向索引中移除
-                if field_value in self._index:
-                    self._index[field_value].discard(key)
-                    
-                    # 如果集合为空，删除该条目
-                    if not self._index[field_value]:
-                        del self._index[field_value]
-                
+                self._index[field_value].discard(key)
+                # 如果字段值对应的集合为空，则删除该字段值
+                if not self._index[field_value]:
+                    del self._index[field_value]
                 # 从反向映射中移除
                 del self._reverse_map[key]
     

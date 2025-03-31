@@ -36,13 +36,28 @@ def encode(value: Any) -> bytes:
     
     # Pandas DataFrame特殊处理
     elif isinstance(value, pd.DataFrame):
-        # 将DataFrame转换为字典形式
-        df_dict = {
-            'columns': value.columns.tolist(),
-            'index': value.index.tolist(),
-            'values': value.values.tobytes(),
-            'dtypes': [str(dt) for dt in value.dtypes]
-        }
+        # 检查是否包含对象类型列
+        has_object = any(dt == 'object' for dt in value.dtypes)
+        
+        if has_object:
+            # 对于包含对象类型的DataFrame，使用pickle序列化
+            df_dict = {
+                'columns': value.columns.tolist(),
+                'index': value.index.tolist(),
+                'values': pickle.dumps(value.values),
+                'dtypes': [str(dt) for dt in value.dtypes],
+                'has_object': True
+            }
+        else:
+            # 对于纯数值类型的DataFrame，使用二进制序列化
+            df_dict = {
+                'columns': value.columns.tolist(),
+                'index': value.index.tolist(),
+                'values': value.values.tobytes(),
+                'dtypes': [str(dt) for dt in value.dtypes],
+                'has_object': False
+            }
+            
         packed = msgpack.packb(df_dict, use_bin_type=True)
         return bytes([TYPE_PANDAS]) + packed
         
