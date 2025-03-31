@@ -34,6 +34,7 @@ class BaseDBDict(ABC):
         max_buffer_size: int = None,
         commit_interval: int = None,
         rebuild: bool = False,
+        create_dirs: bool = True,  # 添加标志控制是否创建目录
         **kwargs
     ):
         """
@@ -45,6 +46,7 @@ class BaseDBDict(ABC):
             max_buffer_size: 最大缓冲区大小
             commit_interval: 自动提交间隔（秒）
             rebuild: 是否重建数据库
+            create_dirs: 是否创建目录结构
         """
         self.name = name
         self.path = os.path.abspath(path)
@@ -62,10 +64,13 @@ class BaseDBDict(ABC):
         self._commit_thread = None
         
         # 准备数据库
-        if rebuild and os.path.exists(self.db_path):
-            shutil.rmtree(self.db_path)
-            
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        if create_dirs:  # 仅在需要时创建目录
+            if rebuild and os.path.exists(self.db_path):
+                shutil.rmtree(self.db_path)
+                
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        
+        # 初始化数据库
         self._init_db()
         
         # 启动后台提交线程

@@ -54,14 +54,22 @@ class RemoteDBDict(BaseDBDict):
         # HTTP客户端
         self._client = httpx.Client(timeout=timeout)
         
-        # 初始化基类
-        super().__init__(name=db_name, path=url, **kwargs)
+        # 创建一个合理的虚拟路径，用于BaseDBDict的内部表示
+        # 即使设置了create_dirs=False，这也可以防止在日志和错误消息中出现奇怪的URL路径
+        # 同时，如果将来BaseDBDict的实现变化，这可以作为额外的防御措施
+        virtual_path = os.path.join(os.environ.get("TEMP", "/tmp"), "flaxkv_remote", 
+                                  urllib.parse.quote_plus(self.url))
+        
+        # 初始化基类，使用虚拟路径，并指定不创建目录
+        super().__init__(name=db_name, path=virtual_path, create_dirs=False, **kwargs)
         
         # 连接远程数据库
         self._connect()
     
     def _init_db(self):
-        """初始化数据库，无需额外操作"""
+        """初始化数据库，远程模式不需要创建本地文件目录"""
+        # 在远程模式下，我们不需要初始化本地数据库，所以这个方法是空的
+        # 基类会创建必要的缓冲区和线程
         pass
     
     def _connect(self):
@@ -251,16 +259,21 @@ class RemoteDBDict(BaseDBDict):
         try:
             logger.debug(f"发送远程数据库断开请求: {self.name}, URL: {self.url}")
             endpoint = f"{self.url}/disconnect"
-            self._client.post(
-                endpoint,
-                json={
-                    'db_name': self.name
-                }
-            )
-            logger.debug(f"远程数据库断开请求已发送: {self.name}")
-        except Exception as e:
-            logger.error(f"断开远程数据库连接时发生错误: {self.name}, 错误: {e}")
+            
+            # 用try块包装请求部分，以便在请求失败时也能关闭客户端
+            try:
+                self._client.post(
+                    endpoint,
+                    json={
+                        'db_name': self.name
+                    },
+                    timeout=3.0  # 设置较短的超时时间，避免长时间等待
+                )
+                logger.debug(f"远程数据库断开请求已发送: {self.name}")
+            except Exception as e:
+                logger.error(f"断开远程数据库连接时发生错误: {self.name}, 错误: {e}")
         finally:
+            # 确保无论如何都能关闭客户端
             logger.debug(f"关闭远程数据库客户端连接: {self.name}")
             self._client.close()
             logger.debug(f"远程数据库客户端已关闭: {self.name}")
