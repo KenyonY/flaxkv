@@ -15,8 +15,9 @@ import pandas as pd
 import pytest
 from rich import print
 from sparrow import MeasureTime  # pip install sparrow-python
+from flaxkv2.core.leveldb_dict import LevelDBDict
 
-from benchmark.dbclass import (
+from dbclass import (
     RedisDict, 
     RocksDict, 
     ShelveDict, 
@@ -24,7 +25,7 @@ from benchmark.dbclass import (
     FlaxKV2LevelDB, 
     FlaxKV2Remote
 )
-from benchmark.helpers import plot, wait_for_server_to_start
+from helpers import plot, wait_for_server_to_start
 
 try:
     # Try to import FlaxKV if available (for backward compatibility)
@@ -71,7 +72,7 @@ def start_flaxkv2_server(port=SERVER_PORT):
     env["FLAXKV_ROOT_PATH"] = db_path
     
     # Start the server process
-    command = ["python", "-m", "flaxkv2.cli", "run", "--port", str(port)]
+    command = ["flaxkv2", "run", "--port", str(port)]
     process = subprocess.Popen(command, env=env)
     
     try:
@@ -102,6 +103,7 @@ def startup_and_shutdown(request):
         process = subprocess.Popen(["flaxkv", "run", "--log", "warning", "--port", "8001"])
         try:
             wait_for_server_to_start(url="http://localhost:8001/healthz")
+            print("FlaxKV server started")
             yield
         finally:
             process.kill()
@@ -131,11 +133,11 @@ def startup_and_shutdown(request):
 @pytest.fixture(
     params=[
         "dict",
-        "SQLite",
+        # "SQLite",
         "RocksDict", 
-        "Shelve",
+        # "Shelve",
+        # "FlaxKV2-Remote",
         "FlaxKV2-LevelDB",
-        "FlaxKV2-Remote",
     ]
 )
 def temp_db(request):
@@ -185,9 +187,10 @@ def benchmark_operation(db, operation, data, description):
 
 def write_operation(db, data):
     """Write data to the database."""
+    db: LevelDBDict
     for key, value in data.items():
         db[key] = value
-    
+
     # Ensure data is persisted for database backends that need it
     if hasattr(db, 'flush') and callable(db.flush):
         db.flush()
