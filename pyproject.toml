@@ -8,17 +8,23 @@ description = "A high-performance dictionary database."
 authors = [
     { name = "K.Y", email = "beidongjiedeguang@gmail.com" },
 ]
-license-files = { paths = ["LICENSE"] }
-readme = "README.md"
-keywords = ["persistent-storage", "on-disk dict", "lmdb", "leveldb", "Machine Learning", "NLP"]
+
+keywords = ["database", "kv", "leveldb", "persistent", "dictionary", "nosql"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
     "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3"
 ]
-
 requires-python = ">=3.8"
-
 dependencies = [
     "loguru>=0.7.0",
     "orjson>=3.9",
@@ -29,7 +35,6 @@ dependencies = [
     "numpy",
     "msgspec>=0.18.4",
     "msgpack",
-    "lmdb>=1.4.1",
     "plyvel>=1.5.0; sys_platform == 'linux'",
     "plyvel-ci>=1.5.0; sys_platform == 'win32'",
     "plyvel-ci>=1.5.0; sys_platform == 'darwin'",
@@ -45,45 +50,53 @@ Issues = "https://github.com/KenyonY/flaxkv/issues"
 Source = "https://github.com/KenyonY/flaxkv"
 
 [project.optional-dependencies]
+# 开发依赖
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+]
+
+# 测试依赖
 test = [
-    "litestar>=2.5.0",
-    "pytest",
-    "pytest-aiohttp",
-    "sparrow-python",
-    "uvicorn",
-    "httpx[http2]",
-    "pandas",
-    "hypercorn",
-    "uvloop; sys_platform == 'linux'",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
 ]
 
-server = [
-    "uvicorn",
-    "hypercorn",
-    "uvloop; sys_platform == 'linux'",
-    "litestar>=2.5.0",
-    "httpx[http2]",
-]
-
-client = [
-    "httpx[http2]",
-]
-
-
-[project.scripts]
-flaxkv = "flaxkv.__main__:main"
 
 [tool.hatch.version]
 path = "flaxkv/__init__.py"
 
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--verbose",
+    "-ra",
+]
+asyncio_mode = "auto"
+python_files = ["test_*.py", "*_test.py"]
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
 [tool.isort]
 profile = "black"
+line_length = 120
 
 [tool.hatch.build]
 include = [
     "flaxkv/**/*.py",
 ]
 exclude = [
+    "tests"
 ]
 
 [tool.hatch.build.targets.wheel]

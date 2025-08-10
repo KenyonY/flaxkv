@@ -1,4 +1,3 @@
-examples/
 CACHE_LMDB
 CHACHE_SQLITE3.db
 CACHE_LEVELDB
@@ -141,3 +140,22 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .vercel
+
+# FlaxKV 临时文件和测试数据
+*.wal
+*.wal.backup
+db-example/
+temp_db*/
+<async_generator*/
+None/
+benchmark_serializers.py
+simple_test.py
+test_import.py
+
+# LevelDB 数据文件
+*.ldb
+*.log
+CURRENT
+LOCK
+LOG*
+MANIFEST-*
