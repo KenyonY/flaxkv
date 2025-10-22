@@ -22,10 +22,10 @@ class BaseDBDict(ABC):
     数据库字典基类，定义统一接口
     """
     # 默认配置
-    DEFAULT_MAX_BUFFER_SIZE = 100
+    DEFAULT_MAX_BUFFER_SIZE = 5000  # 增大默认缓冲区，提升批量写入性能
     DEFAULT_COMMIT_INTERVAL = 600  # 10分钟，单位秒
     MIN_BUFFER_SIZE = 10
-    ABSOLUTE_MAX_BUFFER_SIZE = 10000
+    ABSOLUTE_MAX_BUFFER_SIZE = 100000  # 增大上限
     
     def __init__(
         self,
@@ -162,14 +162,19 @@ class BaseDBDict(ABC):
     
     def __setitem__(self, key, value):
         """实现字典的设置方法"""
+        should_flush = False
         with self._buffer_lock:
             # 写入缓冲区
             self._buffer_dict[key] = value
             self._buffered_count = len(self._buffer_dict)
-            
-            # 如果缓冲区满，触发写入
+
+            # 如果缓冲区满，标记需要刷新（但不在锁内执行）
             if self._buffered_count >= self.MAX_BUFFER_SIZE:
-                self._write_buffer_to_db()
+                should_flush = True
+
+        # 在锁外执行刷新，避免阻塞其他操作
+        if should_flush:
+            self._write_buffer_to_db()
     
     def __delitem__(self, key):
         """实现字典的删除方法"""
@@ -215,12 +220,17 @@ class BaseDBDict(ABC):
     
     def update(self, d: Dict[Any, Any]):
         """批量更新多个键值对"""
+        should_flush = False
         with self._buffer_lock:
             self._buffer_dict.update(d)
             self._buffered_count = len(self._buffer_dict)
-            
+
             if self._buffered_count >= self.MAX_BUFFER_SIZE:
-                self._write_buffer_to_db()
+                should_flush = True
+
+        # 在锁外执行刷新，避免阻塞其他操作
+        if should_flush:
+            self._write_buffer_to_db()
     
     def pop(self, key, default=None):
         """弹出键值对"""
@@ -361,21 +371,19 @@ class FlaxKV:
         backend='leveldb',
         rebuild=False,
         raw=False,
-        cache=False,
         default_ttl=None,
         root_path=None,
         **kwargs
     ):
         """
         创建FlaxKV实例
-        
+
         Args:
             db_name: 数据库名称
             root_path_or_url: 数据库根路径或远程URL
             backend: 后端类型，支持'leveldb'
             rebuild: 是否重建数据库
             raw: 是否使用原始模式
-            cache: 是否使用缓存模式
             default_ttl: 默认TTL，单位为秒。设置后，所有新增的键都会自动应用此TTL
             root_path: 显式传递的根路径，主要用于远程连接
         """
@@ -400,7 +408,6 @@ class FlaxKV:
                 path=root_path_or_url,
                 rebuild=rebuild,
                 raw=raw,
-                cache=cache,
                 default_ttl=default_ttl,
                 **kwargs
             )

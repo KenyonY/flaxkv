@@ -49,33 +49,69 @@ class TTLManager:
     def set(self, key: Any, ttl_seconds: int):
         """
         设置键的TTL
-        
+
         Args:
             key: 键
             ttl_seconds: 生存时间（秒）
         """
         if ttl_seconds <= 0:
             return
-            
+
         with self._lock:
             expiry_time = time.time() + ttl_seconds
             self._expiry_dict[key] = expiry_time
-            
-            # 持久化TTL信息
-            self._save_ttl_info(key, expiry_time)
+
+            # 持久化TTL信息（如果数据库已初始化）
+            if self._db is None:
+                # 如果数据库未初始化，记录警告
+                import logging
+                logging.warning(
+                    "TTL管理器的数据库引用未设置。TTL信息将只保存在内存中，"
+                    "重启后会丢失。请在数据库初始化后调用 set_db() 方法。"
+                )
+            else:
+                self._save_ttl_info(key, expiry_time)
+
+    def set_ttl(self, key: Any, ttl_seconds: int):
+        """
+        设置键的TTL（set方法的别名）
+
+        Args:
+            key: 键
+            ttl_seconds: 生存时间（秒）
+        """
+        self.set(key, ttl_seconds)
     
     def get_expiry(self, key: Any) -> Optional[float]:
         """
         获取键的过期时间
-        
+
         Args:
             key: 键
-            
+
         Returns:
             float: 过期时间戳，如果没有设置TTL则返回None
         """
         with self._lock:
             return self._expiry_dict.get(key)
+
+    def get_remaining_ttl(self, key: Any) -> Optional[int]:
+        """
+        获取键的剩余TTL时间
+
+        Args:
+            key: 键
+
+        Returns:
+            int: 剩余TTL秒数，如果没有设置TTL则返回None
+        """
+        with self._lock:
+            expiry_time = self._expiry_dict.get(key)
+            if expiry_time is None:
+                return None
+
+            remaining = int(expiry_time - time.time())
+            return max(0, remaining)  # 返回0而不是负数
     
     def is_expired(self, key: Any) -> bool:
         """
@@ -109,40 +145,62 @@ class TTLManager:
     def get_expired_keys(self) -> List[Any]:
         """
         获取所有已过期的键
-        
+
         Returns:
             List[Any]: 过期键列表
         """
         current_time = time.time()
         expired_keys = []
-        
+
         with self._lock:
             # 检查是否应该进行全量清理
             should_cleanup = (current_time - self._last_cleanup_time) > self._cleanup_interval
-            
+
             if should_cleanup:
                 # 保存需要删除的键，避免在迭代时修改字典
                 to_remove = []
-                
+
                 for key, expiry_time in self._expiry_dict.items():
                     if current_time > expiry_time:
                         expired_keys.append(key)
                         to_remove.append(key)
-                
+
                 # 移除已过期的键
                 for key in to_remove:
                     del self._expiry_dict[key]
                     # 从持久化存储中删除TTL信息
                     self._remove_ttl_info(key)
-                    
+
                 self._last_cleanup_time = current_time
             else:
                 # 简单检查
                 for key, expiry_time in self._expiry_dict.items():
                     if current_time > expiry_time:
                         expired_keys.append(key)
-        
+
         return expired_keys
+
+    def cleanup_expired(self) -> int:
+        """
+        清理所有已过期的键（从数据库中删除）
+
+        Returns:
+            int: 清理的键数量
+        """
+        expired_keys = self.get_expired_keys()
+        count = 0
+
+        for key in expired_keys:
+            try:
+                # 从数据库中删除过期键
+                if self._db is not None and key in self._db:
+                    del self._db[key]
+                    count += 1
+            except Exception as e:
+                import logging
+                logging.error(f"清理过期键 {key} 失败: {e}")
+
+        return count
         
     def _get_ttl_key_str(self, key):
         """

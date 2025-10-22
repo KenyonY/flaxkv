@@ -12,7 +12,7 @@ from flaxkv2.core.base import BaseDBDict
 from flaxkv2.serialization import encoder, decoder
 from flaxkv2.utils.bloom import BloomFilter
 from flaxkv2.utils.ttl import TTLManager
-from flaxkv2.core.buffer import TieredBuffer
+# TieredBuffer 已移除 - 性能测试显示缓存在所有场景下都是负优化
 from flaxkv2.core.index import IndexManager
 from flaxkv2.utils.log import get_logger
 
@@ -31,7 +31,6 @@ class LevelDBDict(BaseDBDict):
         rebuild: bool = False,
         create_if_missing: bool = True,
         raw: bool = False,
-        cache: bool = False,
         bloom_filter_capacity: int = 1000000,
         error_if_exists: bool = False,
         default_ttl: int = None,
@@ -39,33 +38,25 @@ class LevelDBDict(BaseDBDict):
     ):
         """
         初始化LevelDB字典
-        
+
         Args:
             name: 数据库名称
             path: 数据库路径
             rebuild: 是否重建数据库
             create_if_missing: 如果数据库不存在是否创建
             raw: 是否使用原始模式（不进行序列化）
-            cache: 是否使用缓存
             bloom_filter_capacity: 布隆过滤器容量
             error_if_exists: 如果数据库已存在是否抛出错误
             default_ttl: 默认TTL，单位为秒。设置后，所有新增的键都会自动应用此TTL，None表示不设置默认TTL
         """
         self._db = None
         self._raw = raw
-        self._use_cache = cache
         self._default_ttl = default_ttl  # 默认TTL
-        
+
         # 高级功能
         self._bloom_filter = BloomFilter(capacity=bloom_filter_capacity)
         self._ttl_manager = TTLManager()  # 初始时不传递数据库引用，等待数据库初始化完成
         self._index_manager = IndexManager()
-        
-        # 缓存
-        if self._use_cache:
-            self._cache = TieredBuffer()
-        else:
-            self._cache = None
             
         # 设置选项
         self._leveldb_options = {
@@ -160,11 +151,7 @@ class LevelDBDict(BaseDBDict):
         if self._bloom_filter is not None and not self._bloom_filter.check(key):
             raise KeyError(key)
             
-        # 检查缓存
-        if self._cache is not None:
-            cached_value = self._cache.get(key)
-            if cached_value is not None:
-                return cached_value
+        # 缓存已移除 - 性能测试显示缓存在所有场景下都是负优化
         
         # 检查TTL
         if self._ttl_manager.is_expired(key):
@@ -186,9 +173,7 @@ class LevelDBDict(BaseDBDict):
         # 解码
         value = self._decode_value(value_bytes)
         
-        # 更新缓存
-        if self._cache is not None:
-            self._cache.put(key, value)
+        # 缓存已移除
             
         return value
     
@@ -227,9 +212,7 @@ class LevelDBDict(BaseDBDict):
                     # 从TTL中移除
                     self._ttl_manager.remove(key)
                     
-                    # 从缓存中移除
-                    if self._cache is not None:
-                        self._cache.remove(key)
+                    # 缓存已移除
                 else:
                     # 设置操作
                     key_bytes = self._encode_key(key)
@@ -242,10 +225,8 @@ class LevelDBDict(BaseDBDict):
                         
                     # 更新索引
                     self._index_manager.update_indexes(key, value)
-                    
-                    # 更新缓存
-                    if self._cache is not None:
-                        self._cache.put(key, value)
+
+                    # 缓存已移除
             
             # 提交批量写入
             batch.write()
@@ -268,10 +249,8 @@ class LevelDBDict(BaseDBDict):
         
         # 从索引中移除
         self._index_manager.remove_from_indexes(key)
-        
-        # 从缓存中移除
-        if self._cache is not None:
-            self._cache.remove(key)
+
+        # 缓存已移除
     
     def _close_db(self):
         """关闭数据库连接"""
@@ -492,50 +471,32 @@ class LevelDBDict(BaseDBDict):
         
     def __setitem__(self, key, value):
         """
-        设置键值对
-        
+        设置键值对，使用基类的缓冲机制
+
         Args:
             key: 键
             value: 值
         """
-        with self._db_lock:
-            # 如果使用缓存，先更新缓存
-            if self._use_cache:
-                self._cache[key] = value
-                
-            # 编码键值
-            key_bytes = self._encode_key(key)
-            value_bytes = self._encode_value(value)
-            
-            # 写入数据库
-            self._db.put(key_bytes, value_bytes)
-            
-            # 更新布隆过滤器
-            self._bloom_filter.add(key)
-            
-            # 更新索引
-            self._index_manager.update_indexes(key, value)
-            
-            # 如果设置了默认TTL，则应用
-            if self._default_ttl is not None:
-                self._ttl_manager.set_ttl(key, self._default_ttl)
+        # 调用父类的__setitem__方法，使用缓冲机制
+        super().__setitem__(key, value)
+
+        # 缓存已移除
+
+        # 如果设置了默认TTL，则应用
+        if self._default_ttl is not None:
+            self._ttl_manager.set(key, self._default_ttl)
     
     def update(self, d: Dict[Any, Any]):
         """
-        批量更新多个键值对，如果设置了默认TTL，则对新添加的键应用默认TTL
+        批量更新多个键值对，如果设置了默认TTL，则对所有键应用默认TTL
+
+        注意：为了性能，对所有键都应用TTL，而不是只对新键
         """
-        # 先获取要添加的新键
-        new_keys = []
-        with self._buffer_lock:
-            # 收集不在数据库中的键
-            for key in d.keys():
-                if key not in self:
-                    new_keys.append(key)
-        
         # 调用父类的update方法进行批量更新
         super().update(d)
-        
-        # 如果设置了默认TTL，则为新键应用默认TTL
-        if self._default_ttl is not None and new_keys:
-            for key in new_keys:
+
+        # 如果设置了默认TTL，为所有键应用默认TTL
+        # 不检查是否为新键，避免数据库查询开销
+        if self._default_ttl is not None:
+            for key in d.keys():
                 self._ttl_manager.set(key, self._default_ttl) 

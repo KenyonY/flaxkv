@@ -10,7 +10,7 @@ authors = [
 ]
 license-files = { paths = ["LICENSE"] }
 readme = "README.md"
-keywords = ["persistent-storage", "on-disk dict", "lmdb", "leveldb", "Machine Learning", "NLP"]
+keywords = ["persistent-storage", "on-disk dict", "leveldb", "Machine Learning", "Deep Learning"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Operating System :: OS Independent",
@@ -30,7 +30,6 @@ dependencies = [
     "numpy",
     "msgspec>=0.18.4",
     "msgpack",
-    "lmdb>=1.4.1",
     "plyvel>=1.5.0; sys_platform == 'linux'",
     "plyvel-ci>=1.5.0; sys_platform == 'win32'",
     "plyvel-ci>=1.5.0; sys_platform == 'darwin'",

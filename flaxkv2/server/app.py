@@ -164,30 +164,42 @@ async def get_value(data: GetValueRequest = Body()) -> Dict[str, Any]:
         )
 
 
+@dataclass
+class SetValueRequest:
+    db_name: str
+    key: Any
+    value: Any
+
+
 @post("/set")
-async def set_value(db_name: str, key: Any, value: Any) -> Dict[str, Any]:
+async def set_value(data: SetValueRequest = Body()) -> Dict[str, Any]:
     """
     设置键值
-    
+
     Args:
-        db_name: 数据库名称
-        key: 键
-        value: 值
+        data: 设置值请求
+            - db_name: 数据库名称
+            - key: 键
+            - value: 值
     """
     global db_manager
-    
+
+    db_name = data.db_name
+    key = data.key
+    value = data.value
+
     if db_name not in db_manager:
         return Response(
             content={"status": "error", "message": f"Database {db_name} not connected"},
             status_code=HTTP_400_BAD_REQUEST
         )
-    
+
     try:
         db = db_manager[db_name]
         db[key] = value
-        
+
         return {"status": "success"}
-        
+
     except Exception as e:
         logger.error(f"Error setting value for key {key}: {e}")
         return Response(
@@ -425,28 +437,36 @@ async def get_dict(data: GetDictRequest = Body()) -> Dict[str, Any]:
         )
 
 
+@dataclass
+class GetStatRequest:
+    db_name: str
+
+
 @post("/stat")
-async def get_stat(db_name: str) -> Dict[str, Any]:
+async def get_stat(data: GetStatRequest = Body()) -> Dict[str, Any]:
     """
     获取数据库统计信息
-    
+
     Args:
-        db_name: 数据库名称
+        data: 获取统计信息请求
+            - db_name: 数据库名称
     """
     global db_manager
-    
+
+    db_name = data.db_name
+
     if db_name not in db_manager:
         return Response(
             content={"status": "error", "message": f"Database {db_name} not connected"},
             status_code=HTTP_400_BAD_REQUEST
         )
-    
+
     try:
         db = db_manager[db_name]
         stat = db.stat()
-        
+
         return {"status": "success", "stat": stat}
-        
+
     except Exception as e:
         logger.error(f"Error getting statistics: {e}")
         return Response(

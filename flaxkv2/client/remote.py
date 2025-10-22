@@ -241,24 +241,33 @@ class RemoteDBDict(BaseDBDict):
             # 清空缓冲区
             self._buffer_dict = {}
             self._buffered_count = 0
-        
+
         if not buffer_dict_snapshot:
             return
-        
+
         # 构建批处理
         to_set = {}
         to_delete = []
-        
+
         for key, value in buffer_dict_snapshot.items():
             if value is None:
                 to_delete.append(key)
             else:
                 to_set[key] = value
-        
+
         # 批量设置
         if to_set:
             self._set_batch(to_set)
-        
+
+            # 如果设置了默认TTL，为所有新设置的键应用TTL
+            if self._default_ttl is not None:
+                for key in to_set.keys():
+                    try:
+                        self.set_ttl(key, self._default_ttl)
+                    except Exception as e:
+                        logger.warning(f"为键 {key!r} 设置默认TTL失败: {e}")
+                        # 继续处理其他键，不中断批量操作
+
         # 批量删除
         if to_delete:
             self._delete_batch(to_delete)
@@ -434,13 +443,14 @@ class RemoteDBDict(BaseDBDict):
     def __setitem__(self, key, value):
         """
         设置键值对，如果设置了默认TTL，则自动应用
+
+        注意：TTL将在缓冲区刷新时应用到远程服务器
         """
         # 调用父类的__setitem__方法
         super().__setitem__(key, value)
-        
-        # 如果设置了默认TTL，则自动应用
-        if self._default_ttl is not None:
-            self.set_ttl(key, self._default_ttl)
+
+        # 注意：不在这里直接调用set_ttl，因为键可能还在缓冲区中
+        # TTL会在_write_buffer_to_db时一起应用
             
     def set_with_ttl(self, key: Any, value: Any, ttl: int) -> None:
         """
@@ -533,23 +543,11 @@ class RemoteDBDict(BaseDBDict):
     
     def update(self, d: Dict[Any, Any]):
         """
-        批量更新多个键值对，如果设置了默认TTL，则对新添加的键应用默认TTL
+        批量更新多个键值对
+
+        注意：如果设置了默认TTL，它将在缓冲区刷新时应用到所有键
         """
-        # 先获取要添加的新键
-        new_keys = []
-        for key in d.keys():
-            if key not in self:
-                new_keys.append(key)
-        
         # 调用父类的update方法进行批量更新
         super().update(d)
-        
-        # 如果设置了默认TTL，则为新键应用默认TTL
-        if self._default_ttl is not None and new_keys:
-            for key in new_keys:
-                try:
-                    self.set_ttl(key, self._default_ttl)
-                except Exception as e:
-                    logger.warning(f"为键 {key} 设置TTL失败: {e}")
-                    # 继续处理其他键
-                    continue 
+
+        # TTL会在_write_buffer_to_db时统一应用 
