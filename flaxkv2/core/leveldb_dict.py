@@ -14,6 +14,7 @@ from flaxkv2.utils.bloom import BloomFilter
 from flaxkv2.utils.ttl import TTLManager
 # TieredBuffer 已移除 - 性能测试显示缓存在所有场景下都是负优化
 from flaxkv2.core.index import IndexManager
+from flaxkv2.core.nested_dict import NestedDBDict
 from flaxkv2.utils.log import get_logger
 
 logger = get_logger(__name__)
@@ -34,6 +35,7 @@ class LevelDBDict(BaseDBDict):
         bloom_filter_capacity: int = 1000000,
         error_if_exists: bool = False,
         default_ttl: int = None,
+        auto_nested: bool = True,
         **kwargs
     ):
         """
@@ -48,10 +50,12 @@ class LevelDBDict(BaseDBDict):
             bloom_filter_capacity: 布隆过滤器容量
             error_if_exists: 如果数据库已存在是否抛出错误
             default_ttl: 默认TTL，单位为秒。设置后，所有新增的键都会自动应用此TTL，None表示不设置默认TTL
+            auto_nested: 是否自动将字典类型转换为嵌套存储（默认True，自动优化性能）
         """
         self._db = None
         self._raw = raw
         self._default_ttl = default_ttl  # 默认TTL
+        self._auto_nested = auto_nested
 
         # 高级功能
         self._bloom_filter = BloomFilter(capacity=bloom_filter_capacity)
@@ -94,12 +98,17 @@ class LevelDBDict(BaseDBDict):
         if self._bloom_filter is not None:
             # 重置过滤器
             self._bloom_filter.reset()
-            
+
             # 加载所有键
             with self._db_lock:
                 for key, _ in self._db:
-                    decoded_key = self._decode_key(key)
-                    self._bloom_filter.add(decoded_key)
+                    try:
+                        decoded_key = self._decode_key(key)
+                        self._bloom_filter.add(decoded_key)
+                    except (ValueError, UnicodeDecodeError):
+                        # 跳过无法解码的键（如 NestedDBDict 创建的原始键）
+                        # 这些键不需要加入布隆过滤器
+                        pass
     
     def _encode_key(self, key):
         """编码键"""
@@ -471,21 +480,118 @@ class LevelDBDict(BaseDBDict):
         
     def __setitem__(self, key, value):
         """
-        设置键值对，使用基类的缓冲机制
+        设置键值对，自动检测字典类型并使用嵌套存储
 
         Args:
             key: 键
             value: 值
         """
-        # 调用父类的__setitem__方法，使用缓冲机制
-        super().__setitem__(key, value)
+        # 特殊键：元数据标记，直接使用父类
+        if isinstance(key, str) and key.startswith('__nested__:'):
+            super().__setitem__(key, value)
+            return
 
-        # 缓存已移除
+        # 如果启用了自动嵌套且值是字典类型
+        if self._auto_nested and isinstance(value, dict):
+            # 1. 标记为嵌套字典
+            super().__setitem__(f'__nested__:{key}', True)
 
-        # 如果设置了默认TTL，则应用
-        if self._default_ttl is not None:
-            self._ttl_manager.set(key, self._default_ttl)
-    
+            # 2. 创建 nested，递归写入
+            nested = self.nested(key)
+            nested.clear()  # 清除旧数据
+            for k, v in value.items():
+                nested[k] = v  # 递归！NestedDBDict 会继续检测类型
+        else:
+            # 非字典或未启用自动嵌套：取消嵌套标记（如果有）
+            if self._auto_nested:
+                try:
+                    super().__delitem__(f'__nested__:{key}')
+                except KeyError:
+                    pass
+
+            # 使用传统存储
+            super().__setitem__(key, value)
+
+            # 如果设置了默认TTL，则应用
+            if self._default_ttl is not None:
+                self._ttl_manager.set(key, self._default_ttl)
+
+    def __getitem__(self, key):
+        """
+        获取键值，自动检测嵌套字典
+
+        Args:
+            key: 键
+
+        Returns:
+            如果是嵌套字典，返回 NestedDBDict；否则返回值
+        """
+        # 特殊键：直接使用父类
+        if isinstance(key, str) and key.startswith('__nested__:'):
+            return super().__getitem__(key)
+
+        # 如果启用了自动嵌套，检查是否是嵌套字典
+        if self._auto_nested:
+            try:
+                is_nested = super().__getitem__(f'__nested__:{key}')
+                if is_nested:
+                    # 返回 NestedDBDict
+                    return self.nested(key)
+            except KeyError:
+                pass
+
+        # 普通值：使用父类实现
+        return super().__getitem__(key)
+
+    def __delitem__(self, key):
+        """
+        删除键值，如果是嵌套字典则删除所有子键
+
+        Args:
+            key: 键
+        """
+        # 特殊键：直接使用父类
+        if isinstance(key, str) and key.startswith('__nested__:'):
+            return super().__delitem__(key)
+
+        # 如果启用了自动嵌套，检查是否是嵌套字典
+        if self._auto_nested:
+            marker_key = f'__nested__:{key}'
+            is_nested = False
+
+            # 先检查缓冲区
+            with self._buffer_lock:
+                if marker_key in self._buffer_dict:
+                    marker_value = self._buffer_dict[marker_key]
+                    if marker_value is not None:  # 不是删除标记
+                        is_nested = True
+
+            # 如果缓冲区中没有，再查数据库
+            if not is_nested:
+                try:
+                    marker_value = self._get_from_db(marker_key)
+                    if marker_value:
+                        is_nested = True
+                except KeyError:
+                    pass
+
+            if is_nested:
+                # 删除所有子键
+                nested = self.nested(key)
+                nested.clear()
+                # 删除标记（立即从数据库删除，不经过缓冲）
+                try:
+                    self._delete_from_db(marker_key)
+                except KeyError:
+                    pass
+                # 同时从缓冲区删除
+                with self._buffer_lock:
+                    self._buffer_dict.pop(marker_key, None)
+                return
+
+        # 删除普通值
+        super().__delitem__(key)
+
     def update(self, d: Dict[Any, Any]):
         """
         批量更新多个键值对，如果设置了默认TTL，则对所有键应用默认TTL
@@ -499,4 +605,70 @@ class LevelDBDict(BaseDBDict):
         # 不检查是否为新键，避免数据库查询开销
         if self._default_ttl is not None:
             for key in d.keys():
-                self._ttl_manager.set(key, self._default_ttl) 
+                self._ttl_manager.set(key, self._default_ttl)
+
+    def nested(self, prefix: str) -> NestedDBDict:
+        """
+        创建一个基于前缀的嵌套字典视图
+
+        这是解决嵌套数据频繁序列化问题的推荐方案。
+        使用 NestedDBDict 可以让每个字段独立存储和访问，避免整个字典的序列化/反序列化。
+
+        性能优势：
+        - 修改单个字段只需序列化该字段的值
+        - 读取单个字段只需反序列化该字段的值
+        - 利用 LevelDB 的前缀查询能力高效迭代
+
+        使用示例：
+            # 创建嵌套字典
+            user = db.nested('user:1')
+
+            # 设置字段（每个字段独立存储）
+            user['name'] = 'Alice'
+            user['age'] = 30
+            user['city'] = 'NYC'
+
+            # 高效修改（只序列化 age 的值）
+            user['age'] = 31
+
+            # 高效读取（只反序列化 name 的值）
+            print(user['name'])
+
+            # 迭代所有字段
+            for key, value in user.items():
+                print(key, value)
+
+        对比传统方式：
+            # ❌ 传统方式（低效）
+            db['user:1'] = {'name': 'Alice', 'age': 30, 'city': 'NYC'}
+            data = db['user:1']  # 反序列化整个字典
+            data['age'] = 31
+            db['user:1'] = data  # 重新序列化整个字典
+
+            # ✅ 嵌套字典方式（高效）
+            user = db.nested('user:1')
+            user['age'] = 31  # 只序列化 age 的值
+
+        Args:
+            prefix: 前缀字符串，建议使用冒号分隔（如 'user:1'）
+
+        Returns:
+            NestedDBDict: 嵌套字典对象
+
+        注意：
+            - 前缀会自动添加冒号分隔符，实际存储的键格式为 'prefix:field'
+            - NestedDBDict 支持完整的字典接口（get, set, del, keys, values, items 等）
+            - 使用父数据库的缓冲机制，写入性能优秀
+        """
+        # 确保数据库已打开
+        if self._db is None:
+            raise RuntimeError("Database is not open")
+
+        # 创建带前缀的数据库视图
+        # 注意：prefix 后面会自动添加 ':' 分隔符
+        prefix_with_colon = f"{prefix}:"
+        prefix_bytes = prefix_with_colon.encode('utf-8')
+        prefixed_db = self._db.prefixed_db(prefix_bytes)
+
+        # 返回 NestedDBDict 对象，传入 root_db 以支持递归
+        return NestedDBDict(prefixed_db, prefix_with_colon, parent_db=self, root_db=self) 

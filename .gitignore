@@ -6,6 +6,9 @@ Log
 FLAXKV_DB
 test_db/
 
+/data/
+
+.pyc
 .idea
 .ipynb_checkpoints
 .pytest_cache

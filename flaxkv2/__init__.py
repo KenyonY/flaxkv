@@ -10,5 +10,6 @@ from flaxkv2 import auto_close
 # 主接口导出
 from flaxkv2.core.base import FlaxKV
 from flaxkv2.core.leveldb_dict import LevelDBDict
+from flaxkv2.core.nested_dict import NestedDBDict
 
-__all__ = ["FlaxKV", "LevelDBDict"] 
+__all__ = ["FlaxKV", "LevelDBDict", "NestedDBDict"] 

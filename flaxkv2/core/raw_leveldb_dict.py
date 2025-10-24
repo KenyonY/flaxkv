@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple, Optional
 import plyvel
 
 from flaxkv2.serialization import encoder, decoder
+from flaxkv2.core.nested_dict import NestedDBDict
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.ttl import TTLManager
 
@@ -32,6 +33,7 @@ class RawLevelDBDict:
         create_if_missing: bool = True,
         raw: bool = False,
         default_ttl: Optional[int] = None,
+        auto_nested: bool = False,
         **kwargs
     ):
         """
@@ -44,6 +46,7 @@ class RawLevelDBDict:
             create_if_missing: 如果数据库不存在是否创建
             raw: 是否使用原始模式（不进行序列化）
             default_ttl: 默认TTL（秒），为None表示不使用TTL
+            auto_nested: 是否自动将字典类型转换为嵌套存储（默认False，保持性能基准纯粹）
         """
         self.name = name
         self.path = os.path.abspath(path)
@@ -53,6 +56,7 @@ class RawLevelDBDict:
         self._closed = False
         self._db_lock = threading.RLock()
         self._default_ttl = default_ttl
+        self._auto_nested = auto_nested
 
         # 准备数据库
         if rebuild and os.path.exists(self.db_path):
@@ -133,6 +137,15 @@ class RawLevelDBDict:
 
     def __getitem__(self, key):
         """获取键值"""
+        # 特殊键：直接处理
+        if isinstance(key, str) and key.startswith('__nested__:'):
+            key_bytes = self._encode_key(key)
+            with self._db_lock:
+                value_bytes = self._db.get(key_bytes)
+            if value_bytes is None:
+                raise KeyError(key)
+            return self._decode_value(value_bytes)
+
         # 检查TTL
         if self._ttl_manager.is_expired(key):
             # 删除过期键
@@ -142,6 +155,20 @@ class RawLevelDBDict:
                 pass
             raise KeyError(key)
 
+        # 如果启用了自动嵌套，检查是否是嵌套字典
+        if self._auto_nested:
+            try:
+                marker_key = f'__nested__:{key}'
+                marker_bytes = self._encode_key(marker_key)
+                with self._db_lock:
+                    marker_value = self._db.get(marker_bytes)
+                if marker_value is not None:
+                    # 是嵌套字典，返回 NestedDBDict
+                    return self.nested(key)
+            except:
+                pass
+
+        # 普通值
         key_bytes = self._encode_key(key)
 
         with self._db_lock:
@@ -154,6 +181,41 @@ class RawLevelDBDict:
 
     def __setitem__(self, key, value):
         """设置键值 - 直接写入数据库"""
+        # 特殊键：直接处理
+        if isinstance(key, str) and key.startswith('__nested__:'):
+            key_bytes = self._encode_key(key)
+            value_bytes = self._encode_value(value)
+            with self._db_lock:
+                self._db.put(key_bytes, value_bytes)
+            return
+
+        # 如果启用了自动嵌套且值是字典
+        if self._auto_nested and isinstance(value, dict):
+            # 1. 标记为嵌套字典
+            marker_key = f'__nested__:{key}'
+            marker_bytes = self._encode_key(marker_key)
+            marker_value = self._encode_value(True)
+            with self._db_lock:
+                self._db.put(marker_bytes, marker_value)
+
+            # 2. 创建 nested，递归写入
+            nested = self.nested(key)
+            nested.clear()
+            for k, v in value.items():
+                nested[k] = v  # 递归
+            return
+
+        # 非字典或未启用自动嵌套：取消标记（如果有）
+        if self._auto_nested:
+            try:
+                marker_key = f'__nested__:{key}'
+                marker_bytes = self._encode_key(marker_key)
+                with self._db_lock:
+                    self._db.delete(marker_bytes)
+            except:
+                pass
+
+        # 传统存储
         key_bytes = self._encode_key(key)
         value_bytes = self._encode_value(value)
 
@@ -166,6 +228,31 @@ class RawLevelDBDict:
 
     def __delitem__(self, key):
         """删除键"""
+        # 特殊键：直接处理
+        if isinstance(key, str) and key.startswith('__nested__:'):
+            key_bytes = self._encode_key(key)
+            with self._db_lock:
+                self._db.delete(key_bytes)
+            return
+
+        # 如果启用了自动嵌套，检查是否是嵌套字典
+        if self._auto_nested:
+            marker_key = f'__nested__:{key}'
+            marker_bytes = self._encode_key(marker_key)
+
+            with self._db_lock:
+                marker_value = self._db.get(marker_bytes)
+
+            if marker_value is not None:
+                # 是嵌套字典，递归删除所有子键
+                nested = self.nested(key)
+                nested.clear()
+                # 删除标记
+                with self._db_lock:
+                    self._db.delete(marker_bytes)
+                return
+
+        # 普通值
         key_bytes = self._encode_key(key)
 
         with self._db_lock:
@@ -328,3 +415,57 @@ class RawLevelDBDict:
             清理的键数量
         """
         return self._ttl_manager.cleanup_expired()
+
+    def nested(self, prefix: str) -> NestedDBDict:
+        """
+        创建一个基于前缀的嵌套字典视图
+
+        这是解决嵌套数据频繁序列化问题的推荐方案。
+        使用 NestedDBDict 可以让每个字段独立存储和访问，避免整个字典的序列化/反序列化。
+
+        性能优势：
+        - 修改单个字段只需序列化该字段的值
+        - 读取单个字段只需反序列化该字段的值
+        - 利用 LevelDB 的前缀查询能力高效迭代
+
+        使用示例：
+            # 创建嵌套字典
+            user = db.nested('user:1')
+
+            # 设置字段（每个字段独立存储）
+            user['name'] = 'Alice'
+            user['age'] = 30
+            user['city'] = 'NYC'
+
+            # 高效修改（只序列化 age 的值）
+            user['age'] = 31
+
+            # 高效读取（只反序列化 name 的值）
+            print(user['name'])
+
+            # 迭代所有字段
+            for key, value in user.items():
+                print(key, value)
+
+        Args:
+            prefix: 前缀字符串，建议使用冒号分隔（如 'user:1'）
+
+        Returns:
+            NestedDBDict: 嵌套字典对象
+
+        注意：
+            - 前缀会自动添加冒号分隔符，实际存储的键格式为 'prefix:field'
+            - NestedDBDict 支持完整的字典接口（get, set, del, keys, values, items 等）
+            - 数据直接写入 LevelDB，不使用缓冲机制
+        """
+        # 确保数据库已打开
+        if self._db is None:
+            raise RuntimeError("Database is not open")
+
+        # 创建带前缀的数据库视图
+        prefix_with_colon = f"{prefix}:"
+        prefix_bytes = prefix_with_colon.encode('utf-8')
+        prefixed_db = self._db.prefixed_db(prefix_bytes)
+
+        # 返回 NestedDBDict 对象，传入 root_db 以支持递归嵌套
+        return NestedDBDict(prefixed_db, prefix_with_colon, parent_db=None, root_db=self)

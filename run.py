@@ -3,8 +3,8 @@ from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
 from flaxkv2.core.leveldb_dict import LevelDBDict
 
 # db = FlaxKV("my_db", "./data", default_ttl=20)
-# db = RawLevelDBDict("my_db", "./data", default_ttl=20)
-db = LevelDBDict("my_db", "./data", default_ttl=20)
+db = RawLevelDBDict("my_db", "./data", default_ttl=20)
+# db = LevelDBDict("my_db", "./data", default_ttl=20)
 print(db.stat())
 
 # set_key = True
