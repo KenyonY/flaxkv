@@ -353,7 +353,56 @@ class BaseDBDict(ABC):
         for k, v in self.items():
             result[k] = v
         return result
-    
+
+    def __repr__(self):
+        """返回对象的字符串表示形式"""
+        if self._closed:
+            return f"{self.__class__.__name__}(name={self.name!r}, closed=True)"
+
+        # 获取前几个键值对作为预览
+        try:
+            items = list(self.items())
+            num_items = len(items)
+
+            if num_items == 0:
+                items_str = "{}"
+            elif num_items <= 20:
+                # 少于等于20个，显示所有
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in items)
+                items_str = f"{{{items_repr}}}"
+            else:
+                # 超过20个，显示前20个 + ...
+                preview_items = items[:20]
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in preview_items)
+                items_str = f"{{{items_repr}, ...}} ({num_items} items)"
+
+            return f"{self.__class__.__name__}(name={self.name!r}, path={self.db_path!r}, items={items_str})"
+        except Exception as e:
+            return f"{self.__class__.__name__}(name={self.name!r}, path={self.db_path!r}, error={e!r})"
+
+    def __str__(self):
+        """返回用户友好的字符串表示形式，类似dict"""
+        if self._closed:
+            return f"<{self.__class__.__name__} '{self.name}' (closed)>"
+
+        try:
+            items = list(self.items())
+            num_items = len(items)
+
+            if num_items == 0:
+                return "{}"
+            elif num_items <= 20:
+                # 少于等于20个，显示所有（类似普通dict）
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in items)
+                return f"{{{items_repr}}}"
+            else:
+                # 超过20个，显示前20个 + 提示信息
+                preview_items = items[:20]
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in preview_items)
+                return f"{{{items_repr}, ... and {num_items - 20} more items}}"
+        except Exception as e:
+            return f"<{self.__class__.__name__} '{self.name}' (error: {e})>"
+
     @abstractmethod
     def stat(self) -> Dict:
         """返回数据库统计信息"""
@@ -369,6 +418,7 @@ class FlaxKV:
         db_name: str,
         root_path_or_url: str = ".",
         backend='leveldb',
+        auto_nested=False,
         rebuild=False,
         raw=False,
         default_ttl=None,
@@ -400,16 +450,15 @@ class FlaxKV:
                 **kwargs
             )
         
-        # 本地模式
-        if backend == 'leveldb':
-            from flaxkv2.core.leveldb_dict import LevelDBDict
-            return LevelDBDict(
+        # 本地模式 
+        else:
+            from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
+            return RawLevelDBDict(
                 name=db_name,
                 path=root_path_or_url,
                 rebuild=rebuild,
                 raw=raw,
                 default_ttl=default_ttl,
+                auto_nested=auto_nested,
                 **kwargs
             )
-        else:
-            raise ValueError(f"不支持的后端类型: {backend}") 

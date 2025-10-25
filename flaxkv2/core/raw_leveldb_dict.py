@@ -13,6 +13,7 @@ from flaxkv2.serialization import encoder, decoder
 from flaxkv2.core.nested_dict import NestedDBDict
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.ttl import TTLManager
+from flaxkv2.instance_manager import db_instance_manager
 
 logger = get_logger(__name__)
 
@@ -22,8 +23,66 @@ class RawLevelDBDict:
     原始LevelDB字典实现（无缓冲机制）
 
     直接写入LevelDB，不使用任何缓冲区、缓存、索引等高级功能。
-    用于性能基准测试，作为最基础的性能参考。
+
+    支持实例复用：同一个数据库路径多次实例化时，会返回已存在的实例（除非指定rebuild=True）。
     """
+
+    def __new__(
+        cls,
+        name: str,
+        path: str = ".",
+        rebuild: bool = False,
+        **kwargs
+    ):
+        """
+        创建或返回数据库实例
+
+        如果数据库已经打开，返回已有实例；否则创建新实例。
+        如果rebuild=True，则关闭旧实例并创建新实例。
+        """
+        # 计算数据库路径
+        abs_path = os.path.abspath(path)
+        db_path = os.path.join(abs_path, name)
+
+        # 如果需要重建，先关闭并删除旧实例
+        if rebuild:
+            existing = db_instance_manager.get_instance(db_path)
+            if existing is not None:
+                logger.debug(f"rebuild=True，关闭并删除旧实例: {db_path}")
+                try:
+                    # 先从缓存移除（但不调用close，因为我们需要手动删除文件）
+                    db_instance_manager.unregister_instance(db_path)
+                    if hasattr(existing, '_db') and existing._db is not None:
+                        existing._db.close()
+                    existing._closed = True
+                except Exception as e:
+                    logger.warning(f"关闭旧实例时出错: {e}")
+
+                # 删除数据库文件
+                if os.path.exists(db_path):
+                    import shutil
+                    try:
+                        shutil.rmtree(db_path)
+                        logger.debug(f"已删除旧数据库文件: {db_path}")
+                    except Exception as e:
+                        logger.error(f"删除数据库文件失败: {e}")
+
+            # 创建新实例
+            instance = super().__new__(cls)
+            instance._is_new_instance = True
+            return instance
+
+        # 检查是否已有实例
+        existing = db_instance_manager.get_instance(db_path)
+        if existing is not None:
+            logger.debug(f"返回已存在的数据库实例: {db_path}")
+            # 返回已有实例，不需要再次初始化
+            return existing
+
+        # 创建新实例
+        instance = super().__new__(cls)
+        instance._is_new_instance = True
+        return instance
 
     def __init__(
         self,
@@ -48,6 +107,12 @@ class RawLevelDBDict:
             default_ttl: 默认TTL（秒），为None表示不使用TTL
             auto_nested: 是否自动将字典类型转换为嵌套存储（默认False，保持性能基准纯粹）
         """
+        # 如果不是新实例（即从缓存返回的实例），跳过初始化
+        if not getattr(self, '_is_new_instance', False):
+            logger.debug(f"跳过重复初始化，使用已有实例: {name}")
+            return
+
+        # 初始化实例属性
         self.name = name
         self.path = os.path.abspath(path)
         self.db_path = os.path.join(self.path, self.name)
@@ -58,11 +123,7 @@ class RawLevelDBDict:
         self._default_ttl = default_ttl
         self._auto_nested = auto_nested
 
-        # 准备数据库
-        if rebuild and os.path.exists(self.db_path):
-            import shutil
-            shutil.rmtree(self.db_path)
-
+        # 准备数据库目录
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
         # 设置选项
@@ -81,6 +142,13 @@ class RawLevelDBDict:
 
         # 设置TTL管理器的数据库引用
         self._ttl_manager.set_db(self)
+
+        # 注册到实例管理器
+        db_instance_manager.register_instance(self.db_path, self)
+        logger.debug(f"数据库实例已注册: {self.db_path}")
+
+        # 标记初始化完成，删除临时标志
+        del self._is_new_instance
 
     def _init_db(self):
         """初始化数据库连接"""
@@ -401,6 +469,55 @@ class RawLevelDBDict:
         """返回数据库大小"""
         return len(self.keys())
 
+    def __repr__(self):
+        """返回对象的字符串表示形式"""
+        if self._closed:
+            return f"RawLevelDBDict(name={self.name!r}, closed=True)"
+
+        # 获取前几个键值对作为预览
+        try:
+            items = list(self.items())
+            num_items = len(items)
+
+            if num_items == 0:
+                items_str = "{}"
+            elif num_items <= 20:
+                # 少于等于20个，显示所有
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in items)
+                items_str = f"{{{items_repr}}}"
+            else:
+                # 超过20个，显示前20个 + ...
+                preview_items = items[:20]
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in preview_items)
+                items_str = f"{{{items_repr}, ...}} ({num_items} items)"
+
+            return f"RawLevelDBDict(name={self.name!r}, path={self.db_path!r}, items={items_str})"
+        except Exception as e:
+            return f"RawLevelDBDict(name={self.name!r}, path={self.db_path!r}, error={e!r})"
+
+    def __str__(self):
+        """返回用户友好的字符串表示形式，类似dict"""
+        if self._closed:
+            return f"<RawLevelDBDict '{self.name}' (closed)>"
+
+        try:
+            items = list(self.items())
+            num_items = len(items)
+
+            if num_items == 0:
+                return "{}"
+            elif num_items <= 20:
+                # 少于等于20个，显示所有（类似普通dict）
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in items)
+                return f"{{{items_repr}}}"
+            else:
+                # 超过20个，显示前20个 + 提示信息
+                preview_items = items[:20]
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in preview_items)
+                return f"{{{items_repr}, ... and {num_items - 20} more items}}"
+        except Exception as e:
+            return f"<RawLevelDBDict '{self.name}' (error: {e})>"
+
     def close(self):
         """关闭数据库"""
         if self._closed:
@@ -413,6 +530,10 @@ class RawLevelDBDict:
                     self._db = None
                     self._closed = True
                 logger.debug(f"Raw LevelDB connection closed: {self.name}")
+
+                # 从实例管理器中移除
+                db_instance_manager.unregister_instance(self.db_path)
+                logger.debug(f"数据库实例已从管理器移除: {self.db_path}")
             except Exception as e:
                 logger.error(f"Error closing raw LevelDB: {self.name}, error: {e}")
 
@@ -426,25 +547,62 @@ class RawLevelDBDict:
         return False
 
     def stat(self) -> Dict:
-        """返回数据库统计信息"""
-        count = 0
-        total_key_size = 0
-        total_value_size = 0
+        """
+        返回数据库统计信息
 
-        with self._db_lock:
-            for key_bytes, value_bytes in self._db:
-                count += 1
-                total_key_size += len(key_bytes)
-                total_value_size += len(value_bytes)
+        使用LevelDB内置的统计信息，加上必要的手动计算。
 
-        return {
-            'count': count,
-            'avg_key_size': total_key_size / count if count > 0 else 0,
-            'avg_value_size': total_value_size / count if count > 0 else 0,
-            'total_size': total_key_size + total_value_size,
+        Returns:
+            包含以下信息的字典:
+            - leveldb_stats: LevelDB原生统计信息（字符串）
+            - count: 键值对数量
+            - approximate_size: 数据库文件大小估算（字节）
+            - path: 数据库路径
+            - backend: 后端类型
+        """
+        stats = {
             'path': self.db_path,
             'backend': 'raw_leveldb'
         }
+
+        # 获取LevelDB内置统计信息
+        try:
+            with self._db_lock:
+                leveldb_stats_bytes = self._db.get_property(b'leveldb.stats')
+                if leveldb_stats_bytes:
+                    stats['leveldb_stats'] = leveldb_stats_bytes.decode('utf-8')
+
+                # 获取大致的磁盘使用大小
+                # 使用空字符串作为起始和结束，覆盖整个数据库
+                try:
+                    approximate_size = self._db.approximate_size(b'', b'\xff' * 100)
+                    stats['approximate_size_bytes'] = approximate_size
+                    # 转换为人类可读格式
+                    if approximate_size < 1024:
+                        stats['approximate_size'] = f"{approximate_size} B"
+                    elif approximate_size < 1024 * 1024:
+                        stats['approximate_size'] = f"{approximate_size / 1024:.2f} KB"
+                    elif approximate_size < 1024 * 1024 * 1024:
+                        stats['approximate_size'] = f"{approximate_size / (1024 * 1024):.2f} MB"
+                    else:
+                        stats['approximate_size'] = f"{approximate_size / (1024 * 1024 * 1024):.2f} GB"
+                except Exception as e:
+                    logger.debug(f"Failed to get approximate size: {e}")
+                    stats['approximate_size'] = 'unknown'
+
+        except Exception as e:
+            logger.warning(f"Failed to get LevelDB stats: {e}")
+            stats['leveldb_stats'] = 'unavailable'
+
+        # 手动计算键值对数量（这个需要遍历）
+        try:
+            count = len(self.keys())
+            stats['count'] = count
+        except Exception as e:
+            logger.warning(f"Failed to count keys: {e}")
+            stats['count'] = 'unknown'
+
+        return stats
 
     def set_ttl(self, key: Any, ttl_seconds: int) -> None:
         """

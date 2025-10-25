@@ -1,12 +1,24 @@
 from flaxkv2 import FlaxKV
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
 from flaxkv2.core.leveldb_dict import LevelDBDict
+import pandas as pd
 
 # db = FlaxKV("my_db", "./data", default_ttl=20)
-db = RawLevelDBDict("my_db", "./data", default_ttl=20)
+db = RawLevelDBDict("my_db", "./data", default_ttl=20, auto_nested=True)
+# db = {}
+db['df'] = pd.DataFrame([1,2,3])
+db['dict'] = {'a': 1, 'b': 2, 'c': 3}
+print(db)
 # db = LevelDBDict("my_db", "./data", default_ttl=20)
-print(db.stat())
+# print(db.stat())
+# print(db.items())
+for key,value in db.items():
+    print(f"{key=}: {value=}")
+print(type(db['dict']))
+print(dict(db['dict']))
+# db.destroy()
 
+exit()
 # set_key = True
 set_key = 0
 # 设置新键值对和TTL
