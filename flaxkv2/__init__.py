@@ -12,8 +12,7 @@ logger = get_logger(__name__)
 # 导入自动关闭模块，确保它被初始化
 from flaxkv2 import auto_close
 
-# 导入基础类
-from flaxkv2.core.base import BaseDBDict
+# 导入核心类
 from flaxkv2.core.leveldb_dict import LevelDBDict
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
 from flaxkv2.core.nested_dict import NestedDBDict
@@ -91,20 +90,20 @@ class FlaxKV:
         url: str,
         default_ttl: Optional[int] = None,
         root_path: Optional[str] = None,
-        timeout: float = 10.0,
+        timeout: int = 5000,
         max_retries: int = 3,
-        retry_delay: float = 0.5,
+        retry_delay: float = 0.1,
         **kwargs
     ):
         """
-        创建远程HTTP后端实例
+        创建远程 ZeroMQ 后端实例
         
         Args:
             db_name: 数据库名称
-            url: 远程服务器URL
-            default_ttl: 默认TTL，单位为秒
-            root_path: 远程服务器上的数据库根路径
-            timeout: 请求超时时间（秒）
+            url: 远程服务器地址，格式: "host:port" 或 "host" (默认端口5555)
+            default_ttl: 默认TTL，单位为秒（暂不支持）
+            root_path: 远程服务器上的数据库根路径（暂不支持）
+            timeout: 请求超时时间（毫秒）
             max_retries: 最大重试次数
             retry_delay: 重试延迟（秒）
             **kwargs: 其他参数传递给底层实现
@@ -112,14 +111,21 @@ class FlaxKV:
         Returns:
             RemoteDBDict实例
         """
-        from flaxkv2.client.remote import RemoteDBDict
+        from flaxkv2.client.zmq_client import RemoteDBDict
         
-        logger.debug(f"创建远程后端: db_name={db_name}, url={url}")
+        # 解析 host:port
+        if ':' in url:
+            host, port_str = url.rsplit(':', 1)
+            port = int(port_str)
+        else:
+            host = url
+            port = 5555  # 默认端口
+        
+        logger.debug(f"创建远程 ZeroMQ 后端: db_name={db_name}, host={host}, port={port}")
         return RemoteDBDict(
             db_name=db_name,
-            url=url,
-            default_ttl=default_ttl,
-            root_path=root_path,
+            host=host,
+            port=port,
             timeout=timeout,
             max_retries=max_retries,
             retry_delay=retry_delay,
@@ -214,8 +220,7 @@ class FlaxKV:
 
 __all__ = [
     "FlaxKV",
-    "BackendType", 
-    "BaseDBDict",
+    "BackendType",
     "LevelDBDict",
     "RawLevelDBDict",
     "NestedDBDict"

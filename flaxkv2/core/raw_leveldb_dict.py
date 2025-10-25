@@ -58,14 +58,14 @@ class RawLevelDBDict:
                 except Exception as e:
                     logger.warning(f"关闭旧实例时出错: {e}")
 
-                # 删除数据库文件
-                if os.path.exists(db_path):
-                    import shutil
-                    try:
-                        shutil.rmtree(db_path)
-                        logger.debug(f"已删除旧数据库文件: {db_path}")
-                    except Exception as e:
-                        logger.error(f"删除数据库文件失败: {e}")
+            # 删除数据库文件（无论是否有缓存实例）
+            if os.path.exists(db_path):
+                import shutil
+                try:
+                    shutil.rmtree(db_path)
+                    logger.debug(f"已删除旧数据库文件: {db_path}")
+                except Exception as e:
+                    logger.error(f"删除数据库文件失败: {e}")
 
             # 创建新实例
             instance = super().__new__(cls)
@@ -518,6 +518,13 @@ class RawLevelDBDict:
         except Exception as e:
             return f"<RawLevelDBDict '{self.name}' (error: {e})>"
 
+    def to_dict(self) -> Dict:
+        """转换为普通字典"""
+        result = {}
+        for k, v in self.items():
+            result[k] = v
+        return result
+    
     def close(self):
         """关闭数据库"""
         if self._closed:

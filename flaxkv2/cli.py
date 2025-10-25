@@ -3,7 +3,6 @@ FlaxKV2 命令行接口 (使用Fire实现)
 """
 
 import os
-import uvicorn
 import fire
 from rich import print
 
@@ -22,46 +21,39 @@ class FlaxKV2CLI:
         """显示版本信息"""
         return f"FlaxKV2 {__version__}"
 
-    def run(self, host='0.0.0.0', port=8000, data_dir=None, log_level='INFO', debug=False):
+    def run(self, host='127.0.0.1', port=5555, data_dir='.', workers=4, log_level='INFO'):
         """
-        运行FlaxKV2服务器
+        运行 FlaxKV2 ZeroMQ 服务器
         
         Args:
-            host: 监听主机名
-            port: 监听端口
-            data_dir: 数据目录
+            host: 监听主机名 (默认: 127.0.0.1)
+            port: 监听端口 (默认: 5555)
+            data_dir: 数据目录 (默认: 当前目录)
+            workers: 工作线程数 (默认: 4)
             log_level: 日志级别 (DEBUG, INFO, WARNING, ERROR)
-            debug: 调试模式
         """
-        # 设置环境变量
-        if data_dir:
-            os.environ["FLAXKV_DATA_DIR"] = data_dir
-            
-        if debug:
-            os.environ["FLAXKV_DEBUG"] = "1"
-            
+        from flaxkv2.server.zmq_server import FlaxKVServer
+        
         # 设置日志级别
         set_log_level(log_level.upper())
         
-        # 显示API文档地址信息
-        server_url = f"http://{host if host != '0.0.0.0' else 'localhost'}:{port}"
-        print(f"\n[bold green]FlaxKV2服务器启动中...[/bold green]\n")
-        print(f"API文档地址:")
-        print(f"  - Swagger UI: [bold blue]{server_url}/schema/swagger[/bold blue]")
-        print(f"  - Redoc:      [bold blue]{server_url}/schema/redoc[/bold blue]")
-        print(f"  - Scalar:     [bold blue]{server_url}/schema/scalar[/bold blue]")
-        print(f"  - Rapidoc:    [bold blue]{server_url}/schema/rapidoc[/bold blue]")
-        print(f"  - Stoplight:  [bold blue]{server_url}/schema/stoplight[/bold blue]")
-        print(f"  - Yaml:       [bold blue]{server_url}/schema/yaml[/bold blue]\n")
+        # 显示服务器信息
+        print(f"\n[bold green]FlaxKV2 ZeroMQ 服务器启动中...[/bold green]\n")
+        print(f"服务器地址: [bold blue]{host}:{port}[/bold blue]")
+        print(f"数据目录:   [bold blue]{data_dir}[/bold blue]")
+        print(f"工作线程:   [bold blue]{workers}[/bold blue]")
+        print(f"日志级别:   [bold blue]{log_level}[/bold blue]\n")
+        print(f"[dim]使用 Ctrl+C 停止服务器[/dim]\n")
         
-        # 启动服务器
-        uvicorn.run(
-            "flaxkv2.server.app:create_app",
+        # 创建并运行服务器
+        server = FlaxKVServer(
             host=host,
             port=port,
-            factory=True,
-            log_level=log_level.lower()
+            data_dir=data_dir,
+            max_workers=workers
         )
+        
+        server.run()
 
 
 def main():

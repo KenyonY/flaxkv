@@ -3,12 +3,13 @@ FlaxKV2 LevelDB后端实现
 """
 
 import os
+import shutil
 import threading
+import time
 from typing import Any, Dict, List, Tuple, Optional, Iterator, Union
 
 import plyvel
 
-from flaxkv2.core.base import BaseDBDict
 from flaxkv2.serialization import encoder, decoder
 from flaxkv2.utils.bloom import BloomFilter
 from flaxkv2.utils.ttl import TTLManager
@@ -16,14 +17,100 @@ from flaxkv2.utils.ttl import TTLManager
 from flaxkv2.core.index import IndexManager
 from flaxkv2.core.nested_dict import NestedDBDict
 from flaxkv2.utils.log import get_logger
+from flaxkv2.instance_manager import db_instance_manager
+from flaxkv2.auto_close import db_close_manager
 
 logger = get_logger(__name__)
 
 
-class LevelDBDict(BaseDBDict):
+# 删除标记 - 使用特殊的 Sentinel 对象而不是 None
+# 这样用户可以正常存储 None 值而不会与删除操作混淆
+class _DeletedMarker:
+    """删除标记类，用于在缓冲区中标记已删除的键"""
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __repr__(self):
+        return "<DELETED>"
+    
+    def __bool__(self):
+        return False
+
+
+# 全局删除标记实例
+_DELETED = _DeletedMarker()
+
+
+class LevelDBDict:
     """
-    基于LevelDB的字典实现
+    基于LevelDB的字典实现，支持缓冲机制、布隆过滤器、索引和TTL
     """
+    
+    # 默认配置
+    DEFAULT_MAX_BUFFER_SIZE = 5000  # 增大默认缓冲区，提升批量写入性能
+    DEFAULT_COMMIT_INTERVAL = 600  # 10分钟，单位秒
+    MIN_BUFFER_SIZE = 10
+    ABSOLUTE_MAX_BUFFER_SIZE = 100000  # 增大上限
+    
+    def __new__(
+        cls,
+        name: str,
+        path: str = ".",
+        rebuild: bool = False,
+        **kwargs
+    ):
+        """
+        创建或返回数据库实例
+        
+        如果数据库已经打开，返回已有实例；否则创建新实例。
+        如果rebuild=True，则关闭旧实例并创建新实例。
+        """
+        # 计算数据库路径
+        abs_path = os.path.abspath(path)
+        db_path = os.path.join(abs_path, name)
+        
+        # 如果需要重建，先关闭并删除旧实例
+        if rebuild:
+            existing = db_instance_manager.get_instance(db_path)
+            if existing is not None:
+                logger.debug(f"rebuild=True，关闭并删除旧实例: {db_path}")
+                try:
+                    # 先从缓存移除（但不调用close，因为我们需要手动删除文件）
+                    db_instance_manager.unregister_instance(db_path)
+                    if hasattr(existing, '_db') and existing._db is not None:
+                        existing._db.close()
+                    existing._closed = True
+                except Exception as e:
+                    logger.warning(f"关闭旧实例时出错: {e}")
+            
+            # 删除数据库文件（无论是否有缓存实例）
+            if os.path.exists(db_path):
+                try:
+                    shutil.rmtree(db_path)
+                    logger.debug(f"已删除旧数据库文件: {db_path}")
+                except Exception as e:
+                    logger.error(f"删除数据库文件失败: {e}")
+            
+            # 创建新实例
+            instance = super().__new__(cls)
+            instance._is_new_instance = True
+            return instance
+        
+        # 检查是否已有实例
+        existing = db_instance_manager.get_instance(db_path)
+        if existing is not None:
+            logger.debug(f"返回已存在的数据库实例: {db_path}")
+            # 返回已有实例，不需要再次初始化
+            return existing
+        
+        # 创建新实例
+        instance = super().__new__(cls)
+        instance._is_new_instance = True
+        return instance
     
     def __init__(
         self,
@@ -36,6 +123,8 @@ class LevelDBDict(BaseDBDict):
         error_if_exists: bool = False,
         default_ttl: int = None,
         auto_nested: bool = True,
+        max_buffer_size: int = None,
+        commit_interval: int = None,
         **kwargs
     ):
         """
@@ -51,7 +140,37 @@ class LevelDBDict(BaseDBDict):
             error_if_exists: 如果数据库已存在是否抛出错误
             default_ttl: 默认TTL，单位为秒。设置后，所有新增的键都会自动应用此TTL，None表示不设置默认TTL
             auto_nested: 是否自动将字典类型转换为嵌套存储（默认True，自动优化性能）
+            max_buffer_size: 最大缓冲区大小
+            commit_interval: 自动提交间隔（秒）
         """
+        # 如果不是新实例，跳过初始化
+        if not getattr(self, '_is_new_instance', False):
+            logger.debug(f"跳过重复初始化，使用已有实例: {name}")
+            return
+        
+        # 基本属性
+        self.name = name
+        self.path = os.path.abspath(path)
+        self.db_path = os.path.join(self.path, self.name)
+        
+        # 配置
+        self.MAX_BUFFER_SIZE = max_buffer_size or self.DEFAULT_MAX_BUFFER_SIZE
+        self.COMMIT_TIME_INTERVAL = commit_interval or self.DEFAULT_COMMIT_INTERVAL
+        
+        # 内部状态
+        self._buffer_dict = {}  # 写缓冲区
+        self._buffered_count = 0  # 当前缓冲记录数
+        self._buffer_lock = threading.RLock()  # 缓冲区锁
+        self._closed = False
+        self._commit_thread = None
+        
+        # 准备数据库
+        if rebuild and os.path.exists(self.db_path):
+            shutil.rmtree(self.db_path)
+        
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        
+        # LevelDB特定属性
         self._db = None
         self._raw = raw
         self._default_ttl = default_ttl  # 默认TTL
@@ -74,8 +193,71 @@ class LevelDBDict(BaseDBDict):
         # 锁
         self._db_lock = threading.RLock()
         
-        # 初始化基类
-        super().__init__(name, path, rebuild=rebuild, **kwargs)
+        # 初始化数据库
+        self._init_db()
+        
+        # 启动后台提交线程
+        self._start_commit_thread()
+        
+        # 向实例管理器注册
+        db_instance_manager.register_instance(self.db_path, self)
+        logger.debug(f"数据库实例已注册到实例管理器: {self.db_path}")
+        
+        # 向关闭管理器注册实例，用于程序退出时自动关闭
+        db_close_manager.register(self)
+    
+    # 添加上下文管理器支持
+    def __enter__(self):
+        """上下文管理器入口"""
+        logger.debug(f"进入数据库上下文: {self.name}")
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """上下文管理器退出"""
+        if exc_type:
+            logger.debug(f"因异常退出数据库上下文: {self.name}, 异常类型: {exc_type.__name__}")
+        else:
+            logger.debug(f"正常退出数据库上下文: {self.name}")
+        
+        self.close(write=True, wait=True)
+        logger.debug(f"数据库上下文已关闭: {self.name}")
+        # 不处理异常
+        return False
+    
+    def _start_commit_thread(self):
+        """启动后台提交线程"""
+        if self._commit_thread is not None:
+            return
+            
+        self._commit_thread_stop = threading.Event()
+        self._commit_thread = threading.Thread(
+            target=self._commit_thread_func,
+            daemon=True,
+            name=f"FlaxKV-Commit-{self.name}"
+        )
+        self._commit_thread.start()
+    
+    def _commit_thread_func(self):
+        """后台提交线程函数"""
+        while not self._commit_thread_stop.is_set():
+            try:
+                time.sleep(1.0)  # 检查间隔
+                
+                # 检查是否需要提交
+                current_time = time.time()
+                time_to_commit = (not hasattr(self, '_last_commit_time') or 
+                                  current_time - self._last_commit_time > self.COMMIT_TIME_INTERVAL)
+                                  
+                buffer_to_commit = False
+                with self._buffer_lock:
+                    buffer_to_commit = self._buffered_count >= self.MAX_BUFFER_SIZE
+                
+                if time_to_commit or buffer_to_commit:
+                    self._write_buffer_to_db()
+                    self._last_commit_time = current_time
+                    
+            except Exception as e:
+                logger.error(f"Error in commit thread: {e}")
     
     def _init_db(self):
         """初始化数据库连接"""
@@ -186,6 +368,183 @@ class LevelDBDict(BaseDBDict):
             
         return value
     
+    def __contains__(self, key):
+        """实现in操作符"""
+        # 先查缓冲区
+        with self._buffer_lock:
+            if key in self._buffer_dict:
+                # 如果标记为删除，返回False
+                return self._buffer_dict[key] is not _DELETED
+        
+        # 再查数据库
+        try:
+            self._get_from_db(key)
+            return True
+        except KeyError:
+            return False
+    
+    def get(self, key, default=None):
+        """获取键值，不存在返回默认值"""
+        try:
+            return self[key]
+        except KeyError:
+            return default
+    
+    def pop(self, key, default=None):
+        """弹出键值对"""
+        try:
+            value = self[key]
+            del self[key]
+            return value
+        except KeyError:
+            return default
+    
+    def __len__(self):
+        """返回数据库大小"""
+        # 这是一个估计值，可能不精确
+        key_count = len(self.keys())
+        return key_count
+    
+    def write_immediately(self, write=True, block=False):
+        """立即将缓冲区写入数据库"""
+        if write:
+            if block:
+                self._write_buffer_to_db()
+            else:
+                # 创建一个临时线程执行写入
+                t = threading.Thread(target=self._write_buffer_to_db)
+                t.daemon = True
+                t.start()
+    
+    def wait_until_write_complete(self, timeout=None):
+        """等待所有写入完成"""
+        # 创建一个临时写入，并等待它完成
+        event = threading.Event()
+        
+        def _write_and_set():
+            try:
+                self._write_buffer_to_db()
+            finally:
+                event.set()
+        
+        thread = threading.Thread(target=_write_and_set)
+        thread.daemon = True
+        thread.start()
+        
+        return event.wait(timeout)
+    
+    def close(self, write=True, wait=False):
+        """关闭数据库"""
+        if self._closed:
+            logger.debug(f"数据库 {self.name} 已经关闭，忽略重复关闭请求")
+            return
+        
+        logger.debug(f"正在关闭数据库: {self.name} (路径: {self.db_path})")
+        
+        # 停止提交线程
+        if self._commit_thread is not None:
+            logger.debug(f"停止数据库 {self.name} 的提交线程")
+            self._commit_thread_stop.set()
+            if wait:
+                self._commit_thread.join(timeout=5.0)
+                logger.debug(f"已等待数据库 {self.name} 的提交线程结束")
+            self._commit_thread = None
+        
+        # 最后写入
+        if write:
+            logger.debug(f"执行数据库 {self.name} 的最终数据写入")
+            if wait:
+                self._write_buffer_to_db()
+                logger.debug(f"已完成数据库 {self.name} 的最终数据写入（同步模式）")
+            else:
+                try:
+                    self._write_buffer_to_db()
+                    logger.debug(f"已完成数据库 {self.name} 的最终数据写入（异步模式）")
+                except Exception as e:
+                    logger.error(f"数据库 {self.name} 最终写入时发生错误: {e}")
+        
+        # 关闭数据库连接
+        logger.debug(f"关闭数据库 {self.name} 的底层存储连接")
+        self._close_db()
+        self._closed = True
+        logger.debug(f"数据库 {self.name} 已成功关闭")
+        
+        # 从实例管理器注销
+        db_instance_manager.unregister_instance(self.db_path)
+        logger.debug(f"数据库 {self.name} 已从实例管理器中注销")
+        
+        # 从关闭管理器注销实例
+        db_close_manager.unregister(self)
+        logger.debug(f"数据库 {self.name} 已从自动关闭管理器中注销")
+    
+    def destroy(self):
+        """销毁数据库"""
+        logger.debug(f"开始销毁数据库: {self.name} (路径: {self.db_path})")
+        self.close(write=False)
+        if os.path.exists(self.db_path):
+            try:
+                shutil.rmtree(self.db_path)
+                logger.debug(f"数据库文件已删除: {self.db_path}")
+            except Exception as e:
+                logger.error(f"删除数据库文件时发生错误: {self.db_path}, 错误: {e}")
+        logger.debug(f"数据库销毁完成: {self.name}")
+    
+    def to_dict(self) -> Dict:
+        """转换为普通字典"""
+        result = {}
+        for k, v in self.items():
+            result[k] = v
+        return result
+
+    def __repr__(self):
+        """返回对象的字符串表示形式"""
+        if self._closed:
+            return f"{self.__class__.__name__}(name={self.name!r}, closed=True)"
+
+        # 获取前几个键值对作为预览
+        try:
+            items = list(self.items())
+            num_items = len(items)
+
+            if num_items == 0:
+                items_str = "{}"
+            elif num_items <= 20:
+                # 少于等于20个，显示所有
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in items)
+                items_str = f"{{{items_repr}}}"
+            else:
+                # 超过20个，显示前20个 + ...
+                preview_items = items[:20]
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in preview_items)
+                items_str = f"{{{items_repr}, ...}} ({num_items} items)"
+
+            return f"{self.__class__.__name__}(name={self.name!r}, path={self.db_path!r}, items={items_str})"
+        except Exception as e:
+            return f"{self.__class__.__name__}(name={self.name!r}, path={self.db_path!r}, error={e!r})"
+
+    def __str__(self):
+        """返回用户友好的字符串表示形式，类似dict"""
+        if self._closed:
+            return f"<{self.__class__.__name__} '{self.name}' (closed)>"
+
+        try:
+            items = list(self.items())
+            num_items = len(items)
+
+            if num_items == 0:
+                return "{}"
+            elif num_items <= 20:
+                # 少于等于20个，显示所有（类似普通dict）
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in items)
+                return f"{{{items_repr}}}"
+            else:
+                # 超过20个，显示前20个 + 提示信息
+                preview_items = items[:20]
+                items_repr = ", ".join(f"{k!r}: {v!r}" for k, v in preview_items)
+                return f"{{{items_repr}, ... and {num_items - 20} more items}}"
+        except Exception as e:
+            return f"<{self.__class__.__name__} '{self.name}' (error: {e})>"
+    
     def _write_buffer_to_db(self):
         """将缓冲区写入数据库"""
         with self._buffer_lock:
@@ -204,7 +563,7 @@ class LevelDBDict(BaseDBDict):
             
             # 收集删除和设置操作
             for key, value in buffer_dict_snapshot.items():
-                if value is None:
+                if value is _DELETED:
                     # 删除操作
                     key_bytes = self._encode_key(key)
                     batch.delete(key_bytes)
@@ -488,9 +847,19 @@ class LevelDBDict(BaseDBDict):
         """
         from flaxkv2.core.nested_dict import NestedDBDict
 
-        # 特殊键：元数据标记，直接使用父类
+        # 特殊键：元数据标记，直接写入缓冲区
         if isinstance(key, str) and key.startswith('__nested__:'):
-            super().__setitem__(key, value)
+            should_flush = False
+            with self._buffer_lock:
+                # 写入缓冲区
+                self._buffer_dict[key] = value
+                self._buffered_count = len(self._buffer_dict)
+                # 如果缓冲区满，标记需要刷新（但不在锁内执行）
+                if self._buffered_count >= self.MAX_BUFFER_SIZE:
+                    should_flush = True
+            # 在锁外执行刷新，避免阻塞其他操作
+            if should_flush:
+                self._write_buffer_to_db()
             return
 
         # 如果值是 NestedDBDict，转换为普通字典
@@ -500,7 +869,7 @@ class LevelDBDict(BaseDBDict):
         # 如果启用了自动嵌套且值是字典类型
         if self._auto_nested and isinstance(value, dict):
             # 1. 标记为嵌套字典
-            super().__setitem__(f'__nested__:{key}', True)
+            self.__setitem__(f'__nested__:{key}', True)
 
             # 2. 创建 nested，递归写入
             nested = self.nested(key)
@@ -511,12 +880,22 @@ class LevelDBDict(BaseDBDict):
             # 非字典或未启用自动嵌套：取消嵌套标记（如果有）
             if self._auto_nested:
                 try:
-                    super().__delitem__(f'__nested__:{key}')
+                    self.__delitem__(f'__nested__:{key}')
                 except KeyError:
                     pass
 
-            # 使用传统存储
-            super().__setitem__(key, value)
+            # 使用缓冲机制存储
+            should_flush = False
+            with self._buffer_lock:
+                # 写入缓冲区
+                self._buffer_dict[key] = value
+                self._buffered_count = len(self._buffer_dict)
+                # 如果缓冲区满，标记需要刷新（但不在锁内执行）
+                if self._buffered_count >= self.MAX_BUFFER_SIZE:
+                    should_flush = True
+            # 在锁外执行刷新，避免阻塞其他操作
+            if should_flush:
+                self._write_buffer_to_db()
 
             # 如果设置了默认TTL，则应用
             if self._default_ttl is not None:
@@ -532,22 +911,49 @@ class LevelDBDict(BaseDBDict):
         Returns:
             如果是嵌套字典，返回 NestedDBDict；否则返回值
         """
-        # 特殊键：直接使用父类
+        # 特殊键：先查缓冲区，再查数据库
         if isinstance(key, str) and key.startswith('__nested__:'):
-            return super().__getitem__(key)
+            # 先查缓冲区
+            with self._buffer_lock:
+                if key in self._buffer_dict:
+                    value = self._buffer_dict[key]
+                    # 如果是删除标记，抛出 KeyError
+                    if value is _DELETED:
+                        raise KeyError(key)
+                    return value
+            # 再查数据库
+            try:
+                value = self._get_from_db(key)
+                return value
+            except KeyError:
+                raise KeyError(key)
 
         # 如果启用了自动嵌套，检查是否是嵌套字典
         if self._auto_nested:
             try:
-                is_nested = super().__getitem__(f'__nested__:{key}')
+                is_nested = self.__getitem__(f'__nested__:{key}')
                 if is_nested:
                     # 返回 NestedDBDict
                     return self.nested(key)
             except KeyError:
                 pass
 
-        # 普通值：使用父类实现
-        return super().__getitem__(key)
+        # 普通值：先查缓冲区，再查数据库
+        # 先查缓冲区
+        with self._buffer_lock:
+            if key in self._buffer_dict:
+                value = self._buffer_dict[key]
+                # 如果是删除标记，抛出 KeyError
+                if value is _DELETED:
+                    raise KeyError(key)
+                return value
+        
+        # 再查数据库
+        try:
+            value = self._get_from_db(key)
+            return value
+        except KeyError:
+            raise KeyError(key)
 
     def __delitem__(self, key):
         """
@@ -556,9 +962,19 @@ class LevelDBDict(BaseDBDict):
         Args:
             key: 键
         """
-        # 特殊键：直接使用父类
+        # 特殊键：标记删除（使用 _DELETED 作为删除标记）
         if isinstance(key, str) and key.startswith('__nested__:'):
-            return super().__delitem__(key)
+            with self._buffer_lock:
+                self._buffer_dict[key] = _DELETED
+                self._buffered_count = len(self._buffer_dict)
+            # 尝试从数据库删除，但忽略不存在的键
+            try:
+                self._delete_from_db(key)
+            except KeyError:
+                # 如果键不在缓冲区也不在数据库，抛出KeyError
+                if key not in self._buffer_dict:
+                    raise KeyError(key)
+            return
 
         # 如果启用了自动嵌套，检查是否是嵌套字典
         if self._auto_nested:
@@ -569,7 +985,7 @@ class LevelDBDict(BaseDBDict):
             with self._buffer_lock:
                 if marker_key in self._buffer_dict:
                     marker_value = self._buffer_dict[marker_key]
-                    if marker_value is not None:  # 不是删除标记
+                    if marker_value is not _DELETED:  # 不是删除标记
                         is_nested = True
 
             # 如果缓冲区中没有，再查数据库
@@ -595,8 +1011,18 @@ class LevelDBDict(BaseDBDict):
                     self._buffer_dict.pop(marker_key, None)
                 return
 
-        # 删除普通值
-        super().__delitem__(key)
+        # 删除普通值：标记删除（使用 _DELETED 作为删除标记）
+        with self._buffer_lock:
+            self._buffer_dict[key] = _DELETED
+            self._buffered_count = len(self._buffer_dict)
+        
+        # 尝试从数据库删除，但忽略不存在的键
+        try:
+            self._delete_from_db(key)
+        except KeyError:
+            # 如果键不在缓冲区也不在数据库，抛出KeyError
+            if key not in self._buffer_dict:
+                raise KeyError(key)
 
     def update(self, d: Dict[Any, Any]):
         """
@@ -604,8 +1030,18 @@ class LevelDBDict(BaseDBDict):
 
         注意：为了性能，对所有键都应用TTL，而不是只对新键
         """
-        # 调用父类的update方法进行批量更新
-        super().update(d)
+        # 批量更新缓冲区
+        should_flush = False
+        with self._buffer_lock:
+            self._buffer_dict.update(d)
+            self._buffered_count = len(self._buffer_dict)
+
+            if self._buffered_count >= self.MAX_BUFFER_SIZE:
+                should_flush = True
+
+        # 在锁外执行刷新，避免阻塞其他操作
+        if should_flush:
+            self._write_buffer_to_db()
 
         # 如果设置了默认TTL，为所有键应用默认TTL
         # 不检查是否为新键，避免数据库查询开销

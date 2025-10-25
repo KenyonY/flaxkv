@@ -30,11 +30,11 @@ dependencies = [
     "numpy",
     "msgspec>=0.18.4",
     "msgpack",
+    "pyzmq>=25.0.0",
     "plyvel>=1.5.0; sys_platform == 'linux'",
     "plyvel-ci>=1.5.0; sys_platform == 'win32'",
     "plyvel-ci>=1.5.0; sys_platform == 'darwin'",
     "typing-extensions>=4.7.1; python_version<'3.11'",
-    "litestar",
 ]
 
 dynamic = ["version"]
@@ -47,7 +47,6 @@ Source = "https://github.com/KenyonY/flaxkv2"
 
 [project.optional-dependencies]
 test = [
-    "litestar>=2.5.0",
     "pytest",
     "pytest-aiohttp",
     "sparrow-python",
@@ -56,18 +55,6 @@ test = [
     "pandas",
     "hypercorn",
     "uvloop; sys_platform == 'linux'",
-]
-
-server = [
-    "uvicorn",
-    "hypercorn",
-    "uvloop; sys_platform == 'linux'",
-    "litestar>=2.5.0",
-    "httpx[http2]",
-]
-
-client = [
-    "httpx[http2]",
 ]
 
 
