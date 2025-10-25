@@ -181,6 +181,8 @@ class RawLevelDBDict:
 
     def __setitem__(self, key, value):
         """设置键值 - 直接写入数据库"""
+        from flaxkv2.core.nested_dict import NestedDBDict
+
         # 特殊键：直接处理
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
@@ -188,6 +190,10 @@ class RawLevelDBDict:
             with self._db_lock:
                 self._db.put(key_bytes, value_bytes)
             return
+
+        # 如果值是 NestedDBDict，转换为普通字典
+        if isinstance(value, NestedDBDict):
+            value = value.to_dict()
 
         # 如果启用了自动嵌套且值是字典
         if self._auto_nested and isinstance(value, dict):
@@ -299,33 +305,97 @@ class RawLevelDBDict:
             for key in d.keys():
                 self._ttl_manager.set(key, self._default_ttl)
 
+    def _should_skip_internal_key(self, key_bytes: bytes) -> bool:
+        """
+        检查键是否是内部键（应该在 keys()/values()/items() 中跳过）
+
+        内部键包括：
+        1. __nested__: 前缀的标记键（已编码，如 b's__nested__:config'）
+        2. __ttl_info__: 前缀的 TTL 信息键（已编码，如 b's__ttl_info__:key'）
+        3. 嵌套存储的子键（通过 prefixed_db 创建，没有类型标识前缀，如 b'config:database:host'）
+
+        Returns:
+            True: 应该跳过（内部键或嵌套存储的子键）
+            False: 不应该跳过（用户键）
+        """
+        # 方法1：先尝试用 _decode_key 解码（适用于带类型前缀的键）
+        try:
+            decoded_key = self._decode_key(key_bytes)
+            # 检查是否是内部标记键
+            if isinstance(decoded_key, str) and (
+                decoded_key.startswith('__nested__:') or
+                decoded_key.startswith('__ttl_info__:')
+            ):
+                return True
+            # 正常的用户键
+            return False
+        except (ValueError, UnicodeDecodeError):
+            # 解码失败，可能是嵌套存储的子键（没有类型前缀）
+            pass
+
+        # 方法2：尝试直接 UTF-8 解码（适用于嵌套子键）
+        try:
+            key_str = key_bytes.decode('utf-8')
+            # 嵌套存储的子键通常包含 ':'（如 'config:database:host'）
+            # 且不以 '__' 开头（内部标记键已经在上面处理了）
+            if ':' in key_str and not key_str.startswith('__'):
+                return True
+        except UnicodeDecodeError:
+            # UTF-8 解码也失败，可能是二进制数据，保守处理：不跳过
+            pass
+
+        return False
+
     def keys(self) -> List:
         """获取所有键列表"""
         keys = []
         with self._db_lock:
             for key_bytes, _ in self._db:
-                key = self._decode_key(key_bytes)
-                keys.append(key)
+                # 先尝试解码
+                try:
+                    key = self._decode_key(key_bytes)
+
+                    # 检查是否是嵌套标记键
+                    if isinstance(key, str) and key.startswith('__nested__:'):
+                        # 提取实际的键名（去掉 '__nested__:' 前缀）
+                        actual_key = key[len('__nested__:'):]
+                        # 只添加顶层嵌套键（不包含进一步的 ':'）
+                        if ':' not in actual_key:
+                            keys.append(actual_key)
+                        continue
+
+                    # 跳过 TTL 信息键
+                    if isinstance(key, str) and key.startswith('__ttl_info__:'):
+                        continue
+
+                    # 正常的用户键
+                    keys.append(key)
+
+                except (ValueError, UnicodeDecodeError):
+                    # 解码失败，可能是嵌套子键（没有类型前缀）
+                    try:
+                        key_str = key_bytes.decode('utf-8')
+                        # 嵌套子键（如 'config:database:host'），跳过
+                        if ':' in key_str:
+                            continue
+                    except UnicodeDecodeError as e:
+                        # 真正的解码错误，记录日志
+                        import logging
+                        logging.warning(f"无法解码键 {key_bytes[:20]}...: {e}")
+
         return keys
 
     def values(self) -> List:
         """获取所有值列表"""
-        values = []
-        with self._db_lock:
-            for _, value_bytes in self._db:
-                value = self._decode_value(value_bytes)
-                values.append(value)
-        return values
+        # 使用 keys() 和 __getitem__ 来获取值
+        # 这样可以正确处理嵌套字典（返回 NestedDBDict）
+        return [self[key] for key in self.keys()]
 
     def items(self) -> List[Tuple]:
         """获取所有键值对列表"""
-        items = []
-        with self._db_lock:
-            for key_bytes, value_bytes in self._db:
-                key = self._decode_key(key_bytes)
-                value = self._decode_value(value_bytes)
-                items.append((key, value))
-        return items
+        # 使用 keys() 和 __getitem__ 来获取键值对
+        # 这样可以正确处理嵌套字典（返回 NestedDBDict）
+        return [(key, self[key]) for key in self.keys()]
 
     def __len__(self):
         """返回数据库大小"""

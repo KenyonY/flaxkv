@@ -486,10 +486,16 @@ class LevelDBDict(BaseDBDict):
             key: 键
             value: 值
         """
+        from flaxkv2.core.nested_dict import NestedDBDict
+
         # 特殊键：元数据标记，直接使用父类
         if isinstance(key, str) and key.startswith('__nested__:'):
             super().__setitem__(key, value)
             return
+
+        # 如果值是 NestedDBDict，转换为普通字典
+        if isinstance(value, NestedDBDict):
+            value = value.to_dict()
 
         # 如果启用了自动嵌套且值是字典类型
         if self._auto_nested and isinstance(value, dict):
