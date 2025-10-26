@@ -4,14 +4,13 @@ FlaxKV2是一个高性能的键值数据库系统，提供类似于Python字典�
 
 ## 主要特点
 
-- **无阻塞设计**：用户进程不会因写操作而阻塞，同时保证读取的数据始终是最新的
 - **易用性**：接口设计类似于Python字典，使用简单直观
-- **缓冲写入**：数据先缓存再批量写入数据库，减少频繁写入的开销
 - **高性能后端**：使用高性能的LevelDB作为后端存储
 - **原子操作**：确保写操作的原子性，保障数据完整性
 - **线程安全**：使用最少的锁确保并发访问安全，同时保持高性能
-- **分布式支持**：支持远程数据库访问，可作为服务运行
-- **高级功能**：支持二级索引、TTL、布隆过滤器、LRU缓存等特性
+- **分布式支持**：支持远程数据库访问（基于ZeroMQ），可作为服务运行
+- **TTL支持**：支持键的过期时间设置
+- **嵌套存储**：支持高效的嵌套字典存储，避免频繁序列化
 
 ## 安装
 
@@ -146,46 +145,12 @@ print(f"Key will expire in {ttl} seconds")
 # db["temp_key"]  # 将抛出KeyError
 ```
 
-#### 二级索引
-
-```python
-from flaxkv2 import FlaxKV
-
-db = FlaxKV("users_db", "./data")
-
-# 添加用户数据
-users = [
-    {"id": 1, "name": "Alice", "age": 30, "city": "New York"},
-    {"id": 2, "name": "Bob", "age": 25, "city": "Boston"},
-    {"id": 3, "name": "Charlie", "age": 35, "city": "New York"},
-    {"id": 4, "name": "David", "age": 28, "city": "Boston"},
-]
-
-# 添加数据到数据库
-for user in users:
-    db[f"user:{user['id']}"] = user
-
-# 创建城市索引
-db.create_hash_index("city_index", lambda x: x.get("city"))
-
-# 创建年龄范围索引
-db.create_range_index("age_index", lambda x: x.get("age"))
-
-# 查询住在纽约的用户
-ny_user_keys = db.query_index("city_index", "New York")
-ny_users = [db[key] for key in ny_user_keys]
-
-# 查询25-30岁的用户
-young_user_keys = db.query_index("age_index", min_value=25, max_value=30, include_max=True)
-young_users = [db[key] for key in young_user_keys]
-```
-
 ### 远程数据库
 
 #### 启动服务器
 
 ```bash
-flaxkv2 run --host 0.0.0.0 --port 8000 --data-dir ./data
+flaxkv2 run --host 0.0.0.0 --port 5555 --data-dir ./data
 ```
 
 #### 连接远程数据库
@@ -193,8 +158,11 @@ flaxkv2 run --host 0.0.0.0 --port 8000 --data-dir ./data
 ```python
 from flaxkv2 import FlaxKV
 
-# 连接远程数据库
-db = FlaxKV("remote_db", "http://localhost:8000")
+# 连接远程数据库（推荐显式指定 backend='remote'）
+db = FlaxKV("remote_db", "127.0.0.1:5555", backend='remote')
+
+# 或使用 tcp:// 前缀自动识别
+db = FlaxKV("remote_db", "tcp://127.0.0.1:5555")
 
 # 使用方式与本地数据库相同
 db["remote_key"] = "Remote value"
@@ -208,8 +176,7 @@ value = db["remote_key"]
 - msgpack (序列化)
 - numpy, pandas (支持数组和DataFrame)
 - loguru (日志)
-- litestar, uvicorn (服务器)
-- httpx (客户端)
+- pyzmq (远程服务器和客户端)
 
 ## 许可证
 

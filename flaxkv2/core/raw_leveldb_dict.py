@@ -642,6 +642,24 @@ class RawLevelDBDict:
         """
         self._ttl_manager.remove(key)
 
+    def get_default_ttl(self) -> Optional[int]:
+        """
+        获取默认TTL设置
+
+        Returns:
+            默认TTL秒数，如果没有设置返回None
+        """
+        return self._default_ttl
+
+    def set_default_ttl(self, ttl_seconds: Optional[int]) -> None:
+        """
+        设置默认TTL
+
+        Args:
+            ttl_seconds: 默认TTL秒数，None表示取消默认TTL
+        """
+        self._default_ttl = ttl_seconds
+
     def cleanup_expired(self) -> int:
         """
         清理所有过期的键

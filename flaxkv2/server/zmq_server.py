@@ -42,11 +42,10 @@ class FlaxKVServer:
     CMD_ITEMS = b'ITEMS'
     CMD_UPDATE = b'UPDATE'
     CMD_STAT = b'STAT'
-    CMD_SET_TTL = b'SET_TTL'
-    CMD_GET_TTL = b'GET_TTL'
     CMD_CLEANUP_EXPIRED = b'CLEANUP_EXPIRED'
     CMD_PING = b'PING'
     CMD_LEN = b'LEN'
+    # 注意：SET_TTL 和 GET_TTL 已移除，客户端直接使用 SET/GET 操作 TTL 信息键
     
     # 响应状态
     STATUS_OK = b'OK'
@@ -265,33 +264,6 @@ class FlaxKVServer:
                 try:
                     stat = db.stat()
                     return [self.STATUS_OK, stat]
-                except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
-            elif command == self.CMD_SET_TTL:
-                # TTL 功能需要反序列化 key
-                key_bytes = request[2]
-                ttl_seconds = request[3]
-                try:
-                    # 这里需要使用 db 的高级 API
-                    from flaxkv2.serialization import decoder
-                    key = decoder.decode_key(key_bytes)
-                    db.set_ttl(key, ttl_seconds)
-                    return [self.STATUS_OK, None]
-                except KeyError:
-                    return [self.STATUS_NOT_FOUND, None]
-                except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
-            elif command == self.CMD_GET_TTL:
-                key_bytes = request[2]
-                try:
-                    from flaxkv2.serialization import decoder
-                    key = decoder.decode_key(key_bytes)
-                    ttl = db.get_ttl(key)
-                    return [self.STATUS_OK, ttl]
-                except KeyError:
-                    return [self.STATUS_NOT_FOUND, None]
                 except Exception as e:
                     return [self.STATUS_ERROR, str(e).encode('utf-8')]
             

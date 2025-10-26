@@ -40,11 +40,10 @@ class RemoteDBDict:
     CMD_ITEMS = b'ITEMS'
     CMD_UPDATE = b'UPDATE'
     CMD_STAT = b'STAT'
-    CMD_SET_TTL = b'SET_TTL'
-    CMD_GET_TTL = b'GET_TTL'
     CMD_CLEANUP_EXPIRED = b'CLEANUP_EXPIRED'
     CMD_PING = b'PING'
     CMD_LEN = b'LEN'
+    # 注意：SET_TTL 和 GET_TTL 不再作为独立命令，客户端直接使用 SET/GET 操作 TTL 信息键
     
     # 响应状态
     STATUS_OK = b'OK'
@@ -324,31 +323,77 @@ class RemoteDBDict:
     
     def set_ttl(self, key: Any, ttl_seconds: int):
         """设置键的过期时间"""
+        import time
+        
         # 序列化 key
         key_bytes = encoder.encode_key(key)
         
-        request = [self.CMD_SET_TTL, self.db_name.encode('utf-8'), key_bytes, ttl_seconds]
+        # 客户端计算过期时间戳
+        expiry_time = time.time() + ttl_seconds
+        
+        # 构造 TTL 信息键（客户端负责，避免服务器端解码）
+        # 使用与 TTLManager 相同的格式
+        if isinstance(key, str):
+            key_str = key
+        elif isinstance(key, bytes):
+            try:
+                key_str = key.decode('utf-8')
+            except:
+                key_str = str(key)
+        else:
+            key_str = str(key)
+        
+        ttl_key_str = "__ttl_info__:" + key_str
+        ttl_key_bytes = encoder.encode_key(ttl_key_str)
+        ttl_value_bytes = encoder.encode(str(expiry_time))
+        
+        # 发送两个 SET 命令：一个设置数据，一个设置 TTL 信息
+        # 先检查键是否存在
+        if key_bytes not in self:
+            raise KeyError(key)
+        
+        # 设置 TTL 信息
+        request = [self.CMD_SET, self.db_name.encode('utf-8'), ttl_key_bytes, ttl_value_bytes]
         status, result = self._send_request(request)
         
-        if status == self.STATUS_NOT_FOUND:
-            raise KeyError(key)
-        elif status == self.STATUS_ERROR:
+        if status == self.STATUS_ERROR:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
     
     def get_ttl(self, key: Any) -> Optional[float]:
         """获取键的剩余过期时间"""
-        # 序列化 key
-        key_bytes = encoder.encode_key(key)
+        import time
         
-        request = [self.CMD_GET_TTL, self.db_name.encode('utf-8'), key_bytes]
+        # 构造 TTL 信息键（客户端负责）
+        if isinstance(key, str):
+            key_str = key
+        elif isinstance(key, bytes):
+            try:
+                key_str = key.decode('utf-8')
+            except:
+                key_str = str(key)
+        else:
+            key_str = str(key)
+        
+        ttl_key_str = "__ttl_info__:" + key_str
+        ttl_key_bytes = encoder.encode_key(ttl_key_str)
+        
+        # 获取 TTL 信息
+        request = [self.CMD_GET, self.db_name.encode('utf-8'), ttl_key_bytes]
         status, result = self._send_request(request)
         
         if status == self.STATUS_NOT_FOUND:
-            raise KeyError(key)
+            # 没有设置 TTL
+            return None
         elif status == self.STATUS_ERROR:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
         
-        return result
+        # 解析过期时间戳
+        try:
+            expiry_time = float(decoder.decode(result))
+            remaining = int(expiry_time - time.time())
+            return max(0, remaining)
+        except Exception:
+            return None
     
     def cleanup_expired(self) -> int:
         """清理过期键"""

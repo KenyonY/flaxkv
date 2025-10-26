@@ -288,31 +288,49 @@ class TTLManager:
             # 清空当前内存中的TTL信息
             self._expiry_dict = {}
             
-            # 遍历数据库中所有的键
+            # 直接遍历底层数据库（避免被 keys() 方法过滤）
             prefix = "__ttl_info__:"
-            for key in self._db.keys():
-                # 检查是否为TTL信息键
-                if isinstance(key, str) and key.startswith(prefix):
-                    # 提取原始键
-                    original_key = key[len(prefix):]
-                    
-                    # 获取过期时间
+            
+            # 检查数据库是否有 _db 属性（本地数据库）
+            if hasattr(self._db, '_db') and self._db._db is not None:
+                # 直接遍历底层 LevelDB
+                for key_bytes, value_bytes in self._db._db:
                     try:
-                        expiry_time = float(self._db[key])
+                        # 解码键
+                        key = self._db._decode_key(key_bytes)
                         
-                        # 检查是否已过期
-                        current_time = time.time()
-                        if expiry_time > current_time:
-                            # 未过期，加载到内存
-                            self._expiry_dict[original_key] = expiry_time
-                        else:
-                            # 已过期，从数据库中删除
-                            del self._db[key]
-                            if original_key in self._db:
-                                del self._db[original_key]
+                        # 检查是否为TTL信息键
+                        if isinstance(key, str) and key.startswith(prefix):
+                            # 提取原始键
+                            original_key = key[len(prefix):]
+                            
+                            # 解码并解析过期时间
+                            value = self._db._decode_value(value_bytes)
+                            expiry_time = float(value)
+                            
+                            # 检查是否已过期
+                            current_time = time.time()
+                            if expiry_time > current_time:
+                                # 未过期，加载到内存
+                                self._expiry_dict[original_key] = expiry_time
+                            else:
+                                # 已过期，从数据库中删除
+                                ttl_key_bytes = self._db._encode_key(key)
+                                with self._db._db_lock:
+                                    self._db._db.delete(ttl_key_bytes)
+                                # 删除原始键
+                                original_key_bytes = self._db._encode_key(original_key)
+                                with self._db._db_lock:
+                                    if self._db._db.get(original_key_bytes) is not None:
+                                        self._db._db.delete(original_key_bytes)
                     except Exception as e:
                         import logging
-                        logging.error(f"解析TTL数据失败 {key}: {e}")
+                        logging.debug(f"跳过非TTL键或解析失败: {e}")
+            else:
+                # 远程数据库或其他类型，使用高级 API
+                # 注意：这可能不会加载 TTL 信息，因为 keys() 会过滤它们
+                import logging
+                logging.warning("远程数据库暂不支持 TTL 持久化加载")
                         
         except Exception as e:
             import logging

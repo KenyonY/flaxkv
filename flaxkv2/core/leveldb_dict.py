@@ -715,46 +715,6 @@ class LevelDBDict:
         remaining = expiry - time.time()
         return max(0, remaining)
     
-    def create_hash_index(self, name: str, field_accessor: callable) -> None:
-        """
-        创建哈希索引
-        
-        Args:
-            name: 索引名称
-            field_accessor: 字段访问函数，从值中提取索引字段
-        """
-        from flaxkv2.core.index import HashIndex
-        
-        # 创建索引
-        index = HashIndex(name, field_accessor)
-        
-        # 添加索引
-        self._index_manager.add_index(index)
-        
-        # 构建索引（遍历所有数据）
-        for key, value in self.items():
-            index.add(key, value)
-    
-    def create_range_index(self, name: str, field_accessor: callable) -> None:
-        """
-        创建范围索引
-        
-        Args:
-            name: 索引名称
-            field_accessor: 字段访问函数，从值中提取索引字段
-        """
-        from flaxkv2.core.index import RangeIndex
-        
-        # 创建索引
-        index = RangeIndex(name, field_accessor)
-        
-        # 添加索引
-        self._index_manager.add_index(index)
-        
-        # 构建索引（遍历所有数据）
-        for key, value in self.items():
-            index.add(key, value)
-    
     def query_index(self, index_name: str, *args, **kwargs) -> List[Any]:
         """
         使用索引查询
