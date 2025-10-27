@@ -14,8 +14,22 @@ FlaxKV2是一个高性能的键值数据库系统，提供类似于Python字典�
 
 ## 安装
 
+### 基础安装
+
 ```bash
 pip install flaxkv2
+```
+
+### 完整安装（包含 Pandas 支持）
+
+```bash
+pip install flaxkv2[pandas]
+```
+
+或安装所有可选功能：
+
+```bash
+pip install flaxkv2[full]
 ```
 
 ## 使用方法
@@ -169,14 +183,52 @@ db["remote_key"] = "Remote value"
 value = db["remote_key"]
 ```
 
+## ⚠️ 安全警告
+
+### Pickle 序列化安全
+
+FlaxKV2 使用多种序列化方式，对于复杂对象会回退到 `pickle`。**pickle 反序列化存在安全风险**：
+
+- ⚠️ **不要从不可信来源加载数据**
+- ⚠️ **pickle 可以执行任意代码**
+- ✅ 仅在可信环境中使用
+- ✅ 对于生产环境，建议只存储简单数据类型（字符串、数字、列表、字典）
+
+### 远程连接安全
+
+使用远程数据库时请注意：
+
+- ⚠️ **默认无加密**：数据以明文传输
+- ⚠️ **默认无认证**：任何人都可以连接
+- ✅ **建议使用场景**：
+  - 可信的内网环境
+  - 通过 VPN 或 SSH 隧道连接
+  - 使用防火墙限制访问
+- ❌ **不建议**：直接暴露到公网
+
+**生产环境建议**：
+```bash
+# 仅监听本地
+flaxkv2 run --host 127.0.0.1 --port 5555
+
+# 或通过 SSH 隧道访问
+ssh -L 5555:localhost:5555 user@remote-server
+```
+
 ## 依赖
+
+### 核心依赖
 
 - Python >= 3.8
 - plyvel (LevelDB绑定)
 - msgpack (序列化)
-- numpy, pandas (支持数组和DataFrame)
+- numpy (数组支持和布隆过滤器)
 - loguru (日志)
 - pyzmq (远程服务器和客户端)
+
+### 可选依赖
+
+- pandas (DataFrame 序列化支持) - 使用 `pip install flaxkv2[pandas]` 安装
 
 ## 许可证
 

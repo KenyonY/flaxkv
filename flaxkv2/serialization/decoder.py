@@ -5,8 +5,15 @@ FlaxKV2 数据解码模块
 import pickle
 import msgpack
 import numpy as np
-import pandas as pd
 from typing import Any, Dict, List, Tuple, Union
+
+# Pandas 是可选依赖
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
+    pd = None
 
 # 导入与编码器相同的类型标识
 from flaxkv2.serialization.encoder import (
@@ -42,6 +49,11 @@ def decode(data: bytes) -> Any:
         return np.frombuffer(array_bytes, dtype=dtype).reshape(shape)
     
     elif type_id == TYPE_PANDAS:
+        if not HAS_PANDAS or pd is None:
+            raise ImportError(
+                "Pandas is required to deserialize DataFrames. "
+                "Install it with: pip install flaxkv2[pandas]"
+            )
         df_dict = msgpack.unpackb(payload, raw=False)
         columns = df_dict['columns']
         index = df_dict['index']

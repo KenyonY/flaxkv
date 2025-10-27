@@ -11,9 +11,9 @@ from typing import Any, Dict, List, Tuple, Optional, Iterator, Union
 import plyvel
 
 from flaxkv2.serialization import encoder, decoder
-from flaxkv2.utils.bloom import BloomFilter
 from flaxkv2.utils.ttl import TTLManager
 # TieredBuffer 已移除 - 性能测试显示缓存在所有场景下都是负优化
+# BloomFilter 已移除 - 在有内存缓冲区的设计中是多余的优化
 from flaxkv2.core.index import IndexManager
 from flaxkv2.core.nested_dict import NestedDBDict
 from flaxkv2.utils.log import get_logger
@@ -119,7 +119,6 @@ class LevelDBDict:
         rebuild: bool = False,
         create_if_missing: bool = True,
         raw: bool = False,
-        bloom_filter_capacity: int = 1000000,
         error_if_exists: bool = False,
         default_ttl: int = None,
         auto_nested: bool = True,
@@ -136,7 +135,6 @@ class LevelDBDict:
             rebuild: 是否重建数据库
             create_if_missing: 如果数据库不存在是否创建
             raw: 是否使用原始模式（不进行序列化）
-            bloom_filter_capacity: 布隆过滤器容量
             error_if_exists: 如果数据库已存在是否抛出错误
             default_ttl: 默认TTL，单位为秒。设置后，所有新增的键都会自动应用此TTL，None表示不设置默认TTL
             auto_nested: 是否自动将字典类型转换为嵌套存储（默认True，自动优化性能）
@@ -177,7 +175,6 @@ class LevelDBDict:
         self._auto_nested = auto_nested
 
         # 高级功能
-        self._bloom_filter = BloomFilter(capacity=bloom_filter_capacity)
         self._ttl_manager = TTLManager()  # 初始时不传递数据库引用，等待数据库初始化完成
         self._index_manager = IndexManager()
             
@@ -265,32 +262,12 @@ class LevelDBDict:
             self._db = plyvel.DB(self.db_path, **self._leveldb_options)
             logger.info(f"Opened LevelDB at {self.db_path}")
             
-            # 初始化布隆过滤器
-            self._init_bloom_filter()
-            
             # 在数据库初始化完成后，将数据库引用传递给TTL管理器
             self._ttl_manager.set_db(self)
             
         except Exception as e:
             logger.error(f"Failed to open LevelDB at {self.db_path}: {e}")
             raise
-    
-    def _init_bloom_filter(self):
-        """初始化布隆过滤器，加载现有键"""
-        if self._bloom_filter is not None:
-            # 重置过滤器
-            self._bloom_filter.reset()
-
-            # 加载所有键
-            with self._db_lock:
-                for key, _ in self._db:
-                    try:
-                        decoded_key = self._decode_key(key)
-                        self._bloom_filter.add(decoded_key)
-                    except (ValueError, UnicodeDecodeError):
-                        # 跳过无法解码的键（如 NestedDBDict 创建的原始键）
-                        # 这些键不需要加入布隆过滤器
-                        pass
     
     def _encode_key(self, key):
         """编码键"""
@@ -338,9 +315,6 @@ class LevelDBDict:
     
     def _get_from_db(self, key):
         """从数据库获取值"""
-        # 检查布隆过滤器
-        if self._bloom_filter is not None and not self._bloom_filter.check(key):
-            raise KeyError(key)
             
         # 缓存已移除 - 性能测试显示缓存在所有场景下都是负优化
         
@@ -567,12 +541,6 @@ class LevelDBDict:
                     # 删除操作
                     key_bytes = self._encode_key(key)
                     batch.delete(key_bytes)
-                    
-                    # 从布隆过滤器中移除
-                    if self._bloom_filter is not None:
-                        # 由于布隆过滤器不支持删除，我们不做任何操作
-                        # 这可能导致一些假阳性，但不会导致假阴性
-                        pass
                         
                     # 从索引中移除
                     self._index_manager.remove_from_indexes(key)
@@ -586,10 +554,6 @@ class LevelDBDict:
                     key_bytes = self._encode_key(key)
                     value_bytes = self._encode_value(value)
                     batch.put(key_bytes, value_bytes)
-                    
-                    # 添加到布隆过滤器
-                    if self._bloom_filter is not None:
-                        self._bloom_filter.add(key)
                         
                     # 更新索引
                     self._index_manager.update_indexes(key, value)

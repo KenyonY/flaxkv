@@ -46,15 +46,21 @@ Issues = "https://github.com/KenyonY/flaxkv2/issues"
 Source = "https://github.com/KenyonY/flaxkv2"
 
 [project.optional-dependencies]
+# Pandas 支持 - 用于序列化 Pandas DataFrame
+pandas = [
+    "pandas",
+]
+
+# 测试依赖
 test = [
     "pytest",
-    "pytest-aiohttp",
-    "sparrow-python",
-    "uvicorn",
-    "httpx[http2]",
+    "pytest-cov",
     "pandas",
-    "hypercorn",
-    "uvloop; sys_platform == 'linux'",
+]
+
+# 完整安装（包含所有可选功能）
+full = [
+    "pandas",
 ]
 
 

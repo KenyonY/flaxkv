@@ -5,8 +5,15 @@ FlaxKV2 数据编码模块
 import pickle
 import msgpack
 import numpy as np
-import pandas as pd
 from typing import Any, Dict, List, Tuple, Union
+
+# Pandas 是可选依赖
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
+    pd = None
 
 # 类型标识
 TYPE_MSGPACK = 0  # 普通类型使用msgpack
@@ -23,6 +30,9 @@ def encode(value: Any) -> bytes:
     
     Returns:
         bytes: 编码后的二进制数据
+        
+    Raises:
+        ImportError: 如果尝试序列化 Pandas 对象但未安装 pandas
     """
     # NumPy数组特殊处理
     if isinstance(value, np.ndarray):
@@ -35,7 +45,7 @@ def encode(value: Any) -> bytes:
         return bytes([TYPE_NUMPY]) + packed
     
     # Pandas DataFrame特殊处理
-    elif isinstance(value, pd.DataFrame):
+    elif HAS_PANDAS and pd is not None and isinstance(value, pd.DataFrame):
         # 检查是否包含对象类型列
         has_object = any(dt == 'object' for dt in value.dtypes)
         

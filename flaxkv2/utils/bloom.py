@@ -4,8 +4,8 @@ FlaxKV2 布隆过滤器实现
 
 import math
 import mmh3
-from typing import Any, Callable
 import numpy as np
+from typing import Any, Callable
 
 
 class BloomFilter:
