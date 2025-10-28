@@ -10,6 +10,7 @@
 - 添加 GitHub Actions CI/CD 自动化测试
 - 添加安全警告文档（pickle 和远程连接风险）
 - 添加 CHANGELOG.md 变更日志
+- 添加服务器端TTL验证，网络请求减少50%
 
 ### 变更
 - **依赖调整**: 将 pandas 移至可选依赖，numpy 保留为核心依赖
@@ -17,6 +18,17 @@
   - 完整安装: `pip install flaxkv2[pandas]` 或 `pip install flaxkv2[full]`
 - 更新 pre-commit 配置到最新版本（black 24.3.0, isort 5.13.2）
 - 更新架构文档，明确区分已实现功能和未来规划
+- **TTL实现重构**: TTL信息现在作为普通键存储，简化架构并提升性能
+  - 移除内存字典 `_expiry_dict`，所有TTL信息直接存储在数据库中
+  - 本地和远程模式行为完全一致
+  - 服务器端自动处理TTL验证，客户端无需额外检查
+
+### 弃用 ⚠️
+- **LevelDBDict 已弃用**: 将在未来版本中移除
+  - 原因: 性能测试显示 RawLevelDBDict 在所有场景下都更快（提升13-25%）
+  - 缓冲机制和索引功能未能带来性能提升，反而增加复杂度
+  - 迁移: 直接替换为 `RawLevelDBDict` 或使用 `FlaxKV` 工厂类
+  - 详见: `DEPRECATION_NOTICE.md`
 
 ### 移除
 - **移除 LevelDBDict 中的布隆过滤器**: 在有内存缓冲区的设计中，布隆过滤器是多余的优化

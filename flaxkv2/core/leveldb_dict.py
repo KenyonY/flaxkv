@@ -1,11 +1,42 @@
 """
 FlaxKV2 LevelDB后端实现
+
+⚠️ DEPRECATED: LevelDBDict 已被弃用
+========================================
+
+此类已被标记为弃用，建议使用 RawLevelDBDict 替代。
+
+原因：
+1. 性能测试显示 RawLevelDBDict 在所有场景下都比 LevelDBDict 更快
+2. LevelDBDict 的缓冲机制和索引功能在实际使用中没有带来性能提升
+3. RawLevelDBDict 的代码更简单，更易于维护
+
+迁移指南：
+- 旧代码: from flaxkv2 import LevelDBDict
+          db = LevelDBDict("mydb", "./data")
+
+- 新代码: from flaxkv2 import RawLevelDBDict
+          db = RawLevelDBDict("mydb", "./data")
+
+或者直接使用 FlaxKV 工厂类（推荐）：
+- 新代码: from flaxkv2 import FlaxKV
+          db = FlaxKV("mydb", "./data")
+
+功能对比：
+- ✅ RawLevelDBDict 支持所有 LevelDBDict 的核心功能（TTL、嵌套存储等）
+- ✅ RawLevelDBDict 性能更好（无缓冲开销）
+- ✅ RawLevelDBDict 内存占用更少
+- ❌ RawLevelDBDict 不支持写缓冲（实测发现缓冲反而降低性能）
+- ❌ RawLevelDBDict 不支持索引（实测发现索引没有实际用途）
+
+此类将在未来版本中移除。
 """
 
 import os
 import shutil
 import threading
 import time
+import warnings
 from typing import Any, Dict, List, Tuple, Optional, Iterator, Union
 
 import plyvel
@@ -28,15 +59,15 @@ logger = get_logger(__name__)
 class _DeletedMarker:
     """删除标记类，用于在缓冲区中标记已删除的键"""
     _instance = None
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __repr__(self):
         return "<DELETED>"
-    
+
     def __bool__(self):
         return False
 
@@ -47,6 +78,8 @@ _DELETED = _DeletedMarker()
 
 class LevelDBDict:
     """
+    ⚠️ DEPRECATED: 此类已弃用，请使用 RawLevelDBDict 替代
+
     基于LevelDB的字典实现，支持缓冲机制、布隆过滤器、索引和TTL
     """
     
@@ -127,6 +160,8 @@ class LevelDBDict:
         **kwargs
     ):
         """
+        ⚠️ DEPRECATED: LevelDBDict 已弃用，请使用 RawLevelDBDict 替代
+
         初始化LevelDB字典
 
         Args:
@@ -141,6 +176,16 @@ class LevelDBDict:
             max_buffer_size: 最大缓冲区大小
             commit_interval: 自动提交间隔（秒）
         """
+        # 发出弃用警告
+        warnings.warn(
+            "LevelDBDict is deprecated and will be removed in a future version. "
+            "Please use RawLevelDBDict instead, which has better performance. "
+            "Migration: Replace 'LevelDBDict' with 'RawLevelDBDict' in your code, "
+            "or use the FlaxKV factory class (recommended): FlaxKV('db_name', './data')",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
         # 如果不是新实例，跳过初始化
         if not getattr(self, '_is_new_instance', False):
             logger.debug(f"跳过重复初始化，使用已有实例: {name}")

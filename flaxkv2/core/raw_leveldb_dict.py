@@ -302,8 +302,8 @@ class RawLevelDBDict:
 
     def __delitem__(self, key):
         """删除键"""
-        # 特殊键：直接处理
-        if isinstance(key, str) and key.startswith('__nested__:'):
+        # 特殊键：直接处理（不触发TTL逻辑）
+        if isinstance(key, str) and (key.startswith('__nested__:') or key.startswith('__ttl_info__:')):
             key_bytes = self._encode_key(key)
             with self._db_lock:
                 self._db.delete(key_bytes)
@@ -324,6 +324,8 @@ class RawLevelDBDict:
                 # 删除标记
                 with self._db_lock:
                     self._db.delete(marker_bytes)
+                # 也要移除TTL
+                self._ttl_manager.remove(key)
                 return
 
         # 普通值
@@ -338,7 +340,7 @@ class RawLevelDBDict:
             # 删除键
             self._db.delete(key_bytes)
 
-        # 从TTL管理器中移除
+        # 从TTL管理器中移除（会删除对应的 __ttl_info__ 键）
         self._ttl_manager.remove(key)
 
     def __contains__(self, key):

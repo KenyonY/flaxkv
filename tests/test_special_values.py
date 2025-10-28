@@ -7,7 +7,7 @@
 3. 其他边界情况
 """
 
-from flaxkv2.core.leveldb_dict import LevelDBDict
+from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
 import tempfile
 import shutil
 
@@ -18,18 +18,18 @@ def test_none_value():
     print("=" * 60)
     
     with tempfile.TemporaryDirectory() as tmpdir:
-        db = LevelDBDict("test_none", path=tmpdir, rebuild=True)
-        
+        db = RawLevelDBDict("test_none", path=tmpdir, rebuild=True)
+
         # 存储 None 值
         db["key1"] = None
         db["key2"] = "not none"
         db["key3"] = None
-        
-        # 强制刷新缓冲区
-        db.close(write=True, wait=True)
-        
+
+        # 关闭数据库
+        db.close()
+
         # 重新打开数据库
-        db = LevelDBDict("test_none", path=tmpdir)
+        db = RawLevelDBDict("test_none", path=tmpdir)
         
         # 读取 None 值
         assert db["key1"] is None, f"Expected None, got {db['key1']}"
@@ -52,7 +52,7 @@ def test_special_key_prefix():
     print("=" * 60)
     
     with tempfile.TemporaryDirectory() as tmpdir:
-        db = LevelDBDict("test_special", path=tmpdir, rebuild=True)
+        db = RawLevelDBDict("test_special", path=tmpdir, rebuild=True)
         
         # 尝试使用特殊前缀的键
         try:
@@ -78,7 +78,7 @@ def test_delete_then_set_none():
     print("=" * 60)
     
     with tempfile.TemporaryDirectory() as tmpdir:
-        db = LevelDBDict("test_delete", path=tmpdir, rebuild=True)
+        db = RawLevelDBDict("test_delete", path=tmpdir, rebuild=True)
         
         # 设置一个值
         db["key"] = "value"
@@ -104,7 +104,7 @@ def test_mixed_operations():
     print("=" * 60)
     
     with tempfile.TemporaryDirectory() as tmpdir:
-        db = LevelDBDict("test_mixed", path=tmpdir, rebuild=True)
+        db = RawLevelDBDict("test_mixed", path=tmpdir, rebuild=True)
         
         # 批量操作包含 None
         db.update({

@@ -176,9 +176,6 @@ class TestFlaxKV:
         db.close()
 
 
-# 注意：索引功能已从默认的 RawLevelDBDict 中移除
+# 注意：索引功能已从 RawLevelDBDict 中移除
 # FlaxKV() 默认返回 RawLevelDBDict（高性能简化版本）
-# 如需使用索引功能，请直接使用 LevelDBDict：
-# from flaxkv2 import LevelDBDict
-# db = LevelDBDict("test_db", "./data")
-# db.create_hash_index("city_index", lambda x: x.get("city")) 
+# 不再支持索引功能，已弃用 

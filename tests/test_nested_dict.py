@@ -5,7 +5,7 @@ import unittest
 import tempfile
 import shutil
 import numpy as np
-from flaxkv2 import LevelDBDict
+from flaxkv2 import RawLevelDBDict
 
 
 class TestNestedDBDict(unittest.TestCase):
@@ -14,7 +14,7 @@ class TestNestedDBDict(unittest.TestCase):
     def setUp(self):
         """每个测试前创建临时数据库"""
         self.tmpdir = tempfile.mkdtemp()
-        self.db = LevelDBDict('test_nested', path=self.tmpdir, rebuild=True)
+        self.db = RawLevelDBDict('test_nested', path=self.tmpdir, rebuild=True)
 
     def tearDown(self):
         """每个测试后清理"""
@@ -240,7 +240,7 @@ class TestNestedDBDict(unittest.TestCase):
 
         # 关闭并重新打开数据库
         self.db.close()
-        self.db = LevelDBDict('test_nested', path=self.tmpdir)
+        self.db = RawLevelDBDict('test_nested', path=self.tmpdir)
 
         # 数据应该仍然存在
         nested = self.db.nested('persist')

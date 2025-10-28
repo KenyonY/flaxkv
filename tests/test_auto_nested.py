@@ -2,7 +2,7 @@
 测试自动嵌套功能
 
 包含:
-1. LevelDBDict 的 auto_nested 功能
+1. RawLevelDBDict 的 auto_nested 功能
 2. RawLevelDBDict 的 nested() 方法
 3. auto_nested=True/False 的行为差异
 """
@@ -10,19 +10,18 @@
 import pytest
 import tempfile
 import shutil
-from flaxkv2.core.leveldb_dict import LevelDBDict
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
 from flaxkv2.core.nested_dict import NestedDBDict
 
 
 class TestAutoNested:
-    """测试 LevelDBDict 的自动嵌套功能"""
-    
+    """测试 RawLevelDBDict 的自动嵌套功能"""
+
     @pytest.fixture
     def db(self):
         """创建临时数据库"""
         tmpdir = tempfile.mkdtemp()
-        db = LevelDBDict('test', path=tmpdir, rebuild=True, auto_nested=True)
+        db = RawLevelDBDict('test', path=tmpdir, rebuild=True, auto_nested=True)
         yield db
         db.close()
         shutil.rmtree(tmpdir)
@@ -142,7 +141,7 @@ class TestAutoNestedModes:
         """测试 auto_nested=True 模式（默认）"""
         tmpdir = tempfile.mkdtemp()
         try:
-            db = LevelDBDict("test", path=tmpdir, rebuild=True, auto_nested=True)
+            db = RawLevelDBDict("test", path=tmpdir, rebuild=True, auto_nested=True)
             
             # 写入字典 - 应该自动嵌套
             db['config'] = {
@@ -167,7 +166,7 @@ class TestAutoNestedModes:
         """测试 auto_nested=False 模式"""
         tmpdir = tempfile.mkdtemp()
         try:
-            db = LevelDBDict("test", path=tmpdir, rebuild=True, auto_nested=False)
+            db = RawLevelDBDict("test", path=tmpdir, rebuild=True, auto_nested=False)
             
             # 写入字典 - 不应该自动嵌套
             original_dict = {
@@ -192,7 +191,7 @@ class TestAutoNestedModes:
         """测试在 auto_nested=False 时手动使用 nested()"""
         tmpdir = tempfile.mkdtemp()
         try:
-            db = LevelDBDict("test", path=tmpdir, rebuild=True, auto_nested=False)
+            db = RawLevelDBDict("test", path=tmpdir, rebuild=True, auto_nested=False)
             
             # 手动创建嵌套字典
             user = db.nested('user:1')

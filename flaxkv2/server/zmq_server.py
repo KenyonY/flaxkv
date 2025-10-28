@@ -5,6 +5,7 @@ FlaxKV2 ZeroMQ 服务器
 设计理念：
 - 服务器端直接操作二进制数据，不进行序列化/反序列化
 - 客户端负责数据的序列化，服务器只负责存储和传输
+- 服务器端负责TTL验证，确保过期数据不被读取
 - 最小化服务器端 CPU 开销，最大化吞吐量
 """
 
@@ -17,6 +18,7 @@ import msgpack
 import zmq
 
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
+from flaxkv2.serialization import encoder, decoder
 from flaxkv2.utils.log import get_logger
 
 logger = get_logger(__name__)
@@ -180,7 +182,47 @@ class FlaxKVServer:
             if command == self.CMD_GET:
                 key_bytes = request[2]  # 已序列化的 key
                 try:
-                    value_bytes = db._db.get(key_bytes)  # 直接从 LevelDB 获取
+                    # 检查是否是内部键（TTL信息键、嵌套标记键等）
+                    # 内部键不需要TTL检查
+                    is_internal_key = False
+                    try:
+                        decoded_key = decoder.decode_key(key_bytes)
+                        if isinstance(decoded_key, str) and (
+                            decoded_key.startswith('__ttl_info__:') or
+                            decoded_key.startswith('__nested__:')
+                        ):
+                            is_internal_key = True
+                    except:
+                        pass
+
+                    # 对于普通键，检查TTL
+                    if not is_internal_key:
+                        try:
+                            # 解码键名以构造TTL键
+                            key = decoder.decode_key(key_bytes)
+                            ttl_key = f"__ttl_info__:{key}"
+                            ttl_key_bytes = encoder.encode_key(ttl_key)
+
+                            # 获取TTL信息
+                            ttl_value_bytes = db._db.get(ttl_key_bytes)
+
+                            if ttl_value_bytes is not None:
+                                # 解析过期时间
+                                expiry_time = float(decoder.decode(ttl_value_bytes))
+
+                                # 检查是否过期
+                                if time.time() > expiry_time:
+                                    # 已过期，删除键和TTL信息
+                                    db._db.delete(key_bytes)
+                                    db._db.delete(ttl_key_bytes)
+                                    logger.debug(f"Deleted expired key: {key}")
+                                    return [self.STATUS_NOT_FOUND, None]
+                        except Exception as e:
+                            # TTL检查失败不影响正常读取
+                            logger.debug(f"TTL check failed for key: {e}")
+
+                    # 正常读取数据
+                    value_bytes = db._db.get(key_bytes)
                     if value_bytes is None:
                         return [self.STATUS_NOT_FOUND, None]
                     return [self.STATUS_OK, value_bytes]

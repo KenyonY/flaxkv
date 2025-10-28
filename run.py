@@ -1,14 +1,21 @@
 from flaxkv2 import FlaxKV
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
-from flaxkv2.core.leveldb_dict import LevelDBDict
+# 注意: LevelDBDict 已弃用，已移除导入
 import pandas as pd
 
+# 推荐使用 FlaxKV 工厂类
 # db = FlaxKV("my_db", "./data", default_ttl=20)
+
+# 或直接使用 RawLevelDBDict（推荐）
 db = RawLevelDBDict("my_db", "./data", default_ttl=20, auto_nested=True)
+
 # db = {}
 db['df'] = pd.DataFrame([1,2,3])
 db['dict'] = {'a': 1, 'b': 2, 'c': 3}
 print(db)
+
+# 不再推荐使用 LevelDBDict（已弃用）
+# 如需使用，请直接导入: from flaxkv2.core.leveldb_dict import LevelDBDict
 # db = LevelDBDict("my_db", "./data", default_ttl=20)
 # print(db.stat())
 # print(db.items())

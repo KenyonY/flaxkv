@@ -13,9 +13,12 @@ logger = get_logger(__name__)
 from flaxkv2 import auto_close
 
 # 导入核心类
-from flaxkv2.core.leveldb_dict import LevelDBDict
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
 from flaxkv2.core.nested_dict import NestedDBDict
+
+# 注意: LevelDBDict 已弃用，不再从主模块导出
+# 如需使用，请直接导入: from flaxkv2.core.leveldb_dict import LevelDBDict
+# 但强烈建议迁移到 RawLevelDBDict，性能提升13-25%
 
 
 class BackendType:
@@ -27,15 +30,20 @@ class BackendType:
 class FlaxKV:
     """
     FlaxKV主接口，提供工厂方法创建合适的DB实现
-    
+
     支持两种后端类型：
-    1. LOCAL: 本地LevelDB后端，直接访问本地文件系统（默认返回 RawLevelDBDict）
+    1. LOCAL: 本地LevelDB后端，直接访问本地文件系统（返回 RawLevelDBDict）
     2. REMOTE: 远程ZeroMQ后端，通过网络访问远程FlaxKV服务器（返回 RemoteDBDict）
-    
-    注意：
-    - 默认使用 RawLevelDBDict，它是性能优化的简化版本，不包含缓冲和索引功能
-    - LevelDBDict 虽然功能更丰富（支持缓冲、索引等），但性能测试显示不如 RawLevelDBDict
-    - 如需使用 LevelDBDict，请直接导入：from flaxkv2 import LevelDBDict
+
+    推荐用法：
+        db = FlaxKV("mydb", "./data")  # 自动创建 RawLevelDBDict
+        db = FlaxKV("mydb", "tcp://host:5555")  # 自动创建 RemoteDBDict
+
+    关于后端选择：
+    - ✅ RawLevelDBDict: 推荐使用，高性能、低内存占用、代码简洁
+    - ⚠️ LevelDBDict: 已弃用，将在未来版本移除
+      原因：性能测试显示缓冲和索引机制反而降低了性能
+      如果仍需使用，请直接导入：from flaxkv2 import LevelDBDict (会触发警告)
     """
     
     @staticmethod
@@ -261,7 +269,8 @@ class FlaxKV:
 __all__ = [
     "FlaxKV",
     "BackendType",
-    "LevelDBDict",
     "RawLevelDBDict",
     "NestedDBDict"
-] 
+]
+# 注意: LevelDBDict 已从导出列表中移除（已弃用）
+# 如仍需使用，请直接导入: from flaxkv2.core.leveldb_dict import LevelDBDict 

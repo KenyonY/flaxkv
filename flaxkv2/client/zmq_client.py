@@ -181,19 +181,34 @@ class RemoteDBDict:
         except Exception:
             return False
     
+    def _get_ttl_key(self, key: Any) -> str:
+        """获取TTL信息键"""
+        if isinstance(key, str):
+            key_str = key
+        elif isinstance(key, bytes):
+            try:
+                key_str = key.decode('utf-8')
+            except:
+                key_str = str(key)
+        else:
+            key_str = str(key)
+
+        return "__ttl_info__:" + key_str
+
     def __getitem__(self, key: Any) -> Any:
         """获取键值"""
+        # 服务器端已经处理TTL检查，客户端不需要额外检查
         # 序列化 key
         key_bytes = encoder.encode_key(key)
-        
+
         request = [self.CMD_GET, self.db_name.encode('utf-8'), key_bytes]
         status, result = self._send_request(request)
-        
+
         if status == self.STATUS_NOT_FOUND:
             raise KeyError(key)
         elif status == self.STATUS_ERROR:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
-        
+
         # 反序列化 value
         return decoder.decode(result)
     
@@ -213,14 +228,24 @@ class RemoteDBDict:
         """删除键"""
         # 序列化 key
         key_bytes = encoder.encode_key(key)
-        
+
         request = [self.CMD_DELETE, self.db_name.encode('utf-8'), key_bytes]
         status, result = self._send_request(request)
-        
+
         if status == self.STATUS_NOT_FOUND:
             raise KeyError(key)
         elif status == self.STATUS_ERROR:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
+
+        # 删除TTL信息（如果不是内部键）
+        if not (isinstance(key, str) and (key.startswith('__ttl_info__:') or key.startswith('__nested__:'))):
+            ttl_key = self._get_ttl_key(key)
+            try:
+                ttl_key_bytes = encoder.encode_key(ttl_key)
+                request = [self.CMD_DELETE, self.db_name.encode('utf-8'), ttl_key_bytes]
+                self._send_request(request)
+            except:
+                pass  # TTL信息不存在也没关系
     
     def __contains__(self, key: Any) -> bool:
         """检查键是否存在"""
@@ -246,37 +271,32 @@ class RemoteDBDict:
         """获取所有键"""
         request = [self.CMD_KEYS, self.db_name.encode('utf-8')]
         status, result = self._send_request(request)
-        
+
         if status == self.STATUS_ERROR:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
-        
-        # 反序列化所有 key
-        return [decoder.decode_key(key_bytes) for key_bytes in result]
-    
+
+        # 反序列化所有 key，并过滤内部键
+        keys = []
+        for key_bytes in result:
+            key = decoder.decode_key(key_bytes)
+            # 过滤内部键（TTL信息键、嵌套标记键等）
+            if isinstance(key, str) and (key.startswith('__ttl_info__:') or key.startswith('__nested__:')):
+                continue
+            keys.append(key)
+
+        return keys
+
     def values(self) -> List[Any]:
         """获取所有值"""
-        request = [self.CMD_VALUES, self.db_name.encode('utf-8')]
-        status, result = self._send_request(request)
-        
-        if status == self.STATUS_ERROR:
-            raise RuntimeError(f"Server error: {result.decode('utf-8')}")
-        
-        # 反序列化所有 value
-        return [decoder.decode(value_bytes) for value_bytes in result]
-    
+        # 使用 keys() 和 __getitem__ 来获取值
+        # 这样可以确保过滤了内部键，并且应用了TTL检查
+        return [self[key] for key in self.keys()]
+
     def items(self) -> List[Tuple[Any, Any]]:
         """获取所有键值对"""
-        request = [self.CMD_ITEMS, self.db_name.encode('utf-8')]
-        status, result = self._send_request(request)
-        
-        if status == self.STATUS_ERROR:
-            raise RuntimeError(f"Server error: {result.decode('utf-8')}")
-        
-        # 反序列化所有 key 和 value
-        return [
-            (decoder.decode_key(key_bytes), decoder.decode(value_bytes))
-            for key_bytes, value_bytes in result
-        ]
+        # 使用 keys() 和 __getitem__ 来获取键值对
+        # 这样可以确保过滤了内部键，并且应用了TTL检查
+        return [(key, self[key]) for key in self.keys()]
     
     def update(self, d: Dict[Any, Any]):
         """批量更新"""
@@ -323,87 +343,71 @@ class RemoteDBDict:
     
     def set_ttl(self, key: Any, ttl_seconds: int):
         """设置键的过期时间"""
-        import time
-        
-        # 序列化 key
-        key_bytes = encoder.encode_key(key)
-        
-        # 客户端计算过期时间戳
-        expiry_time = time.time() + ttl_seconds
-        
-        # 构造 TTL 信息键（客户端负责，避免服务器端解码）
-        # 使用与 TTLManager 相同的格式
-        if isinstance(key, str):
-            key_str = key
-        elif isinstance(key, bytes):
-            try:
-                key_str = key.decode('utf-8')
-            except:
-                key_str = str(key)
-        else:
-            key_str = str(key)
-        
-        ttl_key_str = "__ttl_info__:" + key_str
-        ttl_key_bytes = encoder.encode_key(ttl_key_str)
-        ttl_value_bytes = encoder.encode(str(expiry_time))
-        
-        # 发送两个 SET 命令：一个设置数据，一个设置 TTL 信息
-        # 先检查键是否存在
-        if key_bytes not in self:
+        # 检查键是否存在
+        if key not in self:
             raise KeyError(key)
-        
-        # 设置 TTL 信息
-        request = [self.CMD_SET, self.db_name.encode('utf-8'), ttl_key_bytes, ttl_value_bytes]
-        status, result = self._send_request(request)
-        
-        if status == self.STATUS_ERROR:
-            raise RuntimeError(f"Server error: {result.decode('utf-8')}")
-    
-    def get_ttl(self, key: Any) -> Optional[float]:
+
+        # 计算过期时间戳
+        expiry_time = time.time() + ttl_seconds
+
+        # 使用普通的 __setitem__ 存储 TTL 信息
+        ttl_key = self._get_ttl_key(key)
+        self[ttl_key] = expiry_time
+
+    def get_ttl(self, key: Any) -> Optional[int]:
         """获取键的剩余过期时间"""
-        import time
-        
-        # 构造 TTL 信息键（客户端负责）
-        if isinstance(key, str):
-            key_str = key
-        elif isinstance(key, bytes):
-            try:
-                key_str = key.decode('utf-8')
-            except:
-                key_str = str(key)
-        else:
-            key_str = str(key)
-        
-        ttl_key_str = "__ttl_info__:" + key_str
-        ttl_key_bytes = encoder.encode_key(ttl_key_str)
-        
-        # 获取 TTL 信息
-        request = [self.CMD_GET, self.db_name.encode('utf-8'), ttl_key_bytes]
-        status, result = self._send_request(request)
-        
-        if status == self.STATUS_NOT_FOUND:
-            # 没有设置 TTL
-            return None
-        elif status == self.STATUS_ERROR:
-            raise RuntimeError(f"Server error: {result.decode('utf-8')}")
-        
-        # 解析过期时间戳
+        ttl_key = self._get_ttl_key(key)
+
         try:
-            expiry_time = float(decoder.decode(result))
+            expiry_time = self[ttl_key]
             remaining = int(expiry_time - time.time())
             return max(0, remaining)
-        except Exception:
+        except KeyError:
+            # 没有设置 TTL
             return None
+
+    def remove_ttl(self, key: Any):
+        """移除键的TTL设置"""
+        ttl_key = self._get_ttl_key(key)
+        try:
+            del self[ttl_key]
+        except KeyError:
+            pass
     
     def cleanup_expired(self) -> int:
         """清理过期键"""
-        request = [self.CMD_CLEANUP_EXPIRED, self.db_name.encode('utf-8')]
-        status, result = self._send_request(request)
-        
-        if status == self.STATUS_ERROR:
-            raise RuntimeError(f"Server error: {result.decode('utf-8')}")
-        
-        return result
+        current_time = time.time()
+        count = 0
+        expired_keys = []
+
+        # 遍历所有键，找到过期的TTL信息键
+        try:
+            all_keys = self.keys()
+            for key in all_keys:
+                if isinstance(key, str) and key.startswith('__ttl_info__:'):
+                    # 提取原始键名
+                    original_key = key[len('__ttl_info__:'):]
+
+                    try:
+                        expiry_time = float(self[key])
+                        if current_time > expiry_time:
+                            expired_keys.append(original_key)
+                    except (ValueError, KeyError):
+                        continue
+
+            # 删除过期的键和TTL信息
+            for original_key in expired_keys:
+                try:
+                    if original_key in self:
+                        del self[original_key]  # 会自动删除TTL信息
+                        count += 1
+                except KeyError:
+                    pass
+        except Exception as e:
+            import logging
+            logger.error(f"清理过期键失败: {e}")
+
+        return count
     
     def to_dict(self) -> Dict[Any, Any]:
         """转换为普通字典"""
