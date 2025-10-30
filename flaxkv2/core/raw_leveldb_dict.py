@@ -10,10 +10,12 @@ from typing import Any, Dict, List, Tuple, Optional
 import plyvel
 
 from flaxkv2.serialization import encoder, decoder
+from flaxkv2.serialization.value_meta import ValueWithMeta
 from flaxkv2.core.nested_dict import NestedDBDict
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.ttl import TTLManager
 from flaxkv2.instance_manager import db_instance_manager
+from flaxkv2.config import create_leveldb_options
 
 logger = get_logger(__name__)
 
@@ -93,6 +95,14 @@ class RawLevelDBDict:
         raw: bool = False,
         default_ttl: Optional[int] = None,
         auto_nested: bool = False,
+        # 性能配置参数
+        performance_profile: str = 'balanced',
+        lru_cache_size: Optional[int] = None,
+        bloom_filter_bits: Optional[int] = None,
+        block_size: Optional[int] = None,
+        write_buffer_size: Optional[int] = None,
+        max_open_files: Optional[int] = None,
+        compression: str = 'snappy',
         **kwargs
     ):
         """
@@ -106,6 +116,35 @@ class RawLevelDBDict:
             raw: 是否使用原始模式（不进行序列化）
             default_ttl: 默认TTL（秒），为None表示不使用TTL
             auto_nested: 是否自动将字典类型转换为嵌套存储（默认False，保持性能基准纯粹）
+
+            performance_profile: 性能配置文件名称，可选值：
+                - 'balanced' (默认): 通用平衡配置
+                - 'read_optimized': 读密集型优化
+                - 'write_optimized': 写密集型优化
+                - 'memory_constrained': 内存受限配置
+                - 'large_database': 大数据库配置(>100GB)
+                - 'ml_workload': 机器学习/科学计算配置
+            lru_cache_size: LRU缓存大小（字节），覆盖profile中的值
+            bloom_filter_bits: 布隆过滤器位数，覆盖profile中的值
+            block_size: 数据块大小（字节），覆盖profile中的值
+            write_buffer_size: 写缓冲大小（字节），覆盖profile中的值
+            max_open_files: 最大打开文件数，覆盖profile中的值
+            compression: 压缩算法 ('snappy', 'zlib', None)
+
+        Examples:
+            >>> # 使用默认配置
+            >>> db = RawLevelDBDict("mydb", "./data")
+
+            >>> # 使用读优化配置
+            >>> db = RawLevelDBDict("mydb", "./data", performance_profile='read_optimized')
+
+            >>> # 在默认配置基础上自定义缓存大小
+            >>> db = RawLevelDBDict("mydb", "./data", lru_cache_size=512*1024*1024)
+
+            >>> # 完全自定义（基于balanced）
+            >>> db = RawLevelDBDict("mydb", "./data",
+            ...                      lru_cache_size=300*1024*1024,
+            ...                      bloom_filter_bits=12)
         """
         # 如果不是新实例（即从缓存返回的实例），跳过初始化
         if not getattr(self, '_is_new_instance', False):
@@ -126,13 +165,23 @@ class RawLevelDBDict:
         # 准备数据库目录
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
-        # 设置选项
-        self._leveldb_options = {
-            'create_if_missing': create_if_missing,
-            'write_buffer_size': 64 * 1024 * 1024,  # 64MB
-            'max_open_files': 100,
-            'compression': 'snappy',
-        }
+        # 使用配置模块创建LevelDB选项
+        self._leveldb_options = create_leveldb_options(
+            create_if_missing=create_if_missing,
+            compression=compression,
+            performance_profile=performance_profile,
+            lru_cache_size=lru_cache_size,
+            bloom_filter_bits=bloom_filter_bits,
+            block_size=block_size,
+            write_buffer_size=write_buffer_size,
+            max_open_files=max_open_files,
+        )
+
+        # 记录使用的配置（便于调试）
+        logger.debug(f"数据库 '{name}' 使用配置文件: {performance_profile}")
+        logger.debug(f"  LRU缓存: {self._leveldb_options['lru_cache_size'] / (1024*1024):.0f} MB")
+        logger.debug(f"  写缓冲: {self._leveldb_options['write_buffer_size'] / (1024*1024):.0f} MB")
+        logger.debug(f"  布隆过滤器: {self._leveldb_options['bloom_filter_bits']} bits")
 
         # 初始化TTL管理器
         self._ttl_manager = TTLManager()
@@ -181,9 +230,21 @@ class RawLevelDBDict:
         else:
             return decoder.decode_key(key_bytes)
 
-    def _encode_value(self, value):
-        """编码值"""
+    def _encode_value(self, value, ttl_seconds=None):
+        """
+        编码值（支持内嵌TTL）
+
+        Args:
+            value: 要编码的值
+            ttl_seconds: TTL秒数（None表示无TTL）
+
+        Returns:
+            bytes: 编码后的字节流
+        """
         if self._raw:
+            # Raw模式：不支持TTL
+            if ttl_seconds is not None:
+                raise ValueError("Raw mode does not support TTL")
             if isinstance(value, str):
                 return value.encode('utf-8')
             elif isinstance(value, bytes):
@@ -191,39 +252,52 @@ class RawLevelDBDict:
             else:
                 return str(value).encode('utf-8')
         else:
-            return encoder.encode(value)
+            # 使用ValueWithMeta进行编码（内嵌TTL）
+            return ValueWithMeta.encode_value(value, ttl_seconds)
 
     def _decode_value(self, value_bytes):
-        """解码值"""
+        """
+        解码值（提取内嵌TTL信息）
+
+        Args:
+            value_bytes: 编码后的字节流
+
+        Returns:
+            (value, expire_time, is_expired) 三元组:
+            - value: 解码后的值
+            - expire_time: 过期时间戳（None表示无TTL）
+            - is_expired: 是否已过期
+        """
         if self._raw:
+            # Raw模式：不支持TTL
             try:
-                return value_bytes.decode('utf-8')
+                value = value_bytes.decode('utf-8')
             except UnicodeDecodeError:
-                return value_bytes
+                value = value_bytes
+            return value, None, False
         else:
-            return decoder.decode(value_bytes)
+            # 检查是否是新格式（带元数据）
+            if ValueWithMeta.has_meta(value_bytes):
+                # 新格式：使用ValueWithMeta解码
+                return ValueWithMeta.decode_value(value_bytes)
+            else:
+                # 旧格式：直接解码（无TTL）
+                value = decoder.decode(value_bytes)
+                return value, None, False
 
     def __getitem__(self, key):
         """获取键值"""
-        # 特殊键：直接处理
+        # 特殊键：直接处理（无TTL检查）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
             with self._db_lock:
                 value_bytes = self._db.get(key_bytes)
             if value_bytes is None:
                 raise KeyError(key)
-            return self._decode_value(value_bytes)
+            value, _, _ = self._decode_value(value_bytes)
+            return value
 
-        # 检查TTL
-        if self._ttl_manager.is_expired(key):
-            # 删除过期键
-            try:
-                del self[key]
-            except:
-                pass
-            raise KeyError(key)
-
-        # 如果启用了自动嵌套，检查是否是嵌套字典
+        # 如果启用了自动嵌套，先检查是否是嵌套字典
         if self._auto_nested:
             try:
                 marker_key = f'__nested__:{key}'
@@ -231,12 +305,23 @@ class RawLevelDBDict:
                 with self._db_lock:
                     marker_value = self._db.get(marker_bytes)
                 if marker_value is not None:
-                    # 是嵌套字典，返回 NestedDBDict
+                    # 解码marker并检查TTL
+                    _, expire_time, is_expired = self._decode_value(marker_value)
+                    if is_expired:
+                        # 嵌套字典已过期：删除所有相关键
+                        try:
+                            del self[key]
+                        except:
+                            pass
+                        raise KeyError(key)
+                    # 是嵌套字典且未过期，返回 NestedDBDict
                     return self.nested(key)
+            except KeyError:
+                raise
             except:
                 pass
 
-        # 普通值
+        # 普通值：读取并检查TTL
         key_bytes = self._encode_key(key)
 
         with self._db_lock:
@@ -245,13 +330,35 @@ class RawLevelDBDict:
         if value_bytes is None:
             raise KeyError(key)
 
-        return self._decode_value(value_bytes)
+        # 解码并检查TTL
+        value, expire_time, is_expired = self._decode_value(value_bytes)
+
+        if is_expired:
+            # 已过期：删除键并抛出异常
+            try:
+                del self[key]
+            except:
+                pass
+            raise KeyError(key)
+
+        return value
 
     def __setitem__(self, key, value):
-        """设置键值 - 直接写入数据库"""
+        """设置键值 - 直接写入数据库（使用default_ttl）"""
+        self.set(key, value, ttl=self._default_ttl)
+
+    def set(self, key, value, ttl=None):
+        """
+        设置键值（支持指定TTL）
+
+        Args:
+            key: 键
+            value: 值
+            ttl: TTL秒数（None表示无TTL）
+        """
         from flaxkv2.core.nested_dict import NestedDBDict
 
-        # 特殊键：直接处理
+        # 特殊键：直接处理（无TTL）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
             value_bytes = self._encode_value(value)
@@ -265,10 +372,10 @@ class RawLevelDBDict:
 
         # 如果启用了自动嵌套且值是字典
         if self._auto_nested and isinstance(value, dict):
-            # 1. 标记为嵌套字典
+            # 1. 标记为嵌套字典（带TTL）
             marker_key = f'__nested__:{key}'
             marker_bytes = self._encode_key(marker_key)
-            marker_value = self._encode_value(True)
+            marker_value = self._encode_value(True, ttl_seconds=ttl)
             with self._db_lock:
                 self._db.put(marker_bytes, marker_value)
 
@@ -289,21 +396,17 @@ class RawLevelDBDict:
             except:
                 pass
 
-        # 传统存储
+        # 普通存储（带TTL）
         key_bytes = self._encode_key(key)
-        value_bytes = self._encode_value(value)
+        value_bytes = self._encode_value(value, ttl_seconds=ttl)
 
         with self._db_lock:
             self._db.put(key_bytes, value_bytes)
 
-        # 如果设置了默认TTL，应用到新键
-        if self._default_ttl is not None:
-            self._ttl_manager.set(key, self._default_ttl)
-
     def __delitem__(self, key):
         """删除键"""
         # 特殊键：直接处理（不触发TTL逻辑）
-        if isinstance(key, str) and (key.startswith('__nested__:') or key.startswith('__ttl_info__:')):
+        if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
             with self._db_lock:
                 self._db.delete(key_bytes)
@@ -321,11 +424,9 @@ class RawLevelDBDict:
                 # 是嵌套字典，递归删除所有子键
                 nested = self.nested(key)
                 nested.clear()
-                # 删除标记
+                # 删除标记（TTL已内嵌在marker中，无需单独删除）
                 with self._db_lock:
                     self._db.delete(marker_bytes)
-                # 也要移除TTL
-                self._ttl_manager.remove(key)
                 return
 
         # 普通值
@@ -337,11 +438,8 @@ class RawLevelDBDict:
             if value_bytes is None:
                 raise KeyError(key)
 
-            # 删除键
+            # 删除键（TTL已内嵌在value中，无需单独删除）
             self._db.delete(key_bytes)
-
-        # 从TTL管理器中移除（会删除对应的 __ttl_info__ 键）
-        self._ttl_manager.remove(key)
 
     def __contains__(self, key):
         """检查键是否存在"""
@@ -417,10 +515,14 @@ class RawLevelDBDict:
         return False
 
     def keys(self) -> List:
-        """获取所有键列表"""
+        """
+        获取所有键列表
+
+        注意：会自动过滤已过期的TTL键
+        """
         keys = []
         with self._db_lock:
-            for key_bytes, _ in self._db:
+            for key_bytes, value_bytes in self._db:
                 # 先尝试解码
                 try:
                     key = self._decode_key(key_bytes)
@@ -431,15 +533,24 @@ class RawLevelDBDict:
                         actual_key = key[len('__nested__:'):]
                         # 只添加顶层嵌套键（不包含进一步的 ':'）
                         if ':' not in actual_key:
-                            keys.append(actual_key)
+                            # 检查TTL是否过期（从marker的value中提取）
+                            try:
+                                _, _, is_expired = self._decode_value(value_bytes)
+                                if not is_expired:
+                                    keys.append(actual_key)
+                            except:
+                                # 解码失败，保守处理：添加键
+                                keys.append(actual_key)
                         continue
 
-                    # 跳过 TTL 信息键
-                    if isinstance(key, str) and key.startswith('__ttl_info__:'):
-                        continue
-
-                    # 正常的用户键
-                    keys.append(key)
+                    # 正常的用户键 - 检查TTL是否过期
+                    try:
+                        _, _, is_expired = self._decode_value(value_bytes)
+                        if not is_expired:
+                            keys.append(key)
+                    except:
+                        # 解码失败，保守处理：添加键
+                        keys.append(key)
 
                 except (ValueError, UnicodeDecodeError):
                     # 解码失败，可能是嵌套子键（没有类型前缀）
@@ -615,13 +726,22 @@ class RawLevelDBDict:
 
     def set_ttl(self, key: Any, ttl_seconds: int) -> None:
         """
-        为指定键设置TTL
+        为指定键设置TTL（需要重新编码值）
+
+        注意：这会重新编码值，相当于 db.set(key, db[key], ttl=ttl_seconds)
 
         Args:
             key: 键
             ttl_seconds: TTL时间（秒）
         """
-        self._ttl_manager.set(key, ttl_seconds)
+        # 读取当前值
+        try:
+            current_value = self[key]
+        except KeyError:
+            raise KeyError(f"Cannot set TTL for non-existent key: {key}")
+
+        # 重新写入（带TTL）
+        self.set(key, current_value, ttl=ttl_seconds)
 
     def get_ttl(self, key: Any) -> Optional[int]:
         """
@@ -633,16 +753,74 @@ class RawLevelDBDict:
         Returns:
             剩余TTL秒数，如果没有设置TTL返回None
         """
-        return self._ttl_manager.get_remaining_ttl(key)
+        # 对于auto_nested的键，TTL存储在marker中
+        if self._auto_nested:
+            try:
+                marker_key = f'__nested__:{key}'
+                marker_bytes = self._encode_key(marker_key)
+                with self._db_lock:
+                    marker_value = self._db.get(marker_bytes)
+
+                if marker_value is not None:
+                    # 是嵌套字典，从marker提取TTL
+                    _, expire_time, is_expired = self._decode_value(marker_value)
+
+                    if expire_time is None:
+                        return None
+
+                    if is_expired:
+                        return 0
+
+                    import time
+                    remaining = int(expire_time - time.time())
+                    return max(0, remaining)
+            except:
+                pass
+
+        # 普通键或非嵌套字典：从value提取TTL
+        try:
+            key_bytes = self._encode_key(key)
+            with self._db_lock:
+                value_bytes = self._db.get(key_bytes)
+
+            if value_bytes is None:
+                raise KeyError(key)
+
+            # 解码并提取TTL
+            _, expire_time, is_expired = self._decode_value(value_bytes)
+
+            if expire_time is None:
+                return None
+
+            if is_expired:
+                return 0
+
+            import time
+            remaining = int(expire_time - time.time())
+            return max(0, remaining)
+        except KeyError:
+            raise
+        except Exception:
+            return None
 
     def remove_ttl(self, key: Any) -> None:
         """
-        移除指定键的TTL
+        移除指定键的TTL（需要重新编码值）
+
+        注意：这会重新编码值，相当于 db.set(key, db[key], ttl=None)
 
         Args:
             key: 键
         """
-        self._ttl_manager.remove(key)
+        # 读取当前值
+        try:
+            current_value = self[key]
+        except KeyError:
+            # 键不存在，无需操作
+            return
+
+        # 重新写入（无TTL）
+        self.set(key, current_value, ttl=None)
 
     def get_default_ttl(self) -> Optional[int]:
         """

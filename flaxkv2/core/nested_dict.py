@@ -5,13 +5,14 @@
 """
 from typing import Any, Iterator, Optional
 import threading
+from collections.abc import MutableMapping
 from flaxkv2.serialization import encoder, decoder
 from flaxkv2.utils.log import get_logger
 
 logger = get_logger(__name__)
 
 
-class NestedDBDict:
+class NestedDBDict(MutableMapping):
     """
     基于 LevelDB prefixed_db 的嵌套字典实现
 
@@ -275,8 +276,38 @@ class NestedDBDict:
                 result[key] = value
         return result
 
+    def copy(self) -> dict:
+        """
+        创建浅拷贝（返回普通字典）
+
+        等同于 to_dict()，符合 dict.copy() 的习惯用法
+        """
+        return self.to_dict()
+
+    def __eq__(self, other) -> bool:
+        """
+        相等比较
+
+        支持与普通 dict 或其他 NestedDBDict 比较
+        """
+        if isinstance(other, NestedDBDict):
+            # 与另一个 NestedDBDict 比较
+            return self.to_dict() == other.to_dict()
+        elif isinstance(other, dict):
+            # 与普通 dict 比较
+            return self.to_dict() == other
+        else:
+            return False
+
+    def __ne__(self, other) -> bool:
+        """不等比较"""
+        return not self.__eq__(other)
+
     def __repr__(self) -> str:
         """字符串表示"""
+        # 计算总字段数
+        total_count = len(self)
+
         # 只显示前几个字段，避免大型字典的性能问题
         items = []
         count = 0
@@ -284,13 +315,14 @@ class NestedDBDict:
 
         for key, value in self.items():
             if count >= max_display:
-                items.append("...")
+                remaining = total_count - max_display
+                items.append(f"... ({remaining} more)")
                 break
             items.append(f"{key!r}: {value!r}")
             count += 1
 
         items_str = ", ".join(items)
-        return f"NestedDBDict({self._prefix!r}, {{{items_str}}})"
+        return f"NestedDBDict({{{items_str}}})"
 
     def __str__(self) -> str:
         """字符串表示"""
