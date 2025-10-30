@@ -15,6 +15,7 @@ from flaxkv2.core.nested_dict import NestedDBDict
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.ttl import TTLManager
 from flaxkv2.utils.rwlock import RWLock
+from flaxkv2.utils.simple_lru_cache import SimpleLRUCache
 from flaxkv2.instance_manager import db_instance_manager
 from flaxkv2.config import create_leveldb_options
 
@@ -96,6 +97,7 @@ class RawLevelDBDict:
         raw: bool = False,
         default_ttl: Optional[int] = None,
         auto_nested: bool = False,
+        read_cache_size: int = 0,
         # 性能配置参数
         performance_profile: str = 'balanced',
         lru_cache_size: Optional[int] = None,
@@ -117,6 +119,8 @@ class RawLevelDBDict:
             raw: 是否使用原始模式（不进行序列化）
             default_ttl: 默认TTL（秒），为None表示不使用TTL
             auto_nested: 是否自动将字典类型转换为嵌套存储（默认False，保持性能基准纯粹）
+            read_cache_size: 读缓存大小（条目数量），0表示禁用缓存（默认）
+                推荐值：1000-10000，具体取决于工作负载
 
             performance_profile: 性能配置文件名称，可选值：
                 - 'balanced' (默认): 通用平衡配置
@@ -162,6 +166,15 @@ class RawLevelDBDict:
         self._db_lock = RWLock()  # 使用读写锁提升并发性能
         self._default_ttl = default_ttl
         self._auto_nested = auto_nested
+
+        # 初始化读缓存
+        self._cache_enabled = read_cache_size > 0
+        if self._cache_enabled:
+            self._cache = SimpleLRUCache(maxsize=read_cache_size)
+            logger.debug(f"读缓存已启用: {read_cache_size} 条目")
+        else:
+            self._cache = None
+            logger.debug("读缓存已禁用")
 
         # 准备数据库目录
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -287,8 +300,8 @@ class RawLevelDBDict:
                 return value, None, False
 
     def __getitem__(self, key):
-        """获取键值"""
-        # 特殊键：直接处理（无TTL检查）
+        """获取键值（支持缓存）"""
+        # 特殊键：直接处理（无缓存、无TTL检查）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
             with self._db_lock.read_lock():
@@ -298,51 +311,57 @@ class RawLevelDBDict:
             value, _, _ = self._decode_value(value_bytes)
             return value
 
-        # 如果启用了自动嵌套，先检查是否是嵌套字典
-        if self._auto_nested:
-            try:
+        with self._db_lock.read_lock():
+            # 1. 检查缓存（自动检查TTL）
+            if self._cache_enabled:
+                cached = self._cache.get(key)
+                if cached is not None:
+                    return cached
+
+            # 2. 如果启用了自动嵌套，检查是否是嵌套字典
+            if self._auto_nested:
                 marker_key = f'__nested__:{key}'
                 marker_bytes = self._encode_key(marker_key)
-                with self._db_lock.read_lock():
-                    marker_value = self._db.get(marker_bytes)
+                marker_value = self._db.get(marker_bytes)
+
                 if marker_value is not None:
                     # 解码marker并检查TTL
                     _, expire_time, is_expired = self._decode_value(marker_value)
                     if is_expired:
-                        # 嵌套字典已过期：删除所有相关键
-                        try:
-                            del self[key]
-                        except:
-                            pass
-                        raise KeyError(key)
-                    # 是嵌套字典且未过期，返回 NestedDBDict
-                    return self.nested(key)
-            except KeyError:
-                raise
-            except:
-                pass
+                        # 嵌套字典已过期：删除所有相关键（需要write_lock）
+                        pass  # 稍后在write_lock中处理
+                    else:
+                        # 是嵌套字典且未过期，创建NestedDBDict并缓存
+                        nested = self.nested(key)
+                        if self._cache_enabled:
+                            self._cache.put(key, nested, expire_time)
+                        return nested
 
-        # 普通值：读取并检查TTL
-        key_bytes = self._encode_key(key)
-
-        with self._db_lock.read_lock():
+            # 3. 普通值：读取并检查TTL
+            key_bytes = self._encode_key(key)
             value_bytes = self._db.get(key_bytes)
 
-        if value_bytes is None:
-            raise KeyError(key)
+            if value_bytes is None:
+                raise KeyError(key)
 
-        # 解码并检查TTL
-        value, expire_time, is_expired = self._decode_value(value_bytes)
+            # 解码并检查TTL
+            value, expire_time, is_expired = self._decode_value(value_bytes)
 
-        if is_expired:
-            # 已过期：删除键并抛出异常
-            try:
-                del self[key]
-            except:
-                pass
-            raise KeyError(key)
+            if is_expired:
+                # 已过期：删除键并抛出异常（需要write_lock）
+                pass  # 稍后在write_lock中处理
+            else:
+                # 未过期：加入缓存并返回
+                if self._cache_enabled:
+                    self._cache.put(key, value, expire_time)
+                return value
 
-        return value
+        # 处理过期情况（需要write_lock删除）
+        try:
+            del self[key]
+        except:
+            pass
+        raise KeyError(key)
 
     def __setitem__(self, key, value):
         """设置键值 - 直接写入数据库（使用default_ttl）"""
@@ -350,7 +369,7 @@ class RawLevelDBDict:
 
     def set(self, key, value, ttl=None):
         """
-        设置键值（支持指定TTL）
+        设置键值（支持指定TTL，写入时更新缓存）
 
         Args:
             key: 键
@@ -359,7 +378,7 @@ class RawLevelDBDict:
         """
         from flaxkv2.core.nested_dict import NestedDBDict
 
-        # 特殊键：直接处理（无TTL）
+        # 特殊键：直接处理（无缓存、无TTL）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
             value_bytes = self._encode_value(value)
@@ -370,6 +389,12 @@ class RawLevelDBDict:
         # 如果值是 NestedDBDict，转换为普通字典
         if isinstance(value, NestedDBDict):
             value = value.to_dict()
+
+        # 计算过期时间
+        expire_time = None
+        if ttl is not None:
+            import time
+            expire_time = time.time() + ttl
 
         # 如果启用了自动嵌套且值是字典
         if self._auto_nested and isinstance(value, dict):
@@ -385,6 +410,10 @@ class RawLevelDBDict:
             nested.clear()
             for k, v in value.items():
                 nested[k] = v  # 递归
+
+            # 3. 更新缓存（缓存NestedDBDict实例）
+            if self._cache_enabled:
+                self._cache.put(key, nested, expire_time)
             return
 
         # 非字典或未启用自动嵌套：取消标记（如果有）
@@ -394,6 +423,9 @@ class RawLevelDBDict:
                 marker_bytes = self._encode_key(marker_key)
                 with self._db_lock.write_lock():
                     self._db.delete(marker_bytes)
+                # 删除可能存在的嵌套字典缓存
+                if self._cache_enabled:
+                    self._cache.delete(key)
             except:
                 pass
 
@@ -404,9 +436,13 @@ class RawLevelDBDict:
         with self._db_lock.write_lock():
             self._db.put(key_bytes, value_bytes)
 
+        # 更新缓存（Write-through）
+        if self._cache_enabled:
+            self._cache.put(key, value, expire_time)
+
     def __delitem__(self, key):
-        """删除键"""
-        # 特殊键：直接处理（不触发TTL逻辑）
+        """删除键（同时删除缓存）"""
+        # 特殊键：直接处理（无缓存）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
             with self._db_lock.write_lock():
@@ -428,6 +464,10 @@ class RawLevelDBDict:
                 # 删除标记（TTL已内嵌在marker中，无需单独删除）
                 with self._db_lock.write_lock():
                     self._db.delete(marker_bytes)
+
+                # 删除缓存
+                if self._cache_enabled:
+                    self._cache.delete(key)
                 return
 
         # 普通值
@@ -441,6 +481,10 @@ class RawLevelDBDict:
 
             # 删除键（TTL已内嵌在value中，无需单独删除）
             self._db.delete(key_bytes)
+
+        # 删除缓存
+        if self._cache_enabled:
+            self._cache.delete(key)
 
     def __contains__(self, key):
         """检查键是否存在"""
@@ -640,7 +684,7 @@ class RawLevelDBDict:
         return result
     
     def close(self):
-        """关闭数据库"""
+        """关闭数据库（清理缓存）"""
         if self._closed:
             return
 
@@ -650,6 +694,12 @@ class RawLevelDBDict:
                     self._db.close()
                     self._db = None
                     self._closed = True
+
+                    # 清理缓存
+                    if self._cache_enabled:
+                        self._cache.clear()
+                        logger.debug(f"缓存已清理: {self.name}")
+
                 logger.debug(f"Raw LevelDB connection closed: {self.name}")
 
                 # 从实例管理器中移除
