@@ -14,6 +14,7 @@ from flaxkv2.serialization.value_meta import ValueWithMeta
 from flaxkv2.core.nested_dict import NestedDBDict
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.ttl import TTLManager
+from flaxkv2.utils.rwlock import RWLock
 from flaxkv2.instance_manager import db_instance_manager
 from flaxkv2.config import create_leveldb_options
 
@@ -158,7 +159,7 @@ class RawLevelDBDict:
         self._raw = raw
         self._db = None
         self._closed = False
-        self._db_lock = threading.RLock()
+        self._db_lock = RWLock()  # 使用读写锁提升并发性能
         self._default_ttl = default_ttl
         self._auto_nested = auto_nested
 
@@ -290,7 +291,7 @@ class RawLevelDBDict:
         # 特殊键：直接处理（无TTL检查）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
-            with self._db_lock:
+            with self._db_lock.read_lock():
                 value_bytes = self._db.get(key_bytes)
             if value_bytes is None:
                 raise KeyError(key)
@@ -302,7 +303,7 @@ class RawLevelDBDict:
             try:
                 marker_key = f'__nested__:{key}'
                 marker_bytes = self._encode_key(marker_key)
-                with self._db_lock:
+                with self._db_lock.read_lock():
                     marker_value = self._db.get(marker_bytes)
                 if marker_value is not None:
                     # 解码marker并检查TTL
@@ -324,7 +325,7 @@ class RawLevelDBDict:
         # 普通值：读取并检查TTL
         key_bytes = self._encode_key(key)
 
-        with self._db_lock:
+        with self._db_lock.read_lock():
             value_bytes = self._db.get(key_bytes)
 
         if value_bytes is None:
@@ -362,7 +363,7 @@ class RawLevelDBDict:
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
             value_bytes = self._encode_value(value)
-            with self._db_lock:
+            with self._db_lock.write_lock():
                 self._db.put(key_bytes, value_bytes)
             return
 
@@ -376,7 +377,7 @@ class RawLevelDBDict:
             marker_key = f'__nested__:{key}'
             marker_bytes = self._encode_key(marker_key)
             marker_value = self._encode_value(True, ttl_seconds=ttl)
-            with self._db_lock:
+            with self._db_lock.write_lock():
                 self._db.put(marker_bytes, marker_value)
 
             # 2. 创建 nested，递归写入
@@ -391,7 +392,7 @@ class RawLevelDBDict:
             try:
                 marker_key = f'__nested__:{key}'
                 marker_bytes = self._encode_key(marker_key)
-                with self._db_lock:
+                with self._db_lock.write_lock():
                     self._db.delete(marker_bytes)
             except:
                 pass
@@ -400,7 +401,7 @@ class RawLevelDBDict:
         key_bytes = self._encode_key(key)
         value_bytes = self._encode_value(value, ttl_seconds=ttl)
 
-        with self._db_lock:
+        with self._db_lock.write_lock():
             self._db.put(key_bytes, value_bytes)
 
     def __delitem__(self, key):
@@ -408,7 +409,7 @@ class RawLevelDBDict:
         # 特殊键：直接处理（不触发TTL逻辑）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
-            with self._db_lock:
+            with self._db_lock.write_lock():
                 self._db.delete(key_bytes)
             return
 
@@ -417,7 +418,7 @@ class RawLevelDBDict:
             marker_key = f'__nested__:{key}'
             marker_bytes = self._encode_key(marker_key)
 
-            with self._db_lock:
+            with self._db_lock.write_lock():
                 marker_value = self._db.get(marker_bytes)
 
             if marker_value is not None:
@@ -425,14 +426,14 @@ class RawLevelDBDict:
                 nested = self.nested(key)
                 nested.clear()
                 # 删除标记（TTL已内嵌在marker中，无需单独删除）
-                with self._db_lock:
+                with self._db_lock.write_lock():
                     self._db.delete(marker_bytes)
                 return
 
         # 普通值
         key_bytes = self._encode_key(key)
 
-        with self._db_lock:
+        with self._db_lock.write_lock():
             # 检查键是否存在
             value_bytes = self._db.get(key_bytes)
             if value_bytes is None:
@@ -458,7 +459,7 @@ class RawLevelDBDict:
 
     def update(self, d: Dict[Any, Any]):
         """批量更新多个键值对"""
-        with self._db_lock:
+        with self._db_lock.write_lock():
             batch = self._db.write_batch()
 
             for key, value in d.items():
@@ -521,7 +522,7 @@ class RawLevelDBDict:
         注意：会自动过滤已过期的TTL键
         """
         keys = []
-        with self._db_lock:
+        with self._db_lock.read_lock():
             for key_bytes, value_bytes in self._db:
                 # 先尝试解码
                 try:
@@ -645,7 +646,7 @@ class RawLevelDBDict:
 
         if self._db is not None:
             try:
-                with self._db_lock:
+                with self._db_lock.write_lock():
                     self._db.close()
                     self._db = None
                     self._closed = True
@@ -687,7 +688,7 @@ class RawLevelDBDict:
 
         # 获取LevelDB内置统计信息
         try:
-            with self._db_lock:
+            with self._db_lock.read_lock():
                 leveldb_stats_bytes = self._db.get_property(b'leveldb.stats')
                 if leveldb_stats_bytes:
                     stats['leveldb_stats'] = leveldb_stats_bytes.decode('utf-8')
@@ -758,7 +759,7 @@ class RawLevelDBDict:
             try:
                 marker_key = f'__nested__:{key}'
                 marker_bytes = self._encode_key(marker_key)
-                with self._db_lock:
+                with self._db_lock.read_lock():
                     marker_value = self._db.get(marker_bytes)
 
                 if marker_value is not None:
@@ -780,7 +781,7 @@ class RawLevelDBDict:
         # 普通键或非嵌套字典：从value提取TTL
         try:
             key_bytes = self._encode_key(key)
-            with self._db_lock:
+            with self._db_lock.read_lock():
                 value_bytes = self._db.get(key_bytes)
 
             if value_bytes is None:
