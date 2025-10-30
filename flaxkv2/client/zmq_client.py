@@ -16,6 +16,7 @@ import zmq
 
 from flaxkv2.serialization import encoder, decoder
 from flaxkv2.utils.log import get_logger
+from flaxkv2.utils.simple_lru_cache import SimpleLRUCache
 
 logger = get_logger(__name__)
 
@@ -58,10 +59,11 @@ class RemoteDBDict:
         timeout: int = 5000,  # 毫秒
         max_retries: int = 3,
         retry_delay: float = 0.1,  # 秒
+        read_cache_size: int = 0,  # 读缓存大小（条目数量）
     ):
         """
         初始化远程数据库客户端
-        
+
         Args:
             db_name: 数据库名称
             host: 服务器地址
@@ -69,6 +71,8 @@ class RemoteDBDict:
             timeout: 请求超时时间（毫秒）
             max_retries: 最大重试次数
             retry_delay: 重试延迟（秒）
+            read_cache_size: 读缓存大小（条目数量），0表示禁用缓存（默认）
+                推荐值：1000-10000，可显著减少网络请求
         """
         self.name = db_name
         self.db_name = db_name
@@ -77,20 +81,29 @@ class RemoteDBDict:
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        
+
         # ZeroMQ 上下文和 socket
         self.context = zmq.Context()
         self.socket = None
         self.socket_lock = threading.RLock()
-        
+
         # 连接状态
         self._connected = False
         self._closed = False
-        
+
+        # 初始化读缓存
+        self._cache_enabled = read_cache_size > 0
+        if self._cache_enabled:
+            self._cache = SimpleLRUCache(maxsize=read_cache_size)
+            logger.debug(f"读缓存已启用: {read_cache_size} 条目")
+        else:
+            self._cache = None
+            logger.debug("读缓存已禁用")
+
         # 连接到服务器
         self._connect_socket()
         self._connect_db()
-        
+
         logger.info(f"RemoteDBDict connected to {host}:{port}, db={db_name}")
     
     def _connect_socket(self):
@@ -196,11 +209,15 @@ class RemoteDBDict:
         return "__ttl_info__:" + key_str
 
     def __getitem__(self, key: Any) -> Any:
-        """获取键值"""
-        # 服务器端已经处理TTL检查，客户端不需要额外检查
-        # 序列化 key
-        key_bytes = encoder.encode_key(key)
+        """获取键值（支持缓存）"""
+        # 检查缓存（自动检查TTL）
+        if self._cache_enabled:
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
 
+        # 从服务器读取
+        key_bytes = encoder.encode_key(key)
         request = [self.CMD_GET, self.db_name.encode('utf-8'), key_bytes]
         status, result = self._send_request(request)
 
@@ -210,22 +227,53 @@ class RemoteDBDict:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
 
         # 反序列化 value
-        return decoder.decode(result)
+        value = decoder.decode(result)
+
+        # 尝试获取 TTL 信息并缓存
+        if self._cache_enabled:
+            expire_time = None
+            # 尝试读取 TTL（如果不是内部键）
+            if not (isinstance(key, str) and (key.startswith('__ttl_info__:') or key.startswith('__nested__:'))):
+                try:
+                    ttl_remaining = self.get_ttl(key)
+                    if ttl_remaining is not None:
+                        expire_time = time.time() + ttl_remaining
+                except:
+                    pass
+
+            self._cache.put(key, value, expire_time)
+
+        return value
     
     def __setitem__(self, key: Any, value: Any):
-        """设置键值"""
+        """设置键值（更新缓存）"""
         # 序列化 key 和 value
         key_bytes = encoder.encode_key(key)
         value_bytes = encoder.encode(value)
-        
+
         request = [self.CMD_SET, self.db_name.encode('utf-8'), key_bytes, value_bytes]
         status, result = self._send_request(request)
-        
+
         if status == self.STATUS_ERROR:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
+
+        # 更新缓存（write-through）
+        if self._cache_enabled:
+            # 不是内部键才缓存
+            if not (isinstance(key, str) and (key.startswith('__ttl_info__:') or key.startswith('__nested__:'))):
+                # 尝试获取TTL
+                expire_time = None
+                try:
+                    ttl_remaining = self.get_ttl(key)
+                    if ttl_remaining is not None:
+                        expire_time = time.time() + ttl_remaining
+                except:
+                    pass
+
+                self._cache.put(key, value, expire_time)
     
     def __delitem__(self, key: Any):
-        """删除键"""
+        """删除键（同时删除缓存）"""
         # 序列化 key
         key_bytes = encoder.encode_key(key)
 
@@ -246,6 +294,10 @@ class RemoteDBDict:
                 self._send_request(request)
             except:
                 pass  # TTL信息不存在也没关系
+
+        # 删除缓存
+        if self._cache_enabled:
+            self._cache.delete(key)
     
     def __contains__(self, key: Any) -> bool:
         """检查键是否存在"""
@@ -417,26 +469,31 @@ class RemoteDBDict:
         return result
     
     def close(self):
-        """关闭连接"""
+        """关闭连接（清理缓存）"""
         if self._closed:
             return
-        
+
         try:
             # 发送断开连接命令
             request = [self.CMD_DISCONNECT, self.db_name.encode('utf-8')]
             self._send_request(request, retry=False)
         except Exception as e:
             logger.warning(f"Error disconnecting: {e}")
-        
+
         # 关闭 socket
         with self.socket_lock:
             if self.socket:
                 self.socket.close()
                 self.socket = None
-        
+
+        # 清理缓存
+        if self._cache_enabled:
+            self._cache.clear()
+            logger.debug(f"缓存已清理: {self.db_name}")
+
         self._closed = True
         self._connected = False
-        
+
         logger.info(f"RemoteDBDict closed: {self.db_name}")
     
     def __enter__(self):
