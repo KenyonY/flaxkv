@@ -6,18 +6,20 @@ import tempfile
 import shutil
 import time
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
+from flaxkv2.core.cached_leveldb_dict import CachedLevelDBDict
 
 
 def test_cache_disabled():
-    """测试默认禁用缓存"""
-    print("\n=== 测试1: 默认禁用缓存 ===")
+    """测试RawLevelDBDict不带缓存功能"""
+    print("\n=== 测试1: RawLevelDBDict不带缓存功能 ===")
     tmpdir = tempfile.mkdtemp()
     try:
         db = RawLevelDBDict('test', path=tmpdir, rebuild=True)
 
-        assert not db._cache_enabled
-        assert db._cache is None
-        print("✓ 默认缓存禁用")
+        # RawLevelDBDict不再有缓存属性
+        assert not hasattr(db, '_cache_enabled') or not db._cache_enabled
+        assert not hasattr(db, '_cache') or db._cache is None
+        print("✓ RawLevelDBDict无缓存功能")
 
         # 正常读写操作
         db['key'] = 'value'
@@ -31,11 +33,11 @@ def test_cache_disabled():
 
 
 def test_cache_enabled():
-    """测试启用缓存"""
-    print("\n=== 测试2: 启用缓存 ===")
+    """测试CachedLevelDBDict启用缓存"""
+    print("\n=== 测试2: CachedLevelDBDict启用缓存 ===")
     tmpdir = tempfile.mkdtemp()
     try:
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=100)
+        db = CachedLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=100)
 
         assert db._cache_enabled
         assert db._cache is not None
@@ -65,11 +67,11 @@ def test_cache_enabled():
 
 
 def test_cache_with_ttl():
-    """测试缓存+TTL"""
-    print("\n=== 测试3: 缓存+TTL ===")
+    """测试CachedLevelDBDict缓存+TTL"""
+    print("\n=== 测试3: CachedLevelDBDict缓存+TTL ===")
     tmpdir = tempfile.mkdtemp()
     try:
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=100)
+        db = CachedLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=100)
 
         # 写入带TTL的数据
         db.set('key1', 'value1', ttl=2)
@@ -105,11 +107,11 @@ def test_cache_with_ttl():
 
 
 def test_cache_update():
-    """测试缓存更新"""
-    print("\n=== 测试4: 缓存更新 ===")
+    """测试CachedLevelDBDict缓存更新"""
+    print("\n=== 测试4: CachedLevelDBDict缓存更新 ===")
     tmpdir = tempfile.mkdtemp()
     try:
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=100)
+        db = CachedLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=100)
 
         # 写入并读取
         db['key1'] = 'value1'
@@ -132,11 +134,11 @@ def test_cache_update():
 
 
 def test_cache_delete():
-    """测试缓存删除"""
-    print("\n=== 测试5: 缓存删除 ===")
+    """测试CachedLevelDBDict缓存删除"""
+    print("\n=== 测试5: CachedLevelDBDict缓存删除 ===")
     tmpdir = tempfile.mkdtemp()
     try:
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=100)
+        db = CachedLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=100)
 
         # 写入并读取
         db['key1'] = 'value1'
@@ -163,12 +165,12 @@ def test_cache_delete():
 
 
 def test_cache_with_auto_nested():
-    """测试缓存+auto_nested"""
-    print("\n=== 测试6: 缓存+auto_nested ===")
+    """测试CachedLevelDBDict缓存+auto_nested"""
+    print("\n=== 测试6: CachedLevelDBDict缓存+auto_nested ===")
     tmpdir = tempfile.mkdtemp()
     try:
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True,
-                            read_cache_size=100, auto_nested=True)
+        db = CachedLevelDBDict('test', path=tmpdir, rebuild=True,
+                               read_cache_size=100, auto_nested=True)
 
         # 写入嵌套字典
         db['user'] = {'name': 'Alice', 'age': 30}
@@ -197,12 +199,12 @@ def test_cache_with_auto_nested():
 
 
 def test_cache_lru_eviction():
-    """测试LRU淘汰"""
-    print("\n=== 测试7: LRU淘汰 ===")
+    """测试CachedLevelDBDict LRU淘汰"""
+    print("\n=== 测试7: CachedLevelDBDict LRU淘汰 ===")
     tmpdir = tempfile.mkdtemp()
     try:
         # 缓存大小=3
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=3)
+        db = CachedLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=3)
 
         # 写入3个键（写入时会自动缓存）
         db['key1'] = 'value1'

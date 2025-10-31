@@ -13,13 +13,17 @@ import shutil
 import time
 import random
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
+from flaxkv2.core.cached_leveldb_dict import CachedLevelDBDict
 
 
 def benchmark_sequential_write(num_items=10000, cache_size=0):
     """Benchmark: 顺序写入"""
     tmpdir = tempfile.mkdtemp()
     try:
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=cache_size)
+        if cache_size > 0:
+            db = CachedLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=cache_size)
+        else:
+            db = RawLevelDBDict('test', path=tmpdir, rebuild=True)
 
         start = time.time()
         for i in range(num_items):
@@ -36,7 +40,10 @@ def benchmark_random_read(num_items=10000, num_reads=10000, cache_size=0):
     """Benchmark: 随机读取（热数据）"""
     tmpdir = tempfile.mkdtemp()
     try:
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=cache_size)
+        if cache_size > 0:
+            db = CachedLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=cache_size)
+        else:
+            db = RawLevelDBDict('test', path=tmpdir, rebuild=True)
 
         # 写入数据
         for i in range(num_items):
@@ -66,7 +73,10 @@ def benchmark_mixed_workload(num_items=10000, num_ops=10000, cache_size=0):
     """Benchmark: 混合读写（80%读 + 20%写）"""
     tmpdir = tempfile.mkdtemp()
     try:
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=cache_size)
+        if cache_size > 0:
+            db = CachedLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=cache_size)
+        else:
+            db = RawLevelDBDict('test', path=tmpdir, rebuild=True)
 
         # 写入初始数据
         for i in range(num_items):
@@ -93,7 +103,10 @@ def benchmark_with_ttl(num_items=5000, num_reads=5000, cache_size=0):
     """Benchmark: 带TTL的读写"""
     tmpdir = tempfile.mkdtemp()
     try:
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=cache_size)
+        if cache_size > 0:
+            db = CachedLevelDBDict('test', path=tmpdir, rebuild=True, read_cache_size=cache_size)
+        else:
+            db = RawLevelDBDict('test', path=tmpdir, rebuild=True)
 
         # 写入带TTL的数据
         start_write = time.time()
@@ -119,8 +132,11 @@ def benchmark_auto_nested(num_items=1000, num_reads=1000, cache_size=0):
     """Benchmark: auto_nested读取"""
     tmpdir = tempfile.mkdtemp()
     try:
-        db = RawLevelDBDict('test', path=tmpdir, rebuild=True,
-                            read_cache_size=cache_size, auto_nested=True)
+        if cache_size > 0:
+            db = CachedLevelDBDict('test', path=tmpdir, rebuild=True,
+                                   read_cache_size=cache_size, auto_nested=True)
+        else:
+            db = RawLevelDBDict('test', path=tmpdir, rebuild=True, auto_nested=True)
 
         # 写入嵌套字典
         for i in range(num_items):
