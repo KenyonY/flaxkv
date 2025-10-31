@@ -230,36 +230,7 @@
 
 ### 高优先级 (P1)
 
-- [ ] **批量写入队列** - 预期30-100%写入性能提升
-  - 自动批处理后台线程
-  - 可配置batch_size和interval
-  - 支持flush()手动刷新
-  - 权衡：增加5-10ms写入延迟
 
-  **实施计划**:
-  ```python
-  db = FlaxKV("mydb", auto_batch=True, batch_size=1000, batch_interval_ms=10)
-  for i in range(100000):
-      db[f'key{i}'] = f'value{i}'  # 自动批处理
-  db.flush(wait=True)  # 手动刷新
-  ```
-
-- [ ] **TTL写入合并** - 带TTL的写入性能提升~40%
-  - 使用单个WriteBatch同时写入数据和TTL
-  - 减少50%磁盘I/O
-
-  **实施计划**:
-  ```python
-  # 当前：两次put
-  db.put(key, value)
-  db.put(ttl_key, ttl_value)
-
-  # 优化后：单个batch
-  batch = db.write_batch()
-  batch.put(key, value)
-  batch.put(ttl_key, ttl_value)
-  batch.write()
-  ```
 
 ### 中优先级 (P2)
 
