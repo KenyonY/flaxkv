@@ -16,10 +16,20 @@ import time
 from typing import Dict, Any, Optional
 import msgpack
 import zmq
+import zmq.auth
+from zmq.auth.thread import ThreadAuthenticator
 
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
 from flaxkv2.serialization import encoder, decoder
 from flaxkv2.utils.log import get_logger
+from flaxkv2.utils.key_manager import get_keypair_from_password
+
+# 尝试导入LZ4压缩
+try:
+    import lz4.frame
+    LZ4_AVAILABLE = True
+except ImportError:
+    LZ4_AVAILABLE = False
 
 logger = get_logger(__name__)
 
@@ -59,43 +69,91 @@ class FlaxKVServer:
         host: str = "127.0.0.1",
         port: int = 5555,
         data_dir: str = ".",
-        max_workers: int = 4
+        max_workers: int = 4,
+        enable_encryption: bool = False,
+        server_secret_key: Optional[str] = None,
+        password: Optional[str] = None,
+        derive_from_password: bool = True,
+        enable_compression: bool = False,
     ):
         """
         初始化服务器
-        
+
         Args:
             host: 绑定地址
             port: 绑定端口
             data_dir: 数据库存储目录
             max_workers: 工作线程数
+            enable_encryption: 启用CurveZMQ加密（默认False）
+            server_secret_key: 服务器密钥（Z85编码），None则自动生成
+            password: 密码（用于密钥管理），与server_secret_key二选一
+            derive_from_password: True=从密码直接派生密钥(推荐)，False=使用文件存储
+            enable_compression: 启用LZ4压缩（默认False）
         """
         self.host = host
         self.port = port
         self.data_dir = os.path.abspath(data_dir)
         self.max_workers = max_workers
-        
+
+        # 加密和压缩配置
+        self.enable_encryption = enable_encryption
+        self.enable_compression = enable_compression
+
+        # 处理密钥：password 和 server_secret_key 二选一
+        if enable_encryption:
+            if password and server_secret_key:
+                raise ValueError("Cannot specify both 'password' and 'server_secret_key'. Please use one.")
+
+            if password:
+                # 使用密码管理密钥
+                if derive_from_password:
+                    logger.info("Deriving keys from password (deterministic)")
+                else:
+                    logger.info("Loading keys from password-based file storage")
+
+                keypair = get_keypair_from_password(password, derive_from_password=derive_from_password)
+                self.server_secret_key = keypair['secret_key']
+                self.server_public_key = keypair['public_key']
+                logger.info(f"  Server Public Key: {self.server_public_key}")
+            else:
+                # 使用直接指定的密钥或自动生成
+                self.server_secret_key = server_secret_key
+                self.server_public_key = None
+        else:
+            self.server_secret_key = None
+            self.server_public_key = None
+
+        # 检查压缩支持
+        if self.enable_compression and not LZ4_AVAILABLE:
+            raise RuntimeError("LZ4 compression enabled but lz4 package not installed. Run: pip install lz4")
+
         # 数据库管理
         self.databases: Dict[str, RawLevelDBDict] = {}
         self.db_lock = threading.RLock()
-        
+
         # ZeroMQ 上下文
         self.context = zmq.Context()
         self.socket = None
-        
+        self.auth = None  # CurveZMQ认证器
+
         # 运行状态
         self.running = False
         self.worker_threads = []
-        
+
         # 统计信息
         self.stats = {
             'requests': 0,
             'errors': 0,
             'connections': 0,
+            'bytes_sent': 0,
+            'bytes_received': 0,
+            'bytes_compressed': 0,  # 压缩后的字节数
         }
         self.stats_lock = threading.Lock()
-        
+
         logger.info(f"FlaxKV Server initialized at {host}:{port}, data_dir={data_dir}")
+        logger.info(f"  Encryption: {'Enabled' if enable_encryption else 'Disabled'}")
+        logger.info(f"  Compression: {'Enabled' if enable_compression else 'Disabled'}")
     
     def _get_or_create_db(self, db_name: str) -> RawLevelDBDict:
         """获取或创建数据库实例"""
@@ -124,6 +182,39 @@ class FlaxKVServer:
                 del self.databases[db_name]
                 return True
             return False
+
+    def _compress_data(self, data: bytes) -> bytes:
+        """
+        压缩数据（如果启用压缩）
+
+        格式：[压缩标志(1byte)][数据]
+        - 0x00: 未压缩
+        - 0x01: LZ4压缩
+        """
+        if self.enable_compression:
+            compressed = lz4.frame.compress(data)
+            with self.stats_lock:
+                self.stats['bytes_compressed'] += len(compressed)
+            return b'\x01' + compressed
+        else:
+            return b'\x00' + data
+
+    def _decompress_data(self, data: bytes) -> bytes:
+        """
+        解压缩数据
+
+        根据首字节判断是否压缩
+        """
+        if len(data) == 0:
+            return data
+
+        compression_flag = data[0]
+        payload = data[1:]
+
+        if compression_flag == 0x01:  # LZ4压缩
+            return lz4.frame.decompress(payload)
+        else:  # 未压缩
+            return payload
     
     def _handle_request(self, identity: bytes, request: list) -> list:
         """
@@ -328,7 +419,7 @@ class FlaxKVServer:
     def _server_loop(self):
         """服务器主循环（单线程处理所有请求）"""
         logger.info("Server loop started")
-        
+
         while self.running:
             try:
                 # 接收消息（非阻塞）
@@ -337,14 +428,29 @@ class FlaxKVServer:
                     # DEALER 发送 [request_data]
                     # ROUTER 接收 [identity, request_data]
                     frames = self.socket.recv_multipart(zmq.NOBLOCK)
-                    
+
                     if len(frames) < 2:
                         logger.warning(f"Invalid message format: {len(frames)} frames: {frames}")
                         continue
-                    
+
                     identity = frames[0]
-                    request_data = frames[1]
-                    
+                    request_data_compressed = frames[1]
+
+                    # 统计接收字节数
+                    with self.stats_lock:
+                        self.stats['bytes_received'] += len(request_data_compressed)
+
+                    # 解压缩请求数据
+                    try:
+                        request_data = self._decompress_data(request_data_compressed)
+                    except Exception as e:
+                        logger.error(f"Error decompressing request: {e}")
+                        response = [self.STATUS_ERROR, b"Decompression failed"]
+                        response_data = msgpack.packb(response, use_bin_type=True)
+                        response_data_compressed = self._compress_data(response_data)
+                        self.socket.send_multipart([identity, response_data_compressed], zmq.NOBLOCK)
+                        continue
+
                     # 解包请求
                     try:
                         request = msgpack.unpackb(request_data, raw=True)  # raw=True 保持 bytes
@@ -352,20 +458,28 @@ class FlaxKVServer:
                         logger.error(f"Error unpacking request: {e}")
                         response = [self.STATUS_ERROR, b"Invalid request format"]
                         response_data = msgpack.packb(response, use_bin_type=True)
-                        self.socket.send_multipart([identity, response_data], zmq.NOBLOCK)
+                        response_data_compressed = self._compress_data(response_data)
+                        self.socket.send_multipart([identity, response_data_compressed], zmq.NOBLOCK)
                         continue
-                    
+
                     # 处理请求
                     response = self._handle_request(identity, request)
-                    
+
                     # 打包响应
                     response_data = msgpack.packb(response, use_bin_type=True)
-                    
+
+                    # 压缩响应数据
+                    response_data_compressed = self._compress_data(response_data)
+
+                    # 统计发送字节数
+                    with self.stats_lock:
+                        self.stats['bytes_sent'] += len(response_data_compressed)
+
                     # 发送响应
                     # ROUTER 发送 [identity, response_data]
                     # DEALER 接收 [response_data]
-                    self.socket.send_multipart([identity, response_data], zmq.NOBLOCK)
-            
+                    self.socket.send_multipart([identity, response_data_compressed], zmq.NOBLOCK)
+
             except zmq.Again:
                 # 非阻塞操作，没有消息
                 continue
@@ -376,33 +490,65 @@ class FlaxKVServer:
                 logger.error(f"ZMQ error in server loop: {e}")
             except Exception as e:
                 logger.error(f"Error in server loop: {e}", exc_info=True)
-        
+
         logger.info("Server loop stopped")
     
     def start(self, register_signals: bool = True):
         """
         启动服务器
-        
+
         Args:
             register_signals: 是否注册信号处理器（仅在主线程中有效）
         """
         if self.running:
             logger.warning("Server is already running")
             return
-        
+
         logger.info(f"Starting FlaxKV Server on {self.host}:{self.port}")
-        
+
+        # 设置 CurveZMQ 加密
+        if self.enable_encryption:
+            logger.info("Setting up CurveZMQ encryption")
+
+            # 启动认证线程
+            self.auth = ThreadAuthenticator(self.context)
+            self.auth.start()
+            self.auth.configure_curve(domain='*', location=zmq.auth.CURVE_ALLOW_ANY)
+
+            # 生成或使用服务器密钥对
+            if self.server_secret_key:
+                # 使用提供的密钥，从私钥派生公钥
+                self.server_public_key = zmq.curve_public(self.server_secret_key.encode('utf-8')).decode('utf-8')
+                logger.info(f"Using provided server keys")
+                logger.info(f"  Server Public Key: {self.server_public_key}")
+            else:
+                # 自动生成密钥对
+                public_key, secret_key = zmq.curve_keypair()
+                self.server_public_key = public_key.decode('utf-8')
+                self.server_secret_key = secret_key.decode('utf-8')
+                logger.info(f"Generated new server keys")
+                logger.info(f"  Server Public Key: {self.server_public_key}")
+                logger.info(f"  Server Secret Key: {self.server_secret_key}")
+                logger.warning("⚠️  Please save the server keys for client connections!")
+
         # 创建 socket
         self.socket = self.context.socket(zmq.ROUTER)
+
+        # 配置 CurveZMQ（必须在 bind 之前）
+        if self.enable_encryption:
+            self.socket.curve_secretkey = self.server_secret_key.encode('utf-8')
+            self.socket.curve_publickey = self.server_public_key.encode('utf-8')
+            self.socket.curve_server = True  # 启用服务器模式
+
         self.socket.bind(f"tcp://{self.host}:{self.port}")
-        
+
         # 设置 socket 选项
         self.socket.setsockopt(zmq.LINGER, 0)
-        
+
         self.running = True
-        
+
         logger.info(f"Server started (single-threaded mode)")
-        
+
         # 只在主线程中注册信号处理
         if register_signals:
             try:
@@ -421,14 +567,14 @@ class FlaxKVServer:
         """停止服务器"""
         if not self.running:
             return
-        
+
         logger.info("Stopping FlaxKV Server...")
         self.running = False
-        
+
         # 等待工作线程结束
         for thread in self.worker_threads:
             thread.join(timeout=5.0)
-        
+
         # 关闭所有数据库
         with self.db_lock:
             for db_name, db in list(self.databases.items()):
@@ -438,15 +584,23 @@ class FlaxKVServer:
                 except Exception as e:
                     logger.error(f"Error closing database {db_name}: {e}")
             self.databases.clear()
-        
+
         # 关闭 socket
         if self.socket:
             self.socket.close()
             self.socket = None
-        
+
+        # 停止认证器
+        if self.auth:
+            try:
+                self.auth.stop()
+            except Exception as e:
+                logger.error(f"Error stopping authenticator: {e}")
+            self.auth = None
+
         # 终止 context
         self.context.term()
-        
+
         # 打印统计信息
         logger.info(f"Server stopped. Stats: {self.stats}")
     

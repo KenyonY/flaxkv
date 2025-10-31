@@ -17,6 +17,14 @@ import zmq
 from flaxkv2.serialization import encoder, decoder
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.simple_lru_cache import SimpleLRUCache
+from flaxkv2.utils.key_manager import get_keypair_from_password
+
+# 尝试导入LZ4压缩
+try:
+    import lz4.frame
+    LZ4_AVAILABLE = True
+except ImportError:
+    LZ4_AVAILABLE = False
 
 logger = get_logger(__name__)
 
@@ -60,6 +68,11 @@ class RemoteDBDict:
         max_retries: int = 3,
         retry_delay: float = 0.1,  # 秒
         read_cache_size: int = 0,  # 读缓存大小（条目数量）
+        enable_encryption: bool = False,  # 启用CurveZMQ加密
+        server_public_key: Optional[str] = None,  # 服务器公钥（Z85编码）
+        password: Optional[str] = None,  # 密码（自动管理密钥）
+        derive_from_password: bool = True,  # 从密码派生密钥
+        enable_compression: bool = False,  # 启用LZ4压缩
     ):
         """
         初始化远程数据库客户端
@@ -73,6 +86,11 @@ class RemoteDBDict:
             retry_delay: 重试延迟（秒）
             read_cache_size: 读缓存大小（条目数量），0表示禁用缓存（默认）
                 推荐值：1000-10000，可显著减少网络请求
+            enable_encryption: 启用CurveZMQ加密（默认False）
+            server_public_key: 服务器公钥（Z85编码），与password二选一
+            password: 密码（用于密钥管理），与server_public_key二选一
+            derive_from_password: True=从密码直接派生密钥(推荐)，False=使用文件存储
+            enable_compression: 启用LZ4压缩（默认False）
         """
         self.name = db_name
         self.db_name = db_name
@@ -81,6 +99,39 @@ class RemoteDBDict:
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+
+        # 加密和压缩配置
+        self.enable_encryption = enable_encryption
+        self.enable_compression = enable_compression
+        self.client_public_key = None
+        self.client_secret_key = None
+
+        # 处理密钥：password 和 server_public_key 二选一
+        if enable_encryption:
+            if password and server_public_key:
+                raise ValueError("Cannot specify both 'password' and 'server_public_key'. Please use one.")
+
+            if password:
+                # 使用密码管理密钥
+                if derive_from_password:
+                    logger.info("Deriving keys from password (deterministic)")
+                else:
+                    logger.info("Loading keys from password-based file storage")
+
+                keypair = get_keypair_from_password(password, derive_from_password=derive_from_password)
+                self.server_public_key = keypair['public_key']
+                logger.debug(f"  Server Public Key: {self.server_public_key}")
+            elif server_public_key:
+                # 使用直接指定的公钥
+                self.server_public_key = server_public_key
+            else:
+                raise ValueError("enable_encryption=True requires either 'password' or 'server_public_key'")
+        else:
+            self.server_public_key = None
+
+        # 检查压缩支持
+        if self.enable_compression and not LZ4_AVAILABLE:
+            raise RuntimeError("LZ4 compression enabled but lz4 package not installed. Run: pip install lz4")
 
         # ZeroMQ 上下文和 socket
         self.context = zmq.Context()
@@ -105,49 +156,107 @@ class RemoteDBDict:
         self._connect_db()
 
         logger.info(f"RemoteDBDict connected to {host}:{port}, db={db_name}")
+        logger.info(f"  Encryption: {'Enabled' if enable_encryption else 'Disabled'}")
+        logger.info(f"  Compression: {'Enabled' if enable_compression else 'Disabled'}")
     
     def _connect_socket(self):
         """创建并连接 socket"""
         with self.socket_lock:
             if self.socket:
                 self.socket.close()
-            
+
             self.socket = self.context.socket(zmq.DEALER)
             self.socket.setsockopt(zmq.LINGER, 0)
             self.socket.setsockopt(zmq.RCVTIMEO, self.timeout)
             self.socket.setsockopt(zmq.SNDTIMEO, self.timeout)
+
+            # 配置 CurveZMQ 加密（必须在 connect 之前）
+            if self.enable_encryption:
+                # 生成客户端密钥对
+                client_public, client_secret = zmq.curve_keypair()
+                self.client_public_key = client_public.decode('utf-8')
+                self.client_secret_key = client_secret.decode('utf-8')
+
+                # 设置客户端密钥
+                self.socket.curve_secretkey = client_secret
+                self.socket.curve_publickey = client_public
+
+                # 设置服务器公钥
+                self.socket.curve_serverkey = self.server_public_key.encode('utf-8')
+
+                logger.debug(f"CurveZMQ encryption enabled")
+                logger.debug(f"  Client Public Key: {self.client_public_key}")
+                logger.debug(f"  Server Public Key: {self.server_public_key}")
+
             self.socket.connect(f"tcp://{self.host}:{self.port}")
-    
+
+    def _compress_data(self, data: bytes) -> bytes:
+        """
+        压缩数据（如果启用压缩）
+
+        格式：[压缩标志(1byte)][数据]
+        - 0x00: 未压缩
+        - 0x01: LZ4压缩
+        """
+        if self.enable_compression:
+            compressed = lz4.frame.compress(data)
+            return b'\x01' + compressed
+        else:
+            return b'\x00' + data
+
+    def _decompress_data(self, data: bytes) -> bytes:
+        """
+        解压缩数据
+
+        根据首字节判断是否压缩
+        """
+        if len(data) == 0:
+            return data
+
+        compression_flag = data[0]
+        payload = data[1:]
+
+        if compression_flag == 0x01:  # LZ4压缩
+            return lz4.frame.decompress(payload)
+        else:  # 未压缩
+            return payload
+
     def _send_request(self, request: list, retry: bool = True) -> list:
         """
         发送请求并接收响应
-        
+
         Args:
             request: 请求数据
             retry: 是否在失败时重试
-            
+
         Returns:
             响应数据 [status, result]
         """
         retries = self.max_retries if retry else 1
-        
+
         for attempt in range(retries):
             try:
                 with self.socket_lock:
                     # 打包请求（raw=True 保持 bytes）
                     request_data = msgpack.packb(request, use_bin_type=True)
-                    
+
+                    # 压缩请求数据
+                    request_data_compressed = self._compress_data(request_data)
+
                     # 发送请求（DEALER socket 自动添加空帧）
-                    self.socket.send(request_data)
-                    
+                    self.socket.send(request_data_compressed)
+
                     # 接收响应
-                    response_data = self.socket.recv()
-                    
+                    response_data_compressed = self.socket.recv()
+
+                    # 解压缩响应数据
+                    response_data = self._decompress_data(response_data_compressed)
+
                     # 解包响应（raw=True 保持 bytes）
                     response = msgpack.unpackb(response_data, raw=True)
-                    
+
                     return response
-            
+
             except zmq.Again:
                 # 超时
                 logger.warning(f"Request timeout (attempt {attempt + 1}/{retries})")
@@ -157,7 +266,7 @@ class RemoteDBDict:
                     self._connect_socket()
                 else:
                     raise TimeoutError(f"Request timeout after {retries} attempts")
-            
+
             except zmq.ZMQError as e:
                 logger.error(f"ZMQ error: {e}")
                 if attempt < retries - 1:
@@ -165,14 +274,14 @@ class RemoteDBDict:
                     self._connect_socket()
                 else:
                     raise
-            
+
             except Exception as e:
                 logger.error(f"Error sending request: {e}")
                 if attempt < retries - 1:
                     time.sleep(self.retry_delay)
                 else:
                     raise
-        
+
         raise RuntimeError("Failed to send request")
     
     def _connect_db(self):
