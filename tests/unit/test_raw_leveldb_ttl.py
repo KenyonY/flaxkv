@@ -12,7 +12,7 @@ def test_raw_leveldb_default_ttl():
     """测试默认TTL功能"""
     with tempfile.TemporaryDirectory() as temp_dir:
         # 创建带有默认TTL的数据库（2秒）
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True, default_ttl=2)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False, default_ttl=2)
 
         # 写入数据
         db["key1"] = "value1"
@@ -42,7 +42,7 @@ def test_raw_leveldb_default_ttl():
 def test_raw_leveldb_set_ttl():
     """测试手动设置TTL"""
     with tempfile.TemporaryDirectory() as temp_dir:
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False)
 
         # 写入数据，没有默认TTL
         db["key1"] = "value1"
@@ -65,7 +65,7 @@ def test_raw_leveldb_set_ttl():
 def test_raw_leveldb_remove_ttl():
     """测试移除TTL"""
     with tempfile.TemporaryDirectory() as temp_dir:
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True, default_ttl=2)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False, default_ttl=2)
 
         # 写入数据，会自动应用默认TTL
         db["key1"] = "value1"
@@ -85,7 +85,7 @@ def test_raw_leveldb_remove_ttl():
 def test_raw_leveldb_update_with_ttl():
     """测试批量更新时应用TTL"""
     with tempfile.TemporaryDirectory() as temp_dir:
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True, default_ttl=2)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False, default_ttl=2)
 
         # 批量写入
         db.update({"key1": "value1", "key2": "value2", "key3": "value3"})
@@ -110,7 +110,7 @@ def test_raw_leveldb_update_with_ttl():
 def test_raw_leveldb_cleanup_expired():
     """测试清理过期键"""
     with tempfile.TemporaryDirectory() as temp_dir:
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False)
 
         # 写入一些键，设置不同的TTL
         db["key1"] = "value1"
@@ -144,7 +144,7 @@ def test_raw_leveldb_cleanup_expired():
 def test_raw_leveldb_delete_removes_ttl():
     """测试删除键时同时移除TTL"""
     with tempfile.TemporaryDirectory() as temp_dir:
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True, default_ttl=10)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False, default_ttl=10)
 
         # 写入数据
         db["key1"] = "value1"
@@ -162,7 +162,7 @@ def test_raw_leveldb_delete_removes_ttl():
 def test_raw_leveldb_no_ttl():
     """测试不使用TTL的情况"""
     with tempfile.TemporaryDirectory() as temp_dir:
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False)
 
         # 写入数据
         db["key1"] = "value1"

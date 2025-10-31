@@ -12,7 +12,7 @@ def test_raw_leveldb_set_ttl():
     """测试手动设置TTL"""
     print("测试1: 手动设置TTL...")
     with tempfile.TemporaryDirectory() as temp_dir:
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False)
 
         # 写入数据，没有默认TTL
         db["key1"] = "value1"
@@ -48,7 +48,7 @@ def test_raw_leveldb_cleanup_expired():
     """测试清理过期键"""
     print("测试2: 清理过期键...")
     with tempfile.TemporaryDirectory() as temp_dir:
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False)
 
         # 写入一些键，设置不同的TTL
         db["key1"] = "value1"
@@ -90,7 +90,7 @@ def test_raw_leveldb_delete_removes_ttl():
     """测试删除键时同时移除TTL"""
     print("测试3: 删除键时移除TTL...")
     with tempfile.TemporaryDirectory() as temp_dir:
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True, default_ttl=10)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False, default_ttl=10)
 
         # 写入数据
         db["key1"] = "value1"
@@ -119,7 +119,7 @@ def test_keys_filtering():
     """测试keys()方法过滤内部键"""
     print("测试4: keys()过滤TTL信息键...")
     with tempfile.TemporaryDirectory() as temp_dir:
-        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=True)
+        db = RawLevelDBDict("test_db", temp_dir, rebuild=True, raw=False)
 
         # 写入数据和TTL
         db["key1"] = "value1"

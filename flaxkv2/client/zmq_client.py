@@ -15,6 +15,7 @@ import msgpack
 import zmq
 
 from flaxkv2.serialization import encoder, decoder
+from flaxkv2.serialization.value_meta import ValueWithMeta
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.simple_lru_cache import SimpleLRUCache
 from flaxkv2.utils.key_manager import get_keypair_from_password
@@ -319,7 +320,7 @@ class RemoteDBDict:
 
     def __getitem__(self, key: Any) -> Any:
         """获取键值（支持缓存）"""
-        # 检查缓存（自动检查TTL）
+        # 检查缓存（SimpleLRUCache会自动检查TTL）
         if self._cache_enabled:
             cached = self._cache.get(key)
             if cached is not None:
@@ -335,30 +336,31 @@ class RemoteDBDict:
         elif status == self.STATUS_ERROR:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
 
-        # 反序列化 value
-        value = decoder.decode(result)
-
-        # 尝试获取 TTL 信息并缓存
-        if self._cache_enabled:
+        # 解码值并提取TTL信息（使用ValueWithMeta）
+        if ValueWithMeta.has_meta(result):
+            # 新格式：带元数据（可能包含TTL）
+            value, expire_time, is_expired = ValueWithMeta.decode_value(result)
+            if is_expired:
+                # 服务器应该已经拒绝，但双重检查
+                raise KeyError(key)
+        else:
+            # 旧格式或无TTL：直接解码
+            value = decoder.decode(result)
             expire_time = None
-            # 尝试读取 TTL（如果不是内部键）
-            if not (isinstance(key, str) and (key.startswith('__ttl_info__:') or key.startswith('__nested__:'))):
-                try:
-                    ttl_remaining = self.get_ttl(key)
-                    if ttl_remaining is not None:
-                        expire_time = time.time() + ttl_remaining
-                except:
-                    pass
 
-            self._cache.put(key, value, expire_time)
+        # 缓存数据（传入正确的expire_time，SimpleLRUCache会自动处理TTL）
+        if self._cache_enabled:
+            # 不缓存内部键（嵌套标记键等）
+            if not (isinstance(key, str) and key.startswith('__nested__:')):
+                self._cache.put(key, value, expire_time)
 
         return value
     
     def __setitem__(self, key: Any, value: Any):
-        """设置键值（更新缓存）"""
-        # 序列化 key 和 value
+        """设置键值（无TTL，更新缓存）"""
+        # 序列化 key 和 value（使用ValueWithMeta，不带TTL）
         key_bytes = encoder.encode_key(key)
-        value_bytes = encoder.encode(value)
+        value_bytes = ValueWithMeta.encode_value(value, ttl_seconds=None)
 
         request = [self.CMD_SET, self.db_name.encode('utf-8'), key_bytes, value_bytes]
         status, result = self._send_request(request)
@@ -366,20 +368,11 @@ class RemoteDBDict:
         if status == self.STATUS_ERROR:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
 
-        # 更新缓存（write-through）
+        # 更新缓存（write-through，无TTL）
         if self._cache_enabled:
-            # 不是内部键才缓存
-            if not (isinstance(key, str) and (key.startswith('__ttl_info__:') or key.startswith('__nested__:'))):
-                # 尝试获取TTL
-                expire_time = None
-                try:
-                    ttl_remaining = self.get_ttl(key)
-                    if ttl_remaining is not None:
-                        expire_time = time.time() + ttl_remaining
-                except:
-                    pass
-
-                self._cache.put(key, value, expire_time)
+            # 不缓存内部键（嵌套标记键等）
+            if not (isinstance(key, str) and key.startswith('__nested__:')):
+                self._cache.put(key, value, expire_time=None)
     
     def __delitem__(self, key: Any):
         """删除键（同时删除缓存）"""
@@ -393,16 +386,6 @@ class RemoteDBDict:
             raise KeyError(key)
         elif status == self.STATUS_ERROR:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
-
-        # 删除TTL信息（如果不是内部键）
-        if not (isinstance(key, str) and (key.startswith('__ttl_info__:') or key.startswith('__nested__:'))):
-            ttl_key = self._get_ttl_key(key)
-            try:
-                ttl_key_bytes = encoder.encode_key(ttl_key)
-                request = [self.CMD_DELETE, self.db_name.encode('utf-8'), ttl_key_bytes]
-                self._send_request(request)
-            except:
-                pass  # TTL信息不存在也没关系
 
         # 删除缓存
         if self._cache_enabled:
@@ -503,70 +486,97 @@ class RemoteDBDict:
         return result
     
     def set_ttl(self, key: Any, ttl_seconds: int):
-        """设置键的过期时间"""
-        # 检查键是否存在
-        if key not in self:
-            raise KeyError(key)
+        """设置键的过期时间（使用ValueWithMeta重新编码）"""
+        # 读取当前值
+        try:
+            current_value = self.__getitem__(key)
+        except KeyError:
+            raise KeyError(f"Key {key} does not exist")
 
-        # 计算过期时间戳
-        expiry_time = time.time() + ttl_seconds
+        # 使用ValueWithMeta重新编码（带TTL）
+        key_bytes = encoder.encode_key(key)
+        value_bytes = ValueWithMeta.encode_value(current_value, ttl_seconds)
 
-        # 使用普通的 __setitem__ 存储 TTL 信息
-        ttl_key = self._get_ttl_key(key)
-        self[ttl_key] = expiry_time
+        # 写回服务器
+        request = [self.CMD_SET, self.db_name.encode('utf-8'), key_bytes, value_bytes]
+        status, result = self._send_request(request)
+
+        if status == self.STATUS_ERROR:
+            raise RuntimeError(f"Server error: {result.decode('utf-8')}")
+
+        # 更新缓存（带TTL）
+        if self._cache_enabled:
+            if not (isinstance(key, str) and key.startswith('__nested__:')):
+                expire_time = time.time() + ttl_seconds
+                self._cache.put(key, current_value, expire_time)
 
     def get_ttl(self, key: Any) -> Optional[int]:
-        """获取键的剩余过期时间"""
-        ttl_key = self._get_ttl_key(key)
+        """获取键的剩余过期时间（从ValueWithMeta中提取）"""
+        # 从服务器读取原始字节
+        key_bytes = encoder.encode_key(key)
+        request = [self.CMD_GET, self.db_name.encode('utf-8'), key_bytes]
+        status, result = self._send_request(request)
 
-        try:
-            expiry_time = self[ttl_key]
-            remaining = int(expiry_time - time.time())
-            return max(0, remaining)
-        except KeyError:
-            # 没有设置 TTL
-            return None
+        if status == self.STATUS_NOT_FOUND:
+            raise KeyError(key)
+        elif status == self.STATUS_ERROR:
+            raise RuntimeError(f"Server error: {result.decode('utf-8')}")
+
+        # 提取TTL信息（不解码value）
+        if ValueWithMeta.has_meta(result):
+            has_ttl, expire_time = ValueWithMeta.get_ttl_info(result)
+            if has_ttl:
+                remaining = int(expire_time - time.time())
+                return max(0, remaining)
+
+        return None  # 没有设置TTL
 
     def remove_ttl(self, key: Any):
-        """移除键的TTL设置"""
-        ttl_key = self._get_ttl_key(key)
+        """移除键的TTL设置（使用ValueWithMeta重新编码）"""
+        # 读取当前值
         try:
-            del self[ttl_key]
+            current_value = self.__getitem__(key)
         except KeyError:
-            pass
+            raise KeyError(f"Key {key} does not exist")
+
+        # 使用ValueWithMeta重新编码（不带TTL）
+        key_bytes = encoder.encode_key(key)
+        value_bytes = ValueWithMeta.encode_value(current_value, ttl_seconds=None)
+
+        # 写回服务器
+        request = [self.CMD_SET, self.db_name.encode('utf-8'), key_bytes, value_bytes]
+        status, result = self._send_request(request)
+
+        if status == self.STATUS_ERROR:
+            raise RuntimeError(f"Server error: {result.decode('utf-8')}")
+
+        # 更新缓存（不带TTL）
+        if self._cache_enabled:
+            if not (isinstance(key, str) and key.startswith('__nested__:')):
+                self._cache.put(key, current_value, expire_time=None)
     
     def cleanup_expired(self) -> int:
-        """清理过期键"""
-        current_time = time.time()
-        count = 0
-        expired_keys = []
+        """
+        清理过期键（由服务器端执行）
 
-        # 遍历所有键，找到过期的TTL信息键
-        try:
-            all_keys = self.keys()
-            for key in all_keys:
-                if isinstance(key, str) and key.startswith('__ttl_info__:'):
-                    # 提取原始键名
-                    original_key = key[len('__ttl_info__:'):]
+        注意：服务器端在每次GET时会自动检查并删除过期键，
+        此方法主动触发服务器端遍历数据库清理所有过期数据。
 
-                    try:
-                        expiry_time = float(self[key])
-                        if current_time > expiry_time:
-                            expired_keys.append(original_key)
-                    except (ValueError, KeyError):
-                        continue
+        Returns:
+            清理的键数量
+        """
+        request = [self.CMD_CLEANUP_EXPIRED, self.db_name.encode('utf-8')]
+        status, result = self._send_request(request)
 
-            # 删除过期的键和TTL信息
-            for original_key in expired_keys:
-                try:
-                    if original_key in self:
-                        del self[original_key]  # 会自动删除TTL信息
-                        count += 1
-                except KeyError:
-                    pass
-        except Exception as e:
-            import logging
-            logger.error(f"清理过期键失败: {e}")
+        if status == self.STATUS_ERROR:
+            raise RuntimeError(f"Server error: {result.decode('utf-8')}")
+
+        # 服务器返回清理的数量
+        count = decoder.decode(result) if result else 0
+
+        # 清理本地缓存中的过期项
+        if self._cache_enabled:
+            self._cache.cleanup_expired()
 
         return count
     

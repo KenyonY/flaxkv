@@ -13,7 +13,7 @@ from flaxkv2.serialization import encoder, decoder
 from flaxkv2.serialization.value_meta import ValueWithMeta
 from flaxkv2.core.nested_dict import NestedDBDict
 from flaxkv2.utils.log import get_logger
-from flaxkv2.utils.ttl import TTLManager
+from flaxkv2.utils.ttl_cleanup import TTLCleanup
 from flaxkv2.utils.rwlock import RWLock
 from flaxkv2.utils.simple_lru_cache import SimpleLRUCache
 from flaxkv2.instance_manager import db_instance_manager
@@ -98,6 +98,10 @@ class CachedLevelDBDict:
         default_ttl: Optional[int] = None,
         auto_nested: bool = False,
         read_cache_size: int = 1000,  # 默认启用缓存
+        # TTL自动清理参数
+        enable_ttl_cleanup: bool = True,
+        cleanup_interval: int = 60,
+        cleanup_batch_size: int = 1000,
         # 性能配置参数
         performance_profile: str = 'balanced',
         lru_cache_size: Optional[int] = None,
@@ -121,6 +125,9 @@ class CachedLevelDBDict:
             auto_nested: 是否自动将字典类型转换为嵌套存储（默认False，保持性能基准纯粹）
             read_cache_size: 读缓存大小（条目数量），默认1000，设为0禁用缓存
                 推荐值：1000-10000，具体取决于工作负载
+            enable_ttl_cleanup: 是否启用TTL自动清理（默认True）
+            cleanup_interval: TTL清理间隔（秒），默认60秒
+            cleanup_batch_size: 每次清理扫描的键数量，默认1000
 
             performance_profile: 性能配置文件名称，可选值：
                 - 'balanced' (默认): 通用平衡配置
@@ -197,14 +204,19 @@ class CachedLevelDBDict:
         logger.debug(f"  写缓冲: {self._leveldb_options['write_buffer_size'] / (1024*1024):.0f} MB")
         logger.debug(f"  布隆过滤器: {self._leveldb_options['bloom_filter_bits']} bits")
 
-        # 初始化TTL管理器
-        self._ttl_manager = TTLManager()
-
         # 初始化数据库
         self._init_db()
 
-        # 设置TTL管理器的数据库引用
-        self._ttl_manager.set_db(self)
+        # 启动TTL自动清理（如果启用）
+        self._ttl_cleanup = None
+        if enable_ttl_cleanup:
+            self._ttl_cleanup = TTLCleanup(
+                db=self,
+                cleanup_interval=cleanup_interval,
+                batch_size=cleanup_batch_size
+            )
+            self._ttl_cleanup.start()
+            logger.debug(f"TTL auto-cleanup enabled: interval={cleanup_interval}s, batch_size={cleanup_batch_size}")
 
         # 注册到实例管理器
         db_instance_manager.register_instance(self.db_path, self)
@@ -502,21 +514,22 @@ class CachedLevelDBDict:
             return default
 
     def update(self, d: Dict[Any, Any]):
-        """批量更新多个键值对"""
+        """批量更新多个键值对（使用default_ttl）"""
         with self._db_lock.write_lock():
             batch = self._db.write_batch()
 
             for key, value in d.items():
                 key_bytes = self._encode_key(key)
-                value_bytes = self._encode_value(value)
+                # 使用ValueWithMeta编码，直接嵌入default_ttl
+                value_bytes = self._encode_value(value, ttl_seconds=self._default_ttl)
                 batch.put(key_bytes, value_bytes)
 
             batch.write()
 
-        # 如果设置了默认TTL，为所有键应用TTL
-        if self._default_ttl is not None:
+        # 清除缓存中的相关键
+        if self._cache_enabled:
             for key in d.keys():
-                self._ttl_manager.set(key, self._default_ttl)
+                self._cache.delete(key)
 
     def _should_skip_internal_key(self, key_bytes: bytes) -> bool:
         """
@@ -688,6 +701,11 @@ class CachedLevelDBDict:
         if self._closed:
             return
 
+        # 停止TTL自动清理线程
+        if self._ttl_cleanup is not None:
+            self._ttl_cleanup.stop()
+            self._ttl_cleanup = None
+
         if self._db is not None:
             try:
                 with self._db_lock.write_lock():
@@ -835,7 +853,7 @@ class CachedLevelDBDict:
                 value_bytes = self._db.get(key_bytes)
 
             if value_bytes is None:
-                raise KeyError(key)
+                return None  # 键不存在，返回None
 
             # 解码并提取TTL
             _, expire_time, is_expired = self._decode_value(value_bytes)
@@ -849,8 +867,6 @@ class CachedLevelDBDict:
             import time
             remaining = int(expire_time - time.time())
             return max(0, remaining)
-        except KeyError:
-            raise
         except Exception:
             return None
 
@@ -895,10 +911,40 @@ class CachedLevelDBDict:
         """
         清理所有过期的键
 
+        扫描所有键，检查ValueWithMeta中的TTL，删除过期的键。
+
         Returns:
             清理的键数量
         """
-        return self._ttl_manager.cleanup_expired()
+        count = 0
+        keys_to_delete = []
+
+        with self._db_lock.write_lock():
+            # 扫描所有键
+            for key_bytes, value_bytes in self._db:
+                # 检查是否包含TTL元数据并已过期
+                if ValueWithMeta.has_meta(value_bytes):
+                    if ValueWithMeta.is_expired_fast(value_bytes):
+                        keys_to_delete.append(key_bytes)
+
+            # 批量删除
+            if keys_to_delete:
+                batch = self._db.write_batch()
+                for key_bytes in keys_to_delete:
+                    batch.delete(key_bytes)
+                    count += 1
+                batch.write()
+
+        # 清除缓存中的过期键
+        if self._cache_enabled and keys_to_delete:
+            for key_bytes in keys_to_delete:
+                try:
+                    key = self._decode_key(key_bytes)
+                    self._cache.delete(key)
+                except:
+                    pass
+
+        return count
 
     def nested(self, prefix: str) -> NestedDBDict:
         """
