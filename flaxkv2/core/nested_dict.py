@@ -219,6 +219,14 @@ class NestedDBDict(MutableMapping):
         except KeyError:
             return default
 
+    def set(self, key: str, value: Any) -> None:
+        """
+        设置字段值（等同于 __setitem__）
+
+        为了与 RawLevelDBDict 保持 API 一致性
+        """
+        self[key] = value
+
     def pop(self, key: str, default=None) -> Any:
         """删除并返回字段值"""
         try:
@@ -229,6 +237,21 @@ class NestedDBDict(MutableMapping):
             if default is None:
                 raise
             return default
+
+    def popitem(self) -> tuple[str, Any]:
+        """
+        删除并返回一个键值对
+
+        如果字典为空，抛出 KeyError
+        """
+        try:
+            # 获取第一个键
+            key = next(iter(self))
+            value = self[key]
+            del self[key]
+            return (key, value)
+        except StopIteration:
+            raise KeyError("popitem(): dictionary is empty")
 
     def update(self, *args, **kwargs) -> None:
         """批量更新字段"""
@@ -302,6 +325,37 @@ class NestedDBDict(MutableMapping):
     def __ne__(self, other) -> bool:
         """不等比较"""
         return not self.__eq__(other)
+
+    def __or__(self, other) -> dict:
+        """
+        字典合并操作符 (|)
+
+        返回一个新的普通字典，包含两个字典的合并结果
+        如果有重复的键，使用 other 的值
+
+        示例：
+            result = nested_dict | {'new_key': 'value'}
+        """
+        result = self.to_dict()
+        if isinstance(other, NestedDBDict):
+            result.update(other.to_dict())
+        elif isinstance(other, dict):
+            result.update(other)
+        else:
+            return NotImplemented
+        return result
+
+    def __ior__(self, other):
+        """
+        字典合并赋值操作符 (|=)
+
+        就地更新字典，相当于 update()
+
+        示例：
+            nested_dict |= {'new_key': 'value'}
+        """
+        self.update(other)
+        return self
 
     def __repr__(self) -> str:
         """字符串表示"""
