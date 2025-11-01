@@ -15,7 +15,7 @@ from flaxkv2 import auto_close
 # 导入核心类
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
 from flaxkv2.core.cached_leveldb_dict import CachedLevelDBDict
-from flaxkv2.core.nested_dict import NestedDBDict
+from flaxkv2.core.nested_structures import NestedDBDict, NestedDBList
 
 # 注意: LevelDBDict 已弃用，不再从主模块导出
 # 如需使用，请直接导入: from flaxkv2.core.leveldb_dict import LevelDBDict
@@ -272,7 +272,8 @@ __all__ = [
     "BackendType",
     "RawLevelDBDict",
     "CachedLevelDBDict",
-    "NestedDBDict"
+    "NestedDBDict",
+    "NestedDBList"
 ]
 # 注意: LevelDBDict 已从导出列表中移除（已弃用）
 # 如仍需使用，请直接导入: from flaxkv2.core.leveldb_dict import LevelDBDict 

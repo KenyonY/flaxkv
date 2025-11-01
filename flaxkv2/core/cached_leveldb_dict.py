@@ -11,7 +11,7 @@ import plyvel
 
 from flaxkv2.serialization import encoder, decoder
 from flaxkv2.serialization.value_meta import ValueWithMeta
-from flaxkv2.core.nested_dict import NestedDBDict
+from flaxkv2.core.nested_structures import NestedDBDict, NestedDBList
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.ttl_cleanup import TTLCleanup
 from flaxkv2.utils.rwlock import RWLock
@@ -330,8 +330,9 @@ class CachedLevelDBDict:
                 if cached is not None:
                     return cached
 
-            # 2. 如果启用了自动嵌套，检查是否是嵌套字典
+            # 2. 如果启用了自动嵌套，检查是否是嵌套字典或嵌套列表
             if self._auto_nested:
+                # 检查是否是嵌套字典
                 marker_key = f'__nested__:{key}'
                 marker_bytes = self._encode_key(marker_key)
                 marker_value = self._db.get(marker_bytes)
@@ -348,6 +349,24 @@ class CachedLevelDBDict:
                         if self._cache_enabled:
                             self._cache.put(key, nested, expire_time)
                         return nested
+
+                # 检查是否是嵌套列表
+                list_marker_key = f'__list__:{key}'
+                list_marker_bytes = self._encode_key(list_marker_key)
+                list_marker_value = self._db.get(list_marker_bytes)
+
+                if list_marker_value is not None:
+                    # 解码marker并检查TTL
+                    _, expire_time, is_expired = self._decode_value(list_marker_value)
+                    if is_expired:
+                        # 嵌套列表已过期：删除所有相关键（需要write_lock）
+                        pass  # 稍后在write_lock中处理
+                    else:
+                        # 是嵌套列表且未过期，创建NestedDBList并缓存
+                        nested_list = self.nested_list(key)
+                        if self._cache_enabled:
+                            self._cache.put(key, nested_list, expire_time)
+                        return nested_list
 
             # 3. 普通值：读取并检查TTL
             key_bytes = self._encode_key(key)
@@ -388,7 +407,7 @@ class CachedLevelDBDict:
             value: 值
             ttl: TTL秒数（None表示无TTL）
         """
-        from flaxkv2.core.nested_dict import NestedDBDict
+        from flaxkv2.core.nested_structures import NestedDBDict
 
         # 特殊键：直接处理（无缓存、无TTL）
         if isinstance(key, str) and key.startswith('__nested__:'):
@@ -401,6 +420,10 @@ class CachedLevelDBDict:
         # 如果值是 NestedDBDict，转换为普通字典
         if isinstance(value, NestedDBDict):
             value = value.to_dict()
+
+        # 如果值是 NestedDBList，转换为普通列表
+        if isinstance(value, NestedDBList):
+            value = value.to_list()
 
         # 计算过期时间
         expire_time = None
@@ -417,6 +440,15 @@ class CachedLevelDBDict:
             with self._db_lock.write_lock():
                 self._db.put(marker_bytes, marker_value)
 
+            # 清除可能存在的列表标记
+            try:
+                list_marker_key = f'__list__:{key}'
+                list_marker_bytes = self._encode_key(list_marker_key)
+                with self._db_lock.write_lock():
+                    self._db.delete(list_marker_bytes)
+            except:
+                pass
+
             # 2. 创建 nested，递归写入
             nested = self.nested(key)
             nested.clear()
@@ -428,18 +460,56 @@ class CachedLevelDBDict:
                 self._cache.put(key, nested, expire_time)
             return
 
-        # 非字典或未启用自动嵌套：取消标记（如果有）
+        # 如果启用了自动嵌套且值是列表
+        if self._auto_nested and isinstance(value, list):
+            # 1. 标记为嵌套列表（带TTL）
+            list_marker_key = f'__list__:{key}'
+            list_marker_bytes = self._encode_key(list_marker_key)
+            list_marker_value = self._encode_value(True, ttl_seconds=ttl)
+            with self._db_lock.write_lock():
+                self._db.put(list_marker_bytes, list_marker_value)
+
+            # 清除可能存在的字典标记
+            try:
+                marker_key = f'__nested__:{key}'
+                marker_bytes = self._encode_key(marker_key)
+                with self._db_lock.write_lock():
+                    self._db.delete(marker_bytes)
+            except:
+                pass
+
+            # 2. 创建 nested_list，递归写入
+            nested_list = self.nested_list(key)
+            nested_list.clear()
+            for item in value:
+                nested_list.append(item)  # 递归
+
+            # 3. 更新缓存（缓存NestedDBList实例）
+            if self._cache_enabled:
+                self._cache.put(key, nested_list, expire_time)
+            return
+
+        # 非字典非列表或未启用自动嵌套：取消标记（如果有）
         if self._auto_nested:
             try:
                 marker_key = f'__nested__:{key}'
                 marker_bytes = self._encode_key(marker_key)
                 with self._db_lock.write_lock():
                     self._db.delete(marker_bytes)
-                # 删除可能存在的嵌套字典缓存
-                if self._cache_enabled:
-                    self._cache.delete(key)
             except:
                 pass
+
+            try:
+                list_marker_key = f'__list__:{key}'
+                list_marker_bytes = self._encode_key(list_marker_key)
+                with self._db_lock.write_lock():
+                    self._db.delete(list_marker_bytes)
+            except:
+                pass
+
+            # 删除可能存在的嵌套对象缓存
+            if self._cache_enabled:
+                self._cache.delete(key)
 
         # 普通存储（带TTL）
         key_bytes = self._encode_key(key)
@@ -461,8 +531,9 @@ class CachedLevelDBDict:
                 self._db.delete(key_bytes)
             return
 
-        # 如果启用了自动嵌套，检查是否是嵌套字典
+        # 如果启用了自动嵌套，检查是否是嵌套字典或嵌套列表
         if self._auto_nested:
+            # 检查是否是嵌套字典
             marker_key = f'__nested__:{key}'
             marker_bytes = self._encode_key(marker_key)
 
@@ -476,6 +547,26 @@ class CachedLevelDBDict:
                 # 删除标记（TTL已内嵌在marker中，无需单独删除）
                 with self._db_lock.write_lock():
                     self._db.delete(marker_bytes)
+
+                # 删除缓存
+                if self._cache_enabled:
+                    self._cache.delete(key)
+                return
+
+            # 检查是否是嵌套列表
+            list_marker_key = f'__list__:{key}'
+            list_marker_bytes = self._encode_key(list_marker_key)
+
+            with self._db_lock.write_lock():
+                list_marker_value = self._db.get(list_marker_bytes)
+
+            if list_marker_value is not None:
+                # 是嵌套列表，递归删除所有元素
+                nested_list = self.nested_list(key)
+                nested_list.clear()
+                # 删除标记（TTL已内嵌在marker中，无需单独删除）
+                with self._db_lock.write_lock():
+                    self._db.delete(list_marker_bytes)
 
                 # 删除缓存
                 if self._cache_enabled:
@@ -537,8 +628,10 @@ class CachedLevelDBDict:
 
         内部键包括：
         1. __nested__: 前缀的标记键（已编码，如 b's__nested__:config'）
-        2. __ttl_info__: 前缀的 TTL 信息键（已编码，如 b's__ttl_info__:key'）
+        2. __list__: 前缀的标记键（已编码，如 b's__list__:items'）
         3. 嵌套存储的子键（通过 prefixed_db 创建，没有类型标识前缀，如 b'config:database:host'）
+
+        注意：TTL 信息已经通过 ValueWithMeta 直接编码到 value 字节流中，不再使用单独的键存储
 
         Returns:
             True: 应该跳过（内部键或嵌套存储的子键）
@@ -550,7 +643,7 @@ class CachedLevelDBDict:
             # 检查是否是内部标记键
             if isinstance(decoded_key, str) and (
                 decoded_key.startswith('__nested__:') or
-                decoded_key.startswith('__ttl_info__:')
+                decoded_key.startswith('__list__:')
             ):
                 return True
             # 正常的用户键
@@ -585,10 +678,26 @@ class CachedLevelDBDict:
                 try:
                     key = self._decode_key(key_bytes)
 
-                    # 检查是否是嵌套标记键
+                    # 检查是否是嵌套字典标记键
                     if isinstance(key, str) and key.startswith('__nested__:'):
                         # 提取实际的键名（去掉 '__nested__:' 前缀）
                         actual_key = key[len('__nested__:'):]
+                        # 只添加顶层嵌套键（不包含进一步的 ':'）
+                        if ':' not in actual_key:
+                            # 检查TTL是否过期（从marker的value中提取）
+                            try:
+                                _, _, is_expired = self._decode_value(value_bytes)
+                                if not is_expired:
+                                    keys.append(actual_key)
+                            except:
+                                # 解码失败，保守处理：添加键
+                                keys.append(actual_key)
+                        continue
+
+                    # 检查是否是嵌套列表标记键
+                    if isinstance(key, str) and key.startswith('__list__:'):
+                        # 提取实际的键名（去掉 '__list__:' 前缀）
+                        actual_key = key[len('__list__:'):]
                         # 只添加顶层嵌套键（不包含进一步的 ':'）
                         if ':' not in actual_key:
                             # 检查TTL是否过期（从marker的value中提取）
@@ -999,3 +1108,57 @@ class CachedLevelDBDict:
 
         # 返回 NestedDBDict 对象，传入 root_db 以支持递归嵌套
         return NestedDBDict(prefixed_db, prefix_with_colon, parent_db=None, root_db=self)
+
+    def nested_list(self, prefix: str) -> NestedDBList:
+        """
+        创建一个基于前缀的嵌套列表视图
+
+        这是解决嵌套列表频繁序列化问题的推荐方案。
+        使用 NestedDBList 可以让每个元素独立存储和访问，避免整个列表的序列化/反序列化。
+
+        性能优势：
+        - 修改单个元素只需序列化该元素的值
+        - 读取单个元素只需反序列化该元素的值
+        - 利用 LevelDB 的前缀查询能力高效迭代
+
+        使用示例：
+            # 创建嵌套列表
+            items = db.nested_list('items')
+
+            # 添加元素（每个元素独立存储）
+            items.append('item1')
+            items.append('item2')
+            items.append('item3')
+
+            # 高效修改（只序列化该元素的值）
+            items[1] = 'modified_item2'
+
+            # 高效读取（只反序列化该元素的值）
+            print(items[1])
+
+            # 迭代所有元素
+            for item in items:
+                print(item)
+
+        Args:
+            prefix: 前缀字符串，建议使用冒号分隔（如 'items'）
+
+        Returns:
+            NestedDBList: 嵌套列表对象
+
+        注意：
+            - 前缀会自动添加冒号分隔符，实际存储的键格式为 'prefix:index'
+            - NestedDBList 支持常用的列表接口（append, extend, pop, insert 等）
+            - 数据直接写入 LevelDB，不使用缓冲机制
+        """
+        # 确保数据库已打开
+        if self._db is None:
+            raise RuntimeError("Database is not open")
+
+        # 创建带前缀的数据库视图
+        prefix_with_colon = f"{prefix}:"
+        prefix_bytes = prefix_with_colon.encode('utf-8')
+        prefixed_db = self._db.prefixed_db(prefix_bytes)
+
+        # 返回 NestedDBList 对象，传入 root_db 以支持递归嵌套
+        return NestedDBList(prefixed_db, prefix_with_colon, parent_db=None, root_db=self)

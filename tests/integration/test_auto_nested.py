@@ -11,7 +11,7 @@ import pytest
 import tempfile
 import shutil
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
-from flaxkv2.core.nested_dict import NestedDBDict
+from flaxkv2.core.nested_structures import NestedDBDict
 
 
 class TestAutoNested:

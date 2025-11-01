@@ -14,7 +14,7 @@ import shutil
 import json
 from collections.abc import Mapping, MutableMapping
 from flaxkv2.core.raw_leveldb_dict import RawLevelDBDict
-from flaxkv2.core.nested_dict import NestedDBDict
+from flaxkv2.core.nested_structures import NestedDBDict
 
 
 class TestNestedDBDictImprovements:
