@@ -53,7 +53,7 @@ def test_server_side_ttl():
             try:
                 value = client["key1"]
                 print(f"   ❌ 错误: 应该抛出KeyError，但返回了 {value}")
-                return False
+                assert False, f"应该抛出KeyError，但返回了 {value}"
             except KeyError:
                 print("   ✓ 正确抛出KeyError (键已过期)\n")
 
@@ -62,7 +62,7 @@ def test_server_side_ttl():
             try:
                 value = client["key1"]
                 print(f"   ❌ 错误: 键应该已被删除")
-                return False
+                assert False, "键应该已被删除"
             except KeyError:
                 print("   ✓ 键已被服务器删除\n")
 
@@ -83,7 +83,6 @@ def test_server_side_ttl():
             print("=" * 60)
             print("✅ 所有测试通过!")
             print("=" * 60)
-            return True
 
         finally:
             # 停止服务器

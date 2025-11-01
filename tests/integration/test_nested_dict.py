@@ -254,7 +254,9 @@ class TestNestedDBDict(unittest.TestCase):
 
         repr_str = repr(nested)
         self.assertIn('NestedDBDict', repr_str)
-        self.assertIn('test:', repr_str)
+        # 改进后的repr显示内容而非前缀
+        self.assertIn("'a'", repr_str)
+        self.assertIn("'b'", repr_str)
 
         str_str = str(nested)
         self.assertIn('NestedDBDict', str_str)

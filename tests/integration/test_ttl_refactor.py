@@ -34,14 +34,13 @@ def test_raw_leveldb_set_ttl():
         try:
             _ = db["key1"]
             print("  ❌ 错误: 键应该过期但还能读取")
-            return False
+            assert False, "键应该过期但还能读取"
         except KeyError:
             print("  ✓ 键正确过期")
 
         db.close()
 
     print("✓ 测试1通过\n")
-    return True
 
 
 def test_raw_leveldb_cleanup_expired():
@@ -71,7 +70,7 @@ def test_raw_leveldb_cleanup_expired():
         try:
             _ = db["key1"]
             print("  ❌ 错误: key1应该过期")
-            return False
+            assert False, "key1应该过期"
         except KeyError:
             print("  ✓ key1正确过期")
 
@@ -83,7 +82,6 @@ def test_raw_leveldb_cleanup_expired():
         db.close()
 
     print("✓ 测试2通过\n")
-    return True
 
 
 def test_raw_leveldb_delete_removes_ttl():
@@ -105,14 +103,13 @@ def test_raw_leveldb_delete_removes_ttl():
         ttl = db.get_ttl("key1")
         if ttl is not None:
             print(f"  ❌ 错误: TTL应该被移除，但还是{ttl}")
-            return False
+            assert False, f"TTL应该被移除，但还是{ttl}"
 
         print("  ✓ TTL也被移除")
 
         db.close()
 
     print("✓ 测试3通过\n")
-    return True
 
 
 def test_keys_filtering():
@@ -139,14 +136,13 @@ def test_keys_filtering():
         for key in keys:
             if isinstance(key, str) and key.startswith('__ttl_info__:'):
                 print(f"  ❌ 错误: keys()返回了内部键 {key}")
-                return False
+                assert False, f"keys()返回了内部键 {key}"
 
         print("  ✓ keys()正确过滤了内部键")
 
         db.close()
 
     print("✓ 测试4通过\n")
-    return True
 
 
 def main():
