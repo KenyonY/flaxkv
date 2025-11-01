@@ -20,6 +20,8 @@ classifiers = [
 requires-python = ">=3.8"
 
 dependencies = [
+    "lz4",
+    "cryptography",
     "mmh3",
     "loguru>=0.7.0",
     "orjson>=3.9",
