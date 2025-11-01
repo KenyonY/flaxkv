@@ -7,7 +7,7 @@ import time
 import tempfile
 import shutil
 import numpy as np
-from flaxkv2 import LevelDBDict
+from flaxkv2 import RawLevelDBDict
 
 
 def benchmark_traditional_large_dict():
@@ -18,7 +18,7 @@ def benchmark_traditional_large_dict():
 
     tmpdir = tempfile.mkdtemp()
     try:
-        db = LevelDBDict('test_trad', path=tmpdir, rebuild=True)
+        db = RawLevelDBDict('test_trad', tmpdir, rebuild=True)
 
         # 创建一个包含1000个字段的大字典
         print("初始化：创建包含1000个字段的字典...")
@@ -60,7 +60,7 @@ def benchmark_nested_large_dict():
 
     tmpdir = tempfile.mkdtemp()
     try:
-        db = LevelDBDict('test_nested', path=tmpdir, rebuild=True)
+        db = RawLevelDBDict('test_nested', tmpdir, rebuild=True)
 
         # 使用 nested() 创建嵌套字典
         print("初始化：创建1000个独立字段...")
@@ -100,7 +100,7 @@ def benchmark_mixed_operations():
     # 传统方式
     tmpdir1 = tempfile.mkdtemp()
     try:
-        db1 = LevelDBDict('test_mixed_trad', path=tmpdir1, rebuild=True)
+        db1 = RawLevelDBDict('test_mixed_trad', tmpdir1, rebuild=True)
         large_dict = {f'field_{i}': i * 100 for i in range(500)}
         db1['data'] = large_dict
         db1.write_immediately(block=True)
@@ -128,7 +128,7 @@ def benchmark_mixed_operations():
     # NestedDBDict 方式
     tmpdir2 = tempfile.mkdtemp()
     try:
-        db2 = LevelDBDict('test_mixed_nested', path=tmpdir2, rebuild=True)
+        db2 = RawLevelDBDict('test_mixed_nested', tmpdir2, rebuild=True)
         nested = db2.nested('data')
         for i in range(500):
             nested[f'field_{i}'] = i * 100

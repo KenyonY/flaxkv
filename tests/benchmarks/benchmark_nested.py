@@ -6,7 +6,7 @@
 import time
 import tempfile
 import shutil
-from flaxkv2 import LevelDBDict
+from flaxkv2 import RawLevelDBDict
 
 
 def benchmark_traditional_approach():
@@ -17,7 +17,7 @@ def benchmark_traditional_approach():
 
     tmpdir = tempfile.mkdtemp()
     try:
-        db = LevelDBDict('test_traditional', path=tmpdir, rebuild=True)
+        db = RawLevelDBDict('test_traditional', tmpdir, rebuild=True)
 
         # 初始化一个大字典
         print("初始化大字典 (100个字段)...")
@@ -63,7 +63,7 @@ def benchmark_nested_approach():
 
     tmpdir = tempfile.mkdtemp()
     try:
-        db = LevelDBDict('test_nested', path=tmpdir, rebuild=True)
+        db = RawLevelDBDict('test_nested', tmpdir, rebuild=True)
 
         # 使用 nested() 创建嵌套字典
         print("初始化嵌套字典 (100个字段)...")
@@ -106,7 +106,7 @@ def benchmark_nested_batch_read():
 
     tmpdir = tempfile.mkdtemp()
     try:
-        db = LevelDBDict('test_read', path=tmpdir, rebuild=True)
+        db = RawLevelDBDict('test_read', tmpdir, rebuild=True)
 
         # 初始化100个字段
         nested = db.nested('data')
