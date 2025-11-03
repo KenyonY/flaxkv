@@ -1,6 +1,10 @@
 # FlaxKV2 项目 TODO
 
 本文档记录FlaxKV2项目的已完成工作和待办事项。
+todo: 
+1. raw模式不支持ttl,这个点需要认真思考
+2. encoder.py中的encode函数优化：1 需要使用线程锁吗 2 
+3. 目前带缓存的cachedleveldbdcit 相比flaxkv1在写入时的性能差了两个数量级，排查出原因
 
 **最后更新**: 2025-10-31
 
