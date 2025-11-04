@@ -58,6 +58,7 @@ class FlaxKVServer:
     CMD_CLEANUP_EXPIRED = b'CLEANUP_EXPIRED'
     CMD_PING = b'PING'
     CMD_LEN = b'LEN'
+    CMD_BATCH_WRITE = b'BATCH_WRITE'  # 新增：批量写入命令（支持写缓冲）
     # 注意：SET_TTL 和 GET_TTL 已移除，客户端直接使用 SET/GET 操作 TTL 信息键
     
     # 响应状态
@@ -375,6 +376,35 @@ class FlaxKVServer:
                 except Exception as e:
                     return [self.STATUS_ERROR, str(e).encode('utf-8')]
             
+            elif command == self.CMD_BATCH_WRITE:
+                # 批量写入命令（支持写缓冲）
+                # request格式: [CMD_BATCH_WRITE, db_name, writes_dict, deletes_list]
+                # writes_dict: {key_bytes: value_bytes}
+                # deletes_list: [key_bytes1, key_bytes2, ...]
+                try:
+                    writes_dict = request[2]  # {key_bytes: value_bytes}
+                    deletes_list = request[3]  # [key_bytes1, key_bytes2, ...]
+
+                    # 使用 write_batch 批量操作
+                    batch = db._db.write_batch()
+
+                    # 批量写入
+                    for key_bytes, value_bytes in writes_dict.items():
+                        batch.put(key_bytes, value_bytes)
+
+                    # 批量删除
+                    for key_bytes in deletes_list:
+                        batch.delete(key_bytes)
+
+                    # 提交批量操作
+                    batch.write()
+
+                    logger.debug(f"Batch write completed: {len(writes_dict)} writes, {len(deletes_list)} deletes")
+                    return [self.STATUS_OK, None]
+                except Exception as e:
+                    logger.error(f"Batch write error: {e}", exc_info=True)
+                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
+
             elif command == self.CMD_CLEANUP_EXPIRED:
                 try:
                     # 遍历数据库，删除所有过期的键

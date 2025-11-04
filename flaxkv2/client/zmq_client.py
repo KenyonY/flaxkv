@@ -10,7 +10,7 @@ FlaxKV2 ZeroMQ 客户端
 
 import time
 import threading
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Set
 import msgpack
 import zmq
 
@@ -18,6 +18,7 @@ from flaxkv2.serialization import encoder, decoder
 from flaxkv2.serialization.value_meta import ValueWithMeta
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.simple_lru_cache import SimpleLRUCache
+from flaxkv2.utils.write_buffer import WriteBuffer
 from flaxkv2.utils.key_manager import get_keypair_from_password
 
 # 尝试导入LZ4压缩
@@ -53,6 +54,7 @@ class RemoteDBDict:
     CMD_CLEANUP_EXPIRED = b'CLEANUP_EXPIRED'
     CMD_PING = b'PING'
     CMD_LEN = b'LEN'
+    CMD_BATCH_WRITE = b'BATCH_WRITE'  # 新增：批量写入命令
     # 注意：SET_TTL 和 GET_TTL 不再作为独立命令，客户端直接使用 SET/GET 操作 TTL 信息键
     
     # 响应状态
@@ -74,6 +76,10 @@ class RemoteDBDict:
         password: Optional[str] = None,  # 密码（自动管理密钥）
         derive_from_password: bool = True,  # 从密码派生密钥
         enable_compression: bool = False,  # 启用LZ4压缩
+        # 写缓冲参数（新增）
+        enable_write_buffer: bool = False,  # 默认关闭（数据安全优先）
+        write_buffer_size: int = 100,  # 缓冲区大小（条目数）
+        write_buffer_flush_interval: int = 60,  # 刷新间隔（秒）
     ):
         """
         初始化远程数据库客户端
@@ -92,6 +98,14 @@ class RemoteDBDict:
             password: 密码（用于密钥管理），与server_public_key二选一
             derive_from_password: True=从密码直接派生密钥(推荐)，False=使用文件存储
             enable_compression: 启用LZ4压缩（默认False）
+
+            enable_write_buffer: 是否启用写缓冲（默认False）
+                启用后采用Write-back策略，延迟写入以提升性能
+                警告：启用后可能存在数据丢失风险（网络中断或进程崩溃时）
+            write_buffer_size: 写缓冲区大小（条目数），默认100
+                达到此值时自动刷新到远程服务器
+            write_buffer_flush_interval: 写缓冲刷新间隔（秒），默认60秒
+                定时刷新未达到阈值的数据
         """
         self.name = db_name
         self.db_name = db_name
@@ -152,6 +166,21 @@ class RemoteDBDict:
             self._cache = None
             logger.debug("读缓存已禁用")
 
+        # 初始化写缓冲（新增）
+        self._write_buffer_enabled = enable_write_buffer
+        if self._write_buffer_enabled:
+            self._write_buffer = WriteBuffer(
+                max_size=write_buffer_size,
+                flush_interval=write_buffer_flush_interval,
+                flush_callback=self._flush_write_buffer_callback,
+                auto_flush=True
+            )
+            logger.debug(f"写缓冲已启用: size={write_buffer_size}, interval={write_buffer_flush_interval}s")
+            logger.warning("写缓冲模式：网络中断或进程崩溃可能导致数据丢失！")
+        else:
+            self._write_buffer = None
+            logger.debug("写缓冲已禁用（默认安全模式）")
+
         # 连接到服务器
         self._connect_socket()
         self._connect_db()
@@ -159,6 +188,7 @@ class RemoteDBDict:
         logger.info(f"RemoteDBDict connected to {host}:{port}, db={db_name}")
         logger.info(f"  Encryption: {'Enabled' if enable_encryption else 'Disabled'}")
         logger.info(f"  Compression: {'Enabled' if enable_compression else 'Disabled'}")
+        logger.info(f"  Write Buffer: {'Enabled' if enable_write_buffer else 'Disabled'}")
     
     def _connect_socket(self):
         """创建并连接 socket"""
@@ -319,14 +349,25 @@ class RemoteDBDict:
         return "__ttl_info__:" + key_str
 
     def __getitem__(self, key: Any) -> Any:
-        """获取键值（支持缓存）"""
-        # 检查缓存（SimpleLRUCache会自动检查TTL）
+        """获取键值（支持读缓存和写缓冲）"""
+        # 1. 优先检查写缓冲区（最新数据）
+        if self._write_buffer_enabled:
+            buffered = self._write_buffer.get(key)
+            if buffered is WriteBuffer._DELETED:
+                # 键已在缓冲区中标记为删除
+                raise KeyError(key)
+            elif buffered is not None:
+                # 键在缓冲区中，返回缓冲的值
+                value, ttl = buffered
+                return value
+
+        # 2. 检查读缓存（SimpleLRUCache会自动检查TTL）
         if self._cache_enabled:
             cached = self._cache.get(key)
             if cached is not None:
                 return cached
 
-        # 从服务器读取
+        # 3. 从服务器读取
         key_bytes = encoder.encode_key(key)
         request = [self.CMD_GET, self.db_name.encode('utf-8'), key_bytes]
         status, result = self._send_request(request)
@@ -357,10 +398,29 @@ class RemoteDBDict:
         return value
     
     def __setitem__(self, key: Any, value: Any):
-        """设置键值（无TTL，更新缓存）"""
-        # 序列化 key 和 value（使用ValueWithMeta，不带TTL）
+        """设置键值（无TTL，支持写缓冲）"""
+        self.set(key, value, ttl=None)
+
+    def set(self, key: Any, value: Any, ttl: Optional[int] = None):
+        """
+        设置键值（支持指定TTL，支持写缓冲）
+
+        Args:
+            key: 键
+            value: 值
+            ttl: TTL秒数（None表示无TTL）
+        """
+        # 写缓冲模式：写入缓冲区
+        if self._write_buffer_enabled:
+            self._write_buffer.put(key, value, ttl=ttl)
+            # 注意：不更新读缓存，因为读取时会优先检查缓冲区
+            # 这避免了双重缓存的开销，参考 FlaxKV 的设计
+            return
+
+        # 直接写入模式（原有逻辑）
+        # 序列化 key 和 value（使用ValueWithMeta）
         key_bytes = encoder.encode_key(key)
-        value_bytes = ValueWithMeta.encode_value(value, ttl_seconds=None)
+        value_bytes = ValueWithMeta.encode_value(value, ttl_seconds=ttl)
 
         request = [self.CMD_SET, self.db_name.encode('utf-8'), key_bytes, value_bytes]
         status, result = self._send_request(request)
@@ -368,14 +428,26 @@ class RemoteDBDict:
         if status == self.STATUS_ERROR:
             raise RuntimeError(f"Server error: {result.decode('utf-8')}")
 
-        # 更新缓存（write-through，无TTL）
+        # 更新缓存（write-through）
         if self._cache_enabled:
             # 不缓存内部键（嵌套标记键等）
             if not (isinstance(key, str) and key.startswith('__nested__:')):
-                self._cache.put(key, value, expire_time=None)
+                expire_time = None
+                if ttl is not None:
+                    expire_time = time.time() + ttl
+                self._cache.put(key, value, expire_time)
     
     def __delitem__(self, key: Any):
-        """删除键（同时删除缓存）"""
+        """删除键（同时删除缓存，支持写缓冲）"""
+        # 写缓冲模式：标记为删除
+        if self._write_buffer_enabled:
+            self._write_buffer.delete(key)
+            # 同时删除读缓存
+            if self._cache_enabled:
+                self._cache.delete(key)
+            return
+
+        # 直接删除模式（原有逻辑）
         # 序列化 key
         key_bytes = encoder.encode_key(key)
 
@@ -580,17 +652,69 @@ class RemoteDBDict:
 
         return count
     
+    def _flush_write_buffer_callback(self, writes: Dict, deletes: Set):
+        """
+        写缓冲区刷新回调函数
+
+        Args:
+            writes: {key: (value, ttl)} 待写入的数据
+            deletes: {key1, key2, ...} 待删除的键
+        """
+        if len(writes) == 0 and len(deletes) == 0:
+            return
+
+        # 序列化所有数据
+        serialized_writes = {}
+        for key, (value, ttl) in writes.items():
+            key_bytes = encoder.encode_key(key)
+            value_bytes = ValueWithMeta.encode_value(value, ttl_seconds=ttl)
+            serialized_writes[key_bytes] = value_bytes
+
+        serialized_deletes = [encoder.encode_key(key) for key in deletes]
+
+        # 发送批量写入请求
+        request = [
+            self.CMD_BATCH_WRITE,
+            self.db_name.encode('utf-8'),
+            serialized_writes,  # {key_bytes: value_bytes}
+            serialized_deletes  # [key_bytes1, key_bytes2, ...]
+        ]
+        status, result = self._send_request(request)
+
+        if status == self.STATUS_ERROR:
+            error_msg = result.decode('utf-8') if isinstance(result, bytes) else str(result)
+            logger.error(f"Batch write failed: {error_msg}")
+            raise RuntimeError(f"Server error during batch write: {error_msg}")
+
+        logger.debug(f"Write buffer flushed: {len(writes)} writes, {len(deletes)} deletes")
+
+    def flush(self):
+        """
+        手动刷新写缓冲区（如果启用）
+
+        如果未启用写缓冲，此方法不执行任何操作
+        """
+        if self._write_buffer_enabled and self._write_buffer is not None:
+            self._write_buffer.flush()
+            logger.debug(f"Manual flush triggered for {self.db_name}")
+
     def to_dict(self) -> Dict[Any, Any]:
         """转换为普通字典"""
         result = {}
         for k, v in self.items():
             result[k] = v
         return result
-    
+
     def close(self):
-        """关闭连接（清理缓存）"""
+        """关闭连接（刷新写缓冲并清理缓存）"""
         if self._closed:
             return
+
+        # 停止写缓冲（会自动刷新剩余数据）
+        if self._write_buffer_enabled and self._write_buffer is not None:
+            logger.debug(f"Stopping write buffer for {self.db_name}...")
+            self._write_buffer.stop()
+            self._write_buffer = None
 
         try:
             # 发送断开连接命令
