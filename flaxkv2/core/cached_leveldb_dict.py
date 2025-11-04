@@ -5,7 +5,7 @@ FlaxKV2 带缓存的LevelDB后端实现
 
 import os
 import threading
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Set
 
 import plyvel
 
@@ -16,6 +16,7 @@ from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.ttl_cleanup import TTLCleanup
 from flaxkv2.utils.rwlock import RWLock
 from flaxkv2.utils.simple_lru_cache import SimpleLRUCache
+from flaxkv2.utils.write_buffer import WriteBuffer
 from flaxkv2.instance_manager import db_instance_manager
 from flaxkv2.config import create_leveldb_options
 
@@ -102,12 +103,17 @@ class CachedLevelDBDict:
         enable_ttl_cleanup: bool = True,
         cleanup_interval: int = 60,
         cleanup_batch_size: int = 1000,
+        # 写缓冲参数（新增）
+        enable_write_buffer: bool = False,  # 默认关闭（数据安全优先）
+        write_buffer_size: int = 100,  # 缓冲区大小（条目数）
+        write_buffer_flush_interval: int = 60,  # 刷新间隔（秒）
+        async_flush: bool = False,  # 异步flush（默认False，安全优先）
         # 性能配置参数
         performance_profile: str = 'balanced',
         lru_cache_size: Optional[int] = None,
         bloom_filter_bits: Optional[int] = None,
         block_size: Optional[int] = None,
-        write_buffer_size: Optional[int] = None,
+        write_buffer_size_leveldb: Optional[int] = None,  # 重命名避免冲突
         max_open_files: Optional[int] = None,
         compression: str = 'snappy',
         **kwargs
@@ -129,6 +135,18 @@ class CachedLevelDBDict:
             cleanup_interval: TTL清理间隔（秒），默认60秒
             cleanup_batch_size: 每次清理扫描的键数量，默认1000
 
+            enable_write_buffer: 是否启用写缓冲（默认False）
+                启用后采用Write-back策略，延迟写入以提升性能
+                警告：启用后可能存在数据丢失风险（进程崩溃时）
+            write_buffer_size: 写缓冲区大小（条目数），默认100
+                达到此值时自动刷新到数据库
+            write_buffer_flush_interval: 写缓冲刷新间隔（秒），默认60秒
+                定时刷新未达到阈值的数据
+            async_flush: 是否使用异步flush（默认False）
+                - False（默认）：同步flush，安全但慢
+                - True：异步flush，极快但风险更大（~19x性能提升）
+                ⚠️ 警告：async_flush=True时进程崩溃丢失的数据更多
+
             performance_profile: 性能配置文件名称，可选值：
                 - 'balanced' (默认): 通用平衡配置
                 - 'read_optimized': 读密集型优化
@@ -139,24 +157,23 @@ class CachedLevelDBDict:
             lru_cache_size: LRU缓存大小（字节），覆盖profile中的值
             bloom_filter_bits: 布隆过滤器位数，覆盖profile中的值
             block_size: 数据块大小（字节），覆盖profile中的值
-            write_buffer_size: 写缓冲大小（字节），覆盖profile中的值
+            write_buffer_size_leveldb: LevelDB写缓冲大小（字节），覆盖profile中的值
             max_open_files: 最大打开文件数，覆盖profile中的值
             compression: 压缩算法 ('snappy', 'zlib', None)
 
         Examples:
-            >>> # 使用默认配置
+            >>> # 使用默认配置（最安全）
             >>> db = CachedLevelDBDict("mydb", "./data")
 
-            >>> # 使用读优化配置
-            >>> db = CachedLevelDBDict("mydb", "./data", performance_profile='read_optimized')
-
-            >>> # 在默认配置基础上自定义缓存大小
-            >>> db = CachedLevelDBDict("mydb", "./data", lru_cache_size=512*1024*1024)
-
-            >>> # 完全自定义（基于balanced）
+            >>> # 启用写缓冲（高性能模式）
             >>> db = CachedLevelDBDict("mydb", "./data",
-            ...                      lru_cache_size=300*1024*1024,
-            ...                      bloom_filter_bits=12)
+            ...                        enable_write_buffer=True,
+            ...                        write_buffer_size=100)
+
+            >>> # 读优化 + 写缓冲
+            >>> db = CachedLevelDBDict("mydb", "./data",
+            ...                        performance_profile='read_optimized',
+            ...                        enable_write_buffer=True)
         """
         # 如果不是新实例（即从缓存返回的实例），跳过初始化
         if not getattr(self, '_is_new_instance', False):
@@ -183,6 +200,27 @@ class CachedLevelDBDict:
             self._cache = None
             logger.debug("读缓存已禁用")
 
+        # 初始化写缓冲（新增）
+        self._write_buffer_enabled = enable_write_buffer
+        self._async_flush = async_flush
+        if self._write_buffer_enabled:
+            self._write_buffer = WriteBuffer(
+                max_size=write_buffer_size,
+                flush_interval=write_buffer_flush_interval,
+                flush_callback=self._flush_write_buffer_callback,
+                auto_flush=True,
+                async_flush=async_flush
+            )
+            mode = "异步" if async_flush else "同步"
+            logger.debug(f"写缓冲已启用: size={write_buffer_size}, interval={write_buffer_flush_interval}s, mode={mode}")
+            if async_flush:
+                logger.warning("⚠️ 异步flush模式：性能极佳但数据安全风险更大！")
+            else:
+                logger.warning("写缓冲模式：进程崩溃可能导致数据丢失！")
+        else:
+            self._write_buffer = None
+            logger.debug("写缓冲已禁用（默认安全模式）")
+
         # 准备数据库目录
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
@@ -194,7 +232,7 @@ class CachedLevelDBDict:
             lru_cache_size=lru_cache_size,
             bloom_filter_bits=bloom_filter_bits,
             block_size=block_size,
-            write_buffer_size=write_buffer_size,
+            write_buffer_size=write_buffer_size_leveldb,
             max_open_files=max_open_files,
         )
 
@@ -311,8 +349,39 @@ class CachedLevelDBDict:
                 value = decoder.decode(value_bytes)
                 return value, None, False
 
+    def _flush_write_buffer_callback(self, writes: Dict, deletes: Set):
+        """
+        写缓冲区刷新回调函数
+
+        Args:
+            writes: {key: (value, ttl)} 待写入的数据
+            deletes: {key1, key2, ...} 待删除的键
+        """
+        if len(writes) == 0 and len(deletes) == 0:
+            return
+
+        with self._db_lock.write_lock():
+            # 使用 write_batch 批量写入
+            batch = self._db.write_batch()
+
+            # 批量写入
+            for key, (value, ttl) in writes.items():
+                key_bytes = self._encode_key(key)
+                value_bytes = self._encode_value(value, ttl_seconds=ttl)
+                batch.put(key_bytes, value_bytes)
+
+            # 批量删除
+            for key in deletes:
+                key_bytes = self._encode_key(key)
+                batch.delete(key_bytes)
+
+            # 提交批量操作
+            batch.write()
+
+        logger.debug(f"Write buffer flushed: {len(writes)} writes, {len(deletes)} deletes")
+
     def __getitem__(self, key):
-        """获取键值（支持缓存）"""
+        """获取键值（支持读缓存和写缓冲）"""
         # 特殊键：直接处理（无缓存、无TTL检查）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
@@ -323,14 +392,25 @@ class CachedLevelDBDict:
             value, _, _ = self._decode_value(value_bytes)
             return value
 
+        # 1. 优先检查写缓冲区（最新数据）
+        if self._write_buffer_enabled:
+            buffered = self._write_buffer.get(key)
+            if buffered is WriteBuffer._DELETED:
+                # 键已在缓冲区中标记为删除
+                raise KeyError(key)
+            elif buffered is not None:
+                # 键在缓冲区中，返回缓冲的值
+                value, ttl = buffered
+                return value
+
         with self._db_lock.read_lock():
-            # 1. 检查缓存（自动检查TTL）
+            # 2. 检查读缓存（自动检查TTL）
             if self._cache_enabled:
                 cached = self._cache.get(key)
                 if cached is not None:
                     return cached
 
-            # 2. 如果启用了自动嵌套，检查是否是嵌套字典或嵌套列表
+            # 3. 如果启用了自动嵌套，检查是否是嵌套字典或嵌套列表
             if self._auto_nested:
                 # 检查是否是嵌套字典
                 marker_key = f'__nested__:{key}'
@@ -368,7 +448,7 @@ class CachedLevelDBDict:
                             self._cache.put(key, nested_list, expire_time)
                         return nested_list
 
-            # 3. 普通值：读取并检查TTL
+            # 4. 普通值：读取并检查TTL
             key_bytes = self._encode_key(key)
             value_bytes = self._db.get(key_bytes)
 
@@ -400,7 +480,7 @@ class CachedLevelDBDict:
 
     def set(self, key, value, ttl=None):
         """
-        设置键值（支持指定TTL，写入时更新缓存）
+        设置键值（支持指定TTL，支持写缓冲）
 
         Args:
             key: 键
@@ -431,6 +511,14 @@ class CachedLevelDBDict:
             import time
             expire_time = time.time() + ttl
 
+        # 写缓冲模式：写入缓冲区
+        if self._write_buffer_enabled:
+            self._write_buffer.put(key, value, ttl=ttl)
+            # 注意：不更新读缓存，因为读取时会优先检查缓冲区
+            # 这避免了双重缓存的开销，参考 FlaxKV 的设计
+            return
+
+        # 直接写入模式（原有逻辑）
         # 如果启用了自动嵌套且值是字典
         if self._auto_nested and isinstance(value, dict):
             # 1. 标记为嵌套字典（带TTL）
@@ -523,7 +611,7 @@ class CachedLevelDBDict:
             self._cache.put(key, value, expire_time)
 
     def __delitem__(self, key):
-        """删除键（同时删除缓存）"""
+        """删除键（同时删除缓存，支持写缓冲）"""
         # 特殊键：直接处理（无缓存）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
@@ -531,6 +619,15 @@ class CachedLevelDBDict:
                 self._db.delete(key_bytes)
             return
 
+        # 写缓冲模式：标记为删除
+        if self._write_buffer_enabled:
+            self._write_buffer.delete(key)
+            # 同时删除读缓存
+            if self._cache_enabled:
+                self._cache.delete(key)
+            return
+
+        # 直接删除模式（原有逻辑）
         # 如果启用了自动嵌套，检查是否是嵌套字典或嵌套列表
         if self._auto_nested:
             # 检查是否是嵌套字典
@@ -806,9 +903,15 @@ class CachedLevelDBDict:
         return result
     
     def close(self):
-        """关闭数据库（清理缓存）"""
+        """关闭数据库（刷新写缓冲并清理缓存）"""
         if self._closed:
             return
+
+        # 停止写缓冲（会自动刷新剩余数据）
+        if self._write_buffer_enabled and self._write_buffer is not None:
+            logger.debug(f"Stopping write buffer for {self.name}...")
+            self._write_buffer.stop()
+            self._write_buffer = None
 
         # 停止TTL自动清理线程
         if self._ttl_cleanup is not None:
@@ -843,6 +946,16 @@ class CachedLevelDBDict:
         """上下文管理器退出"""
         self.close()
         return False
+
+    def flush(self):
+        """
+        手动刷新写缓冲区（如果启用）
+
+        如果未启用写缓冲，此方法不执行任何操作
+        """
+        if self._write_buffer_enabled and self._write_buffer is not None:
+            self._write_buffer.flush()
+            logger.debug(f"Manual flush triggered for {self.name}")
 
     def stat(self) -> Dict:
         """
