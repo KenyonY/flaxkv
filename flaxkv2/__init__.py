@@ -33,18 +33,27 @@ class FlaxKV:
     FlaxKV主接口，提供工厂方法创建合适的DB实现
 
     支持两种后端类型：
-    1. LOCAL: 本地LevelDB后端，直接访问本地文件系统（返回 RawLevelDBDict）
+    1. LOCAL: 本地LevelDB后端，直接访问本地文件系统
+       - RawLevelDBDict（默认）: 无缓存，数据安全优先
+       - CachedLevelDBDict（use_cache=True）: 统一缓存，性能优化
     2. REMOTE: 远程ZeroMQ后端，通过网络访问远程FlaxKV服务器（返回 RemoteDBDict）
 
     推荐用法：
-        db = FlaxKV("mydb", "./data")  # 自动创建 RawLevelDBDict
-        db = FlaxKV("mydb", "tcp://host:5555")  # 自动创建 RemoteDBDict
+        # 本地后端（无缓存，最安全）
+        db = FlaxKV("mydb", "./data")
 
-    关于后端选择：
-    - ✅ RawLevelDBDict: 推荐使用，高性能、低内存占用、代码简洁
+        # 本地后端（启用缓存，高性能）
+        db = FlaxKV("mydb", "./data", use_cache=True)
+
+        # 远程后端
+        db = FlaxKV("mydb", "tcp://host:5555")
+
+    关于本地后端选择：
+    - ✅ RawLevelDBDict（默认）: 无缓存，数据安全性最高，性能优秀
+    - ✅ CachedLevelDBDict（use_cache=True）: 统一缓存设计，支持读缓存和写缓冲
+      - 读缓存：显著提升热数据读取性能（~20x）
+      - 写缓冲：批量写入优化，减少I/O开销（1.6-10x）
     - ⚠️ LevelDBDict: 已弃用，将在未来版本移除
-      原因：性能测试显示缓冲和索引机制反而降低了性能
-      如果仍需使用，请直接导入：from flaxkv2 import LevelDBDict (会触发警告)
     """
     
     @staticmethod
@@ -75,13 +84,12 @@ class FlaxKV:
         raw: bool = False,
         default_ttl: Optional[int] = None,
         auto_nested: bool = False,
+        use_cache: bool = False,
         **kwargs
     ):
         """
         创建本地LevelDB后端实例
-        
-        默认返回 RawLevelDBDict，这是经过性能优化的版本。
-        
+
         Args:
             db_name: 数据库名称
             path: 数据库存储路径
@@ -89,21 +97,42 @@ class FlaxKV:
             raw: 是否使用原始模式（不进行序列化）
             default_ttl: 默认TTL，单位为秒
             auto_nested: 是否自动将字典类型转换为嵌套存储
+            use_cache: 是否使用缓存版本（默认False）
+                - False: 使用 RawLevelDBDict（无缓存，最安全）
+                - True: 使用 CachedLevelDBDict（统一缓存，支持读缓存和写缓冲）
             **kwargs: 其他参数传递给底层实现
-            
+                对于 CachedLevelDBDict，可传递：
+                - read_cache_size: 读缓存大小（默认1000）
+                - enable_write_buffer: 是否启用写缓冲（默认False）
+                - write_buffer_size: 写缓冲大小（默认100）
+                - async_flush: 是否异步刷新（默认False）
+                - performance_profile: 性能配置文件（默认'balanced'）
+
         Returns:
-            RawLevelDBDict实例（高性能简化版本）
+            RawLevelDBDict 或 CachedLevelDBDict 实例
         """
-        logger.debug(f"创建本地后端: db_name={db_name}, path={path}")
-        return RawLevelDBDict(
-            name=db_name,
-            path=path,
-            rebuild=rebuild,
-            raw=raw,
-            default_ttl=default_ttl,
-            auto_nested=auto_nested,
-            **kwargs
-        )
+        if use_cache:
+            logger.debug(f"创建本地缓存后端: db_name={db_name}, path={path}")
+            return CachedLevelDBDict(
+                name=db_name,
+                path=path,
+                rebuild=rebuild,
+                raw=raw,
+                default_ttl=default_ttl,
+                auto_nested=auto_nested,
+                **kwargs
+            )
+        else:
+            logger.debug(f"创建本地后端（无缓存）: db_name={db_name}, path={path}")
+            return RawLevelDBDict(
+                name=db_name,
+                path=path,
+                rebuild=rebuild,
+                raw=raw,
+                default_ttl=default_ttl,
+                auto_nested=auto_nested,
+                **kwargs
+            )
     
     @staticmethod
     def _create_remote_backend(
@@ -184,6 +213,7 @@ class FlaxKV:
         raw: bool = False,
         default_ttl: Optional[int] = None,
         root_path: Optional[str] = None,
+        use_cache: bool = False,
         **kwargs
     ):
         """
@@ -204,25 +234,41 @@ class FlaxKV:
             raw: 是否使用原始模式，不进行序列化（仅本地后端）
             default_ttl: 默认TTL，单位为秒。设置后，所有新增的键都会自动应用此TTL
             root_path: 显式传递的根路径，主要用于远程连接时指定服务器端的存储路径（暂不支持）
+            use_cache: 是否使用缓存（仅本地后端，默认False）
+                - False: 使用 RawLevelDBDict（无缓存，数据安全优先）
+                - True: 使用 CachedLevelDBDict（统一缓存，性能优化）
             timeout: 远程连接超时时间（毫秒），默认5000（仅远程后端）
             max_retries: 最大重试次数，默认3（仅远程后端）
             retry_delay: 重试延迟（秒），默认0.1（仅远程后端）
             **kwargs: 其他参数传递给底层实现
-            
+                本地缓存后端 (use_cache=True) 可用参数：
+                - read_cache_size: 读缓存大小（默认1000）
+                - enable_write_buffer: 是否启用写缓冲（默认False）
+                - write_buffer_size: 写缓冲大小（默认100）
+                - async_flush: 是否异步刷新（默认False）
+                - performance_profile: 性能配置文件（默认'balanced'）
+
         Returns:
             根据后端类型返回相应的数据库实例：
-            - 本地后端: RawLevelDBDict
+            - 本地后端（无缓存）: RawLevelDBDict
+            - 本地后端（有缓存）: CachedLevelDBDict
             - 远程后端: RemoteDBDict
-            
+
         Examples:
-            # 本地后端
+            # 本地后端（无缓存，默认）
             db = FlaxKV("mydb", "./data")
-            db = FlaxKV("mydb", "/var/lib/flaxkv", backend='local')
-            
+
+            # 本地后端（启用缓存）
+            db = FlaxKV("mydb", "./data", use_cache=True)
+
+            # 本地后端（缓存 + 写缓冲）
+            db = FlaxKV("mydb", "./data", use_cache=True,
+                       enable_write_buffer=True, write_buffer_size=100)
+
             # 远程后端（推荐方式：显式指定 backend='remote'）
             db = FlaxKV("mydb", "127.0.0.1:5555", backend='remote')
             db = FlaxKV("mydb", "localhost", backend='remote', port=5555)
-            
+
             # 远程后端（使用 tcp:// 前缀自动识别）
             db = FlaxKV("mydb", "tcp://127.0.0.1:5555")
         """
@@ -263,6 +309,7 @@ class FlaxKV:
                 raw=raw,
                 default_ttl=default_ttl,
                 auto_nested=auto_nested,
+                use_cache=use_cache,
                 **kwargs
             )
 

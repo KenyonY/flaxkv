@@ -769,9 +769,14 @@ class CachedLevelDBDict:
         """
         获取所有键列表
 
-        注意：会自动过滤已过期的TTL键
+        注意：
+        - 会自动过滤已过期的TTL键
+        - 包含缓存中的数据（即使还未刷新到数据库）
+        - 排除已删除的键（即使还未刷新到数据库）
         """
-        keys = []
+        keys_set = set()  # 使用集合去重
+
+        # 1. 从数据库读取所有键
         with self._db_lock.read_lock():
             for key_bytes, value_bytes in self._db:
                 # 先尝试解码
@@ -788,10 +793,10 @@ class CachedLevelDBDict:
                             try:
                                 _, _, is_expired = self._decode_value(value_bytes)
                                 if not is_expired:
-                                    keys.append(actual_key)
+                                    keys_set.add(actual_key)
                             except:
                                 # 解码失败，保守处理：添加键
-                                keys.append(actual_key)
+                                keys_set.add(actual_key)
                         continue
 
                     # 检查是否是嵌套列表标记键
@@ -804,20 +809,20 @@ class CachedLevelDBDict:
                             try:
                                 _, _, is_expired = self._decode_value(value_bytes)
                                 if not is_expired:
-                                    keys.append(actual_key)
+                                    keys_set.add(actual_key)
                             except:
                                 # 解码失败，保守处理：添加键
-                                keys.append(actual_key)
+                                keys_set.add(actual_key)
                         continue
 
                     # 正常的用户键 - 检查TTL是否过期
                     try:
                         _, _, is_expired = self._decode_value(value_bytes)
                         if not is_expired:
-                            keys.append(key)
+                            keys_set.add(key)
                     except:
                         # 解码失败，保守处理：添加键
-                        keys.append(key)
+                        keys_set.add(key)
 
                 except (ValueError, UnicodeDecodeError):
                     # 解码失败，可能是嵌套子键（没有类型前缀）
@@ -831,7 +836,28 @@ class CachedLevelDBDict:
                         import logging
                         logging.warning(f"无法解码键 {key_bytes[:20]}...: {e}")
 
-        return keys
+        # 2. 如果启用了缓存，添加缓存中的 dirty keys（还未刷新到数据库的数据）
+        if self._cache_enabled and self._cache is not None:
+            with self._cache._lock:
+                # 遍历缓存中的所有键
+                for key in self._cache._cache.keys():
+                    # 跳过特殊键（内部键）
+                    if isinstance(key, str) and (key.startswith('__nested__:') or key.startswith('__list__:')):
+                        continue
+
+                    # 检查是否是 dirty 数据（还未刷新到数据库）
+                    if key in self._cache._dirty_keys:
+                        entry = self._cache._cache.get(key)
+                        # 检查是否过期
+                        if entry and not entry.is_expired():
+                            keys_set.add(key)
+
+        # 3. 排除已删除的键（还未刷新到数据库的删除操作）
+        if self._cache_enabled and self._cache is not None:
+            with self._cache._lock:
+                keys_set -= self._cache._delete_keys
+
+        return list(keys_set)
 
     def values(self) -> List:
         """获取所有值列表"""
