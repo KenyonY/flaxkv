@@ -514,8 +514,11 @@ class CachedLevelDBDict:
         # 写缓冲模式：写入缓冲区
         if self._write_buffer_enabled:
             self._write_buffer.put(key, value, ttl=ttl)
-            # 注意：不更新读缓存，因为读取时会优先检查缓冲区
-            # 这避免了双重缓存的开销，参考 FlaxKV 的设计
+
+            # ✅ 修复：同步更新读缓存，避免flush后读到过期数据
+            if self._cache_enabled:
+                self._cache.put(key, value, expire_time)
+
             return
 
         # 直接写入模式（原有逻辑）
