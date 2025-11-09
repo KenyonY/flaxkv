@@ -27,20 +27,22 @@ class TestCachedLevelDBDictWriteBuffer:
             shutil.rmtree(self.test_dir)
 
     def test_write_buffer_disabled_by_default(self):
-        """测试写缓冲默认禁用"""
+        """测试写缓冲默认禁用（但读缓存仍启用）"""
         db = CachedLevelDBDict(
             'test_db',
             path=self.test_dir,
-            enable_ttl_cleanup=False
+            enable_ttl_cleanup=False,
+            read_cache_size=0,  # 禁用读缓存
+            enable_write_buffer=False  # 禁用写缓冲
         )
 
-        assert not db._write_buffer_enabled
-        assert db._write_buffer is None
+        # 当读缓存和写缓冲都禁用时，统一缓存应为None
+        assert db._cache is None
 
         db.close()
 
     def test_write_buffer_enabled(self):
-        """测试写缓冲启用"""
+        """测试写缓冲启用（现在使用统一缓存）"""
         db = CachedLevelDBDict(
             'test_db',
             path=self.test_dir,
@@ -49,9 +51,12 @@ class TestCachedLevelDBDictWriteBuffer:
             write_buffer_size=10
         )
 
-        assert db._write_buffer_enabled
-        assert db._write_buffer is not None
-        assert db._write_buffer._max_size == 10
+        # 统一缓存应该被启用
+        assert db._cache is not None
+        # maxsize应该是write_buffer_size和read_cache_size中的较大值
+        assert db._cache._maxsize == 1000  # read_cache_size默认1000，大于write_buffer_size=10
+        # flush_threshold应该是write_buffer_size
+        assert db._cache._flush_threshold == 10
 
         db.close()
 

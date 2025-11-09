@@ -15,8 +15,7 @@ from flaxkv2.core.nested_structures import NestedDBDict, NestedDBList
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.ttl_cleanup import TTLCleanup
 from flaxkv2.utils.rwlock import RWLock
-from flaxkv2.utils.simple_lru_cache import SimpleLRUCache
-from flaxkv2.utils.write_buffer import WriteBuffer
+from flaxkv2.utils.unified_cache import UnifiedCache
 from flaxkv2.instance_manager import db_instance_manager
 from flaxkv2.config import create_leveldb_options
 
@@ -191,35 +190,44 @@ class CachedLevelDBDict:
         self._default_ttl = default_ttl
         self._auto_nested = auto_nested
 
-        # 初始化读缓存
-        self._cache_enabled = read_cache_size > 0
-        if self._cache_enabled:
-            self._cache = SimpleLRUCache(maxsize=read_cache_size)
-            logger.debug(f"读缓存已启用: {read_cache_size} 条目")
-        else:
-            self._cache = None
-            logger.debug("读缓存已禁用")
+        # ========== 统一缓存（替换原来的双缓存设计） ==========
+        # 向后兼容：根据旧参数决定是否启用缓存
+        # - 如果read_cache_size=0且enable_write_buffer=False：禁用缓存
+        # - 否则：启用统一缓存
 
-        # 初始化写缓冲（新增）
-        self._write_buffer_enabled = enable_write_buffer
+        self._cache_enabled = read_cache_size > 0 or enable_write_buffer
+        self._write_buffer_mode = enable_write_buffer  # 是否启用写缓冲模式
         self._async_flush = async_flush
-        if self._write_buffer_enabled:
-            self._write_buffer = WriteBuffer(
-                max_size=write_buffer_size,
-                flush_interval=write_buffer_flush_interval,
-                flush_callback=self._flush_write_buffer_callback,
+
+        if self._cache_enabled:
+            # 统一缓存参数映射
+            cache_size = max(read_cache_size, write_buffer_size) if enable_write_buffer else read_cache_size
+            flush_threshold = write_buffer_size if enable_write_buffer else max(10, read_cache_size // 10)
+            flush_interval = write_buffer_flush_interval if enable_write_buffer else 60
+
+            self._cache = UnifiedCache(
+                maxsize=cache_size,
+                flush_threshold=flush_threshold,
+                flush_interval=flush_interval,
+                flush_callback=self._flush_unified_cache_callback,
                 auto_flush=True,
                 async_flush=async_flush
             )
+
+            # 日志
             mode = "异步" if async_flush else "同步"
-            logger.debug(f"写缓冲已启用: size={write_buffer_size}, interval={write_buffer_flush_interval}s, mode={mode}")
-            if async_flush:
-                logger.warning("⚠️ 异步flush模式：性能极佳但数据安全风险更大！")
+            if enable_write_buffer:
+                logger.debug(f"统一缓存已启用: size={cache_size}, flush_threshold={flush_threshold}, mode={mode}")
+                if async_flush:
+                    logger.warning("⚠️ 异步flush模式：性能极佳但数据安全风险更大！")
+                else:
+                    logger.warning("写缓冲模式：进程崩溃可能导致数据丢失！")
             else:
-                logger.warning("写缓冲模式：进程崩溃可能导致数据丢失！")
+                logger.debug(f"统一缓存已启用（只读优化）: size={cache_size}")
+
         else:
-            self._write_buffer = None
-            logger.debug("写缓冲已禁用（默认安全模式）")
+            self._cache = None
+            logger.debug("缓存已禁用（所有操作直接访问数据库）")
 
         # 准备数据库目录
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -349,9 +357,9 @@ class CachedLevelDBDict:
                 value = decoder.decode(value_bytes)
                 return value, None, False
 
-    def _flush_write_buffer_callback(self, writes: Dict, deletes: Set):
+    def _flush_unified_cache_callback(self, writes: Dict, deletes: Set):
         """
-        写缓冲区刷新回调函数
+        统一缓存刷新回调函数
 
         Args:
             writes: {key: (value, ttl)} 待写入的数据
@@ -381,7 +389,7 @@ class CachedLevelDBDict:
         logger.debug(f"Write buffer flushed: {len(writes)} writes, {len(deletes)} deletes")
 
     def __getitem__(self, key):
-        """获取键值（支持读缓存和写缓冲）"""
+        """获取键值（支持统一缓存）"""
         # 特殊键：直接处理（无缓存、无TTL检查）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
@@ -392,23 +400,13 @@ class CachedLevelDBDict:
             value, _, _ = self._decode_value(value_bytes)
             return value
 
-        # 1. 优先检查写缓冲区（最新数据）
-        if self._write_buffer_enabled:
-            buffered = self._write_buffer.get(key)
-            if buffered is WriteBuffer._DELETED:
-                # 键已在缓冲区中标记为删除
-                raise KeyError(key)
-            elif buffered is not None:
-                # 键在缓冲区中，返回缓冲的值
-                value, ttl = buffered
-                return value
+        # 1. 检查统一缓存（包含写入和读取数据）
+        if self._cache_enabled:
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
 
         with self._db_lock.read_lock():
-            # 2. 检查读缓存（自动检查TTL）
-            if self._cache_enabled:
-                cached = self._cache.get(key)
-                if cached is not None:
-                    return cached
 
             # 3. 如果启用了自动嵌套，检查是否是嵌套字典或嵌套列表
             if self._auto_nested:
@@ -424,10 +422,15 @@ class CachedLevelDBDict:
                         # 嵌套字典已过期：删除所有相关键（需要write_lock）
                         pass  # 稍后在write_lock中处理
                     else:
-                        # 是嵌套字典且未过期，创建NestedDBDict并缓存
+                        # 是嵌套字典且未过期，创建NestedDBDict并缓存（dirty=False，从存储加载）
                         nested = self.nested(key)
                         if self._cache_enabled:
-                            self._cache.put(key, nested, expire_time)
+                            # 计算TTL
+                            ttl = None
+                            if expire_time is not None:
+                                import time
+                                ttl = int(max(0, expire_time - time.time()))
+                            self._cache.put(key, nested, ttl=ttl, dirty=False)
                         return nested
 
                 # 检查是否是嵌套列表
@@ -442,10 +445,15 @@ class CachedLevelDBDict:
                         # 嵌套列表已过期：删除所有相关键（需要write_lock）
                         pass  # 稍后在write_lock中处理
                     else:
-                        # 是嵌套列表且未过期，创建NestedDBList并缓存
+                        # 是嵌套列表且未过期，创建NestedDBList并缓存（dirty=False，从存储加载）
                         nested_list = self.nested_list(key)
                         if self._cache_enabled:
-                            self._cache.put(key, nested_list, expire_time)
+                            # 计算TTL
+                            ttl = None
+                            if expire_time is not None:
+                                import time
+                                ttl = int(max(0, expire_time - time.time()))
+                            self._cache.put(key, nested_list, ttl=ttl, dirty=False)
                         return nested_list
 
             # 4. 普通值：读取并检查TTL
@@ -462,9 +470,14 @@ class CachedLevelDBDict:
                 # 已过期：删除键并抛出异常（需要write_lock）
                 pass  # 稍后在write_lock中处理
             else:
-                # 未过期：加入缓存并返回
+                # 未过期：加入缓存并返回（dirty=False，从存储加载）
                 if self._cache_enabled:
-                    self._cache.put(key, value, expire_time)
+                    # 计算TTL
+                    ttl = None
+                    if expire_time is not None:
+                        import time
+                        ttl = int(max(0, expire_time - time.time()))
+                    self._cache.put(key, value, ttl=ttl, dirty=False)
                 return value
 
         # 处理过期情况（需要write_lock删除）
@@ -505,23 +518,6 @@ class CachedLevelDBDict:
         if isinstance(value, NestedDBList):
             value = value.to_list()
 
-        # 计算过期时间
-        expire_time = None
-        if ttl is not None:
-            import time
-            expire_time = time.time() + ttl
-
-        # 写缓冲模式：写入缓冲区
-        if self._write_buffer_enabled:
-            self._write_buffer.put(key, value, ttl=ttl)
-
-            # ✅ 修复：同步更新读缓存，避免flush后读到过期数据
-            if self._cache_enabled:
-                self._cache.put(key, value, expire_time)
-
-            return
-
-        # 直接写入模式（原有逻辑）
         # 如果启用了自动嵌套且值是字典
         if self._auto_nested and isinstance(value, dict):
             # 1. 标记为嵌套字典（带TTL）
@@ -546,9 +542,9 @@ class CachedLevelDBDict:
             for k, v in value.items():
                 nested[k] = v  # 递归
 
-            # 3. 更新缓存（缓存NestedDBDict实例）
+            # 3. 更新缓存（缓存NestedDBDict实例，dirty=False因为已经写入DB）
             if self._cache_enabled:
-                self._cache.put(key, nested, expire_time)
+                self._cache.put(key, nested, ttl=ttl, dirty=False)
             return
 
         # 如果启用了自动嵌套且值是列表
@@ -575,9 +571,9 @@ class CachedLevelDBDict:
             for item in value:
                 nested_list.append(item)  # 递归
 
-            # 3. 更新缓存（缓存NestedDBList实例）
+            # 3. 更新缓存（缓存NestedDBList实例，dirty=False因为已经写入DB）
             if self._cache_enabled:
-                self._cache.put(key, nested_list, expire_time)
+                self._cache.put(key, nested_list, ttl=ttl, dirty=False)
             return
 
         # 非字典非列表或未启用自动嵌套：取消标记（如果有）
@@ -603,18 +599,25 @@ class CachedLevelDBDict:
                 self._cache.delete(key)
 
         # 普通存储（带TTL）
-        key_bytes = self._encode_key(key)
-        value_bytes = self._encode_value(value, ttl_seconds=ttl)
+        # 如果启用写缓冲模式：使用dirty=True延迟写入
+        # 否则：立即写入DB（write-through）
+        if self._cache_enabled and self._write_buffer_mode:
+            # 写缓冲模式：写入缓存，标记dirty
+            self._cache.put(key, value, ttl=ttl, dirty=True)
+        else:
+            # 直接写入模式或无缓存
+            key_bytes = self._encode_key(key)
+            value_bytes = self._encode_value(value, ttl_seconds=ttl)
 
-        with self._db_lock.write_lock():
-            self._db.put(key_bytes, value_bytes)
+            with self._db_lock.write_lock():
+                self._db.put(key_bytes, value_bytes)
 
-        # 更新缓存（Write-through）
-        if self._cache_enabled:
-            self._cache.put(key, value, expire_time)
+            # 更新缓存（Write-through，dirty=False因为已经写入DB）
+            if self._cache_enabled:
+                self._cache.put(key, value, ttl=ttl, dirty=False)
 
     def __delitem__(self, key):
-        """删除键（同时删除缓存，支持写缓冲）"""
+        """删除键（同时删除缓存，支持统一缓存）"""
         # 特殊键：直接处理（无缓存）
         if isinstance(key, str) and key.startswith('__nested__:'):
             key_bytes = self._encode_key(key)
@@ -622,12 +625,9 @@ class CachedLevelDBDict:
                 self._db.delete(key_bytes)
             return
 
-        # 写缓冲模式：标记为删除
-        if self._write_buffer_enabled:
-            self._write_buffer.delete(key)
-            # 同时删除读缓存
-            if self._cache_enabled:
-                self._cache.delete(key)
+        # 统一缓存模式：标记为删除
+        if self._cache_enabled:
+            self._cache.delete(key)
             return
 
         # 直接删除模式（原有逻辑）
@@ -906,15 +906,14 @@ class CachedLevelDBDict:
         return result
     
     def close(self):
-        """关闭数据库（刷新写缓冲并清理缓存）"""
+        """关闭数据库（刷新统一缓存并清理）"""
         if self._closed:
             return
 
-        # 停止写缓冲（会自动刷新剩余数据）
-        if self._write_buffer_enabled and self._write_buffer is not None:
-            logger.debug(f"Stopping write buffer for {self.name}...")
-            self._write_buffer.stop()
-            self._write_buffer = None
+        # 停止统一缓存（会自动刷新剩余数据）
+        if self._cache_enabled and self._cache is not None:
+            logger.debug(f"Stopping unified cache for {self.name}...")
+            self._cache.stop()
 
         # 停止TTL自动清理线程
         if self._ttl_cleanup is not None:
@@ -927,11 +926,6 @@ class CachedLevelDBDict:
                     self._db.close()
                     self._db = None
                     self._closed = True
-
-                    # 清理缓存
-                    if self._cache_enabled:
-                        self._cache.clear()
-                        logger.debug(f"缓存已清理: {self.name}")
 
                 logger.debug(f"Cached LevelDB connection closed: {self.name}")
 
@@ -952,12 +946,12 @@ class CachedLevelDBDict:
 
     def flush(self):
         """
-        手动刷新写缓冲区（如果启用）
+        手动刷新统一缓存（如果启用）
 
-        如果未启用写缓冲，此方法不执行任何操作
+        如果未启用缓存，此方法不执行任何操作
         """
-        if self._write_buffer_enabled and self._write_buffer is not None:
-            self._write_buffer.flush()
+        if self._cache_enabled and self._cache is not None:
+            self._cache.flush()
             logger.debug(f"Manual flush triggered for {self.name}")
 
     def stat(self) -> Dict:
