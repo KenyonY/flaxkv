@@ -190,7 +190,7 @@ class CachedLevelDBDict:
         self._default_ttl = default_ttl
         self._auto_nested = auto_nested
 
-        # ========== 统一缓存（替换原来的双缓存设计） ==========
+        # ========== 统一缓存 ==========
         # 向后兼容：根据旧参数决定是否启用缓存
         # - 如果read_cache_size=0且enable_write_buffer=False：禁用缓存
         # - 否则：启用统一缓存
