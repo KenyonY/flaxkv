@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlaxKV2 Inspector</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <header class="header">
+            <h1>📊 FlaxKV2 Inspector</h1>
+            <div class="db-info">
+                <span id="db-name">加载中...</span>
+                <span id="db-path"></span>
+            </div>
+        </header>
+
+        <!-- 标签页导航 -->
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="browse">📂 数据浏览</button>
+            <button class="tab-btn" data-tab="stats">📈 统计分析</button>
+            <button class="tab-btn" data-tab="manage">🛠️ 数据管理</button>
+        </div>
+
+        <!-- 数据浏览标签页 -->
+        <div class="tab-content active" id="browse-tab">
+            <div class="toolbar">
+                <input type="text" id="search-input" placeholder="搜索键 (支持正则表达式)" />
+                <button id="search-btn" class="btn btn-primary">搜索</button>
+                <button id="refresh-btn" class="btn btn-secondary">刷新</button>
+                <span class="key-count">总键数: <strong id="total-keys">0</strong></span>
+            </div>
+
+            <div class="content-area">
+                <!-- 键列表 -->
+                <div class="key-list">
+                    <h3>键列表</h3>
+                    <div id="key-list-container" class="scrollable">
+                        <p class="loading">加载中...</p>
+                    </div>
+                    <div class="pagination">
+                        <button id="prev-page" class="btn btn-small">上一页</button>
+                        <span id="page-info">第 1 页</span>
+                        <button id="next-page" class="btn btn-small">下一页</button>
+                    </div>
+                </div>
+
+                <!-- 键详情 -->
+                <div class="key-detail">
+                    <h3>键详情</h3>
+                    <div id="key-detail-container" class="scrollable">
+                        <p class="placeholder">← 选择一个键查看详情</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 统计分析标签页 -->
+        <div class="tab-content" id="stats-tab">
+            <div class="toolbar">
+                <button id="refresh-stats-btn" class="btn btn-primary">刷新统计</button>
+            </div>
+
+            <div id="stats-container" class="stats-grid">
+                <p class="loading">加载中...</p>
+            </div>
+        </div>
+
+        <!-- 数据管理标签页 -->
+        <div class="tab-content" id="manage-tab">
+            <div class="manage-section">
+                <h3>添加/更新键值</h3>
+                <form id="add-key-form" class="form">
+                    <div class="form-group">
+                        <label for="new-key">键名:</label>
+                        <input type="text" id="new-key" required />
+                    </div>
+                    <div class="form-group">
+                        <label for="new-value">值:</label>
+                        <textarea id="new-value" rows="5" required></textarea>
+                        <small>支持 JSON 格式</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="new-ttl">TTL (秒, 可选):</label>
+                        <input type="number" id="new-ttl" min="0" />
+                    </div>
+                    <button type="submit" class="btn btn-primary">保存</button>
+                </form>
+            </div>
+
+            <div class="manage-section">
+                <h3>删除键</h3>
+                <form id="delete-key-form" class="form">
+                    <div class="form-group">
+                        <label for="delete-key">键名:</label>
+                        <input type="text" id="delete-key" required />
+                    </div>
+                    <button type="submit" class="btn btn-danger">删除</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 通知提示 -->
+    <div id="toast" class="toast"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -13,6 +13,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from flaxkv2 import __version__, FlaxKV
 from flaxkv2.utils.log import set_log_level
 from flaxkv2.utils.file_transfer import FileTransferUtil, format_size
+from flaxkv2.inspector.cli import InspectCommands
 
 console = Console()
 
@@ -22,7 +23,7 @@ class FlaxKV2CLI:
 
     def __init__(self):
         """初始化CLI"""
-        pass
+        self.inspect = InspectCommands()
 
     def version(self):
         """显示版本信息"""
@@ -284,6 +285,47 @@ class FlaxKV2CLI:
 
         except Exception as e:
             console.print(f"\n[bold red]✗ 获取文件列表失败:[/bold red] {str(e)}")
+
+    def web(
+        self,
+        db_name: str,
+        path: str = '.',
+        backend: str = 'auto',
+        host: str = '127.0.0.1',
+        port: int = 8080,
+        debug: bool = False
+    ):
+        """
+        启动 FlaxKV2 Inspector Web UI
+
+        Args:
+            db_name: 数据库名称
+            path: 数据库路径（本地路径或远程地址）
+            backend: 后端类型 ('local', 'remote', 'auto')，默认 'auto'
+            host: 监听主机名（默认: 127.0.0.1）
+            port: 监听端口（默认: 8080）
+            debug: 调试模式（默认: False）
+
+        示例:
+            flaxkv2 web mydb
+            flaxkv2 web mydb --path /data/db --port 8080
+            flaxkv2 web mydb --path 127.0.0.1:5555 --backend remote
+        """
+        try:
+            from flaxkv2.inspector.web import start_web_server
+            start_web_server(
+                db_name=db_name,
+                path=path,
+                backend=backend,
+                host=host,
+                port=port,
+                debug=debug
+            )
+        except ImportError as e:
+            console.print(f"[bold red]错误:[/bold red] Flask 未安装")
+            console.print("请运行: [bold blue]pip install flask flask-cors[/bold blue]")
+        except Exception as e:
+            console.print(f"[bold red]错误:[/bold red] {str(e)}")
 
 
 def main():

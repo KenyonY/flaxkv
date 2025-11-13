@@ -1,0 +1,410 @@
+/* 全局样式 */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    padding: 20px;
+    color: #333;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    overflow: hidden;
+}
+
+/* 头部 */
+.header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 30px;
+    text-align: center;
+}
+
+.header h1 {
+    font-size: 2.5em;
+    margin-bottom: 10px;
+}
+
+.db-info {
+    font-size: 0.9em;
+    opacity: 0.9;
+}
+
+.db-info span {
+    margin: 0 10px;
+}
+
+/* 标签页 */
+.tabs {
+    display: flex;
+    background: #f5f5f5;
+    border-bottom: 2px solid #ddd;
+}
+
+.tab-btn {
+    flex: 1;
+    padding: 15px 20px;
+    background: none;
+    border: none;
+    font-size: 1em;
+    cursor: pointer;
+    transition: all 0.3s;
+    border-bottom: 3px solid transparent;
+}
+
+.tab-btn:hover {
+    background: #e9e9e9;
+}
+
+.tab-btn.active {
+    background: white;
+    border-bottom-color: #667eea;
+    font-weight: bold;
+}
+
+.tab-content {
+    display: none;
+    padding: 30px;
+    min-height: 600px;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+/* 工具栏 */
+.toolbar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.toolbar input[type="text"] {
+    flex: 1;
+    min-width: 200px;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 1em;
+}
+
+.key-count {
+    margin-left: auto;
+    font-size: 0.9em;
+    color: #666;
+}
+
+/* 按钮 */
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    font-size: 1em;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.btn-primary {
+    background: #667eea;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #5568d3;
+}
+
+.btn-secondary {
+    background: #6c757d;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #5a6268;
+}
+
+.btn-danger {
+    background: #dc3545;
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #c82333;
+}
+
+.btn-small {
+    padding: 6px 12px;
+    font-size: 0.9em;
+}
+
+/* 内容区域 */
+.content-area {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    height: 600px;
+}
+
+.key-list, .key-detail {
+    background: #f9f9f9;
+    border-radius: 8px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+}
+
+.key-list h3, .key-detail h3 {
+    margin-bottom: 15px;
+    color: #667eea;
+}
+
+.scrollable {
+    flex: 1;
+    overflow-y: auto;
+    background: white;
+    border-radius: 6px;
+    padding: 15px;
+}
+
+/* 键列表项 */
+.key-item {
+    padding: 12px;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.key-item:hover {
+    background: #f0f0f0;
+}
+
+.key-item.active {
+    background: #667eea;
+    color: white;
+}
+
+.key-name {
+    font-weight: 500;
+    word-break: break-all;
+}
+
+/* 键详情 */
+.detail-section {
+    margin-bottom: 20px;
+}
+
+.detail-label {
+    font-weight: bold;
+    color: #667eea;
+    margin-bottom: 5px;
+}
+
+.detail-value {
+    background: #f5f5f5;
+    padding: 10px;
+    border-radius: 6px;
+    word-break: break-all;
+    white-space: pre-wrap;
+    font-family: monospace;
+    max-height: 400px;
+    overflow: auto;
+}
+
+.badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    font-weight: 500;
+}
+
+.badge-success {
+    background: #28a745;
+    color: white;
+}
+
+.badge-danger {
+    background: #dc3545;
+    color: white;
+}
+
+.badge-info {
+    background: #17a2b8;
+    color: white;
+}
+
+/* 分页 */
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 15px;
+    margin-top: 15px;
+}
+
+/* 统计网格 */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 20px;
+}
+
+.stats-card {
+    background: #f9f9f9;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.stats-card h3 {
+    color: #667eea;
+    margin-bottom: 15px;
+    font-size: 1.2em;
+}
+
+.stats-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid #eee;
+}
+
+.stats-item:last-child {
+    border-bottom: none;
+}
+
+.stats-label {
+    color: #666;
+}
+
+.stats-value {
+    font-weight: bold;
+    color: #333;
+}
+
+/* 表单 */
+.manage-section {
+    background: #f9f9f9;
+    border-radius: 8px;
+    padding: 25px;
+    margin-bottom: 20px;
+}
+
+.manage-section h3 {
+    color: #667eea;
+    margin-bottom: 20px;
+}
+
+.form {
+    max-width: 600px;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 500;
+    color: #333;
+}
+
+.form-group input,
+.form-group textarea {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 1em;
+    font-family: inherit;
+}
+
+.form-group textarea {
+    font-family: monospace;
+    resize: vertical;
+}
+
+.form-group small {
+    display: block;
+    margin-top: 5px;
+    color: #666;
+    font-size: 0.85em;
+}
+
+/* 通知提示 */
+.toast {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    padding: 15px 25px;
+    background: #333;
+    color: white;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    opacity: 0;
+    transform: translateY(20px);
+    transition: all 0.3s;
+    pointer-events: none;
+    z-index: 1000;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+.toast.success {
+    background: #28a745;
+}
+
+.toast.error {
+    background: #dc3545;
+}
+
+/* 占位符和加载状态 */
+.placeholder, .loading {
+    text-align: center;
+    color: #999;
+    padding: 40px;
+}
+
+.loading::after {
+    content: '...';
+    animation: loading 1.5s infinite;
+}
+
+@keyframes loading {
+    0%, 100% { opacity: 0; }
+    50% { opacity: 1; }
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    .content-area {
+        grid-template-columns: 1fr;
+    }
+
+    .key-detail {
+        display: none;
+    }
+
+    .stats-grid {
+        grid-template-columns: 1fr;
+    }
+}

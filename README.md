@@ -31,6 +31,7 @@ FlaxKV2 是一个提供 **类字典接口** 的持久化键值存储库，将 Le
 - 🔧 **灵活配置**：从内存受限到大数据库，多种配置文件可选
 - 📝 **日志控制**：作为基础库默认静默，需要时可灵活启用
 - 🛡️ **自动管理**：自动关闭、上下文管理器支持
+- 📊 **可视化工具**：内置 Inspector 工具，提供 CLI 和 Web UI 两种界面，轻松管理和分析数据
 
 ## 📦 安装
 
@@ -43,11 +44,12 @@ pip install flaxkv2
 ### 完整安装（推荐）
 
 ```bash
-# 包含 Pandas、NumPy 等所有可选依赖
+# 包含 Pandas、NumPy 和 Web UI 等所有可选依赖
 pip install flaxkv2[full]
 
-# 或仅安装 Pandas 支持
-pip install flaxkv2[pandas]
+# 或按需安装特定功能
+pip install flaxkv2[pandas]  # Pandas 支持
+pip install flaxkv2[web]     # Web UI 可视化工具
 ```
 
 ### 从源码安装
@@ -296,7 +298,51 @@ db = FlaxKV("remote_db", "127.0.0.1:5555",
 - 🔹 微服务架构中的中央缓存
 - 🔹 分布式机器学习参数存储
 
-### 6. 日志配置（作为基础库使用）
+### 6. Inspector 可视化工具
+
+FlaxKV2 内置强大的数据可视化和管理工具，提供 **CLI** 和 **Web UI** 两种方式。
+
+#### CLI 工具
+
+```bash
+# 查看所有键
+flaxkv2 inspect keys mydb --path /data
+
+# 查看键详情
+flaxkv2 inspect get mydb user123 --path /data
+
+# 统计分析
+flaxkv2 inspect stats mydb --path /data
+
+# 搜索键（支持正则表达式）
+flaxkv2 inspect search mydb "user_.*" --path /data
+
+# 删除键
+flaxkv2 inspect delete mydb temp_key --path /data
+
+# 设置键值
+flaxkv2 inspect set mydb name "John" --path /data
+```
+
+#### Web UI
+
+启动 Web 界面进行可视化管理：
+
+```bash
+# 启动 Web UI（需要先安装: pip install flaxkv2[web]）
+flaxkv2 web mydb --path /data --port 8080
+
+# 然后访问 http://127.0.0.1:8080
+```
+
+Web UI 提供：
+- 📂 **数据浏览**: 分页显示所有键值，搜索过滤
+- 📊 **统计分析**: 类型分布、大小分布、TTL 状态可视化
+- 🛠️ **数据管理**: 在线增删改查，支持 TTL 设置
+
+详见 [Inspector 文档](docs/INSPECTOR.md)
+
+### 7. 日志配置（作为基础库使用）
 
 FlaxKV2 作为基础库，**默认不输出任何日志**，不会污染应用程序的终端。
 

@@ -38,6 +38,11 @@ The `FlaxKV` class in `flaxkv2/__init__.py` is a factory that creates the approp
 - **Unified Cache** (`flaxkv2/utils/unified_cache.py`): Write-back cache with LRU eviction, dirty tracking, and async flush
 - **TTL Management** (`flaxkv2/utils/ttl_cleanup.py`): Background thread for automatic expiration
 - **Config** (`flaxkv2/config.py`): 6 performance profiles (balanced, read_optimized, write_optimized, memory_constrained, large_database, ml_workload)
+- **Inspector** (`flaxkv2/inspector/`): Visualization and management tools (CLI + Web UI)
+  - `__init__.py`: Core Inspector class for data browsing, stats, and management
+  - `cli.py`: CLI commands for terminal-based inspection
+  - `web.py`: Flask-based Web UI server
+  - `flaxkv2/static/`: Web UI static files (HTML/CSS/JS)
 
 ### Cache Design
 The unified cache uses a Write-back Cache pattern:
@@ -57,7 +62,8 @@ See `CACHE_DESIGN_REVIEW.md` for detailed design analysis.
 pip install -e .
 
 # With optional dependencies
-pip install -e .[full]    # pandas support
+pip install -e .[full]    # pandas support + web UI
+pip install -e .[web]     # web UI support (Flask)
 pip install -e .[test]    # test dependencies
 ```
 
@@ -86,6 +92,35 @@ flaxkv2 run --host 0.0.0.0 --port 5555 --data-dir ./data
 
 # Or via Python module
 python -m flaxkv2 run --host 0.0.0.0 --port 5555 --data-dir ./data
+```
+
+### Using Inspector (Visualization Tool)
+```bash
+# CLI: List all keys
+flaxkv2 inspect keys mydb --path /data
+
+# CLI: View key details
+flaxkv2 inspect get mydb user123 --path /data
+
+# CLI: Get statistics
+flaxkv2 inspect stats mydb --path /data
+
+# CLI: Search keys
+flaxkv2 inspect search mydb "user_.*" --path /data
+
+# CLI: Delete key
+flaxkv2 inspect delete mydb temp_key --path /data
+
+# CLI: Set key value
+flaxkv2 inspect set mydb name "John" --path /data
+
+# Web UI: Start visualization server
+flaxkv2 web mydb --path /data --port 8080
+
+# Remote database inspection
+flaxkv2 inspect keys mydb --path 127.0.0.1:5555 --backend remote
+
+# See docs/INSPECTOR.md for detailed documentation
 ```
 
 ### Benchmarks

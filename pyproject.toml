@@ -53,6 +53,12 @@ pandas = [
     "pandas",
 ]
 
+# Web UI 支持 - Inspector 可视化界面
+web = [
+    "flask>=2.3.0",
+    "flask-cors>=4.0.0",
+]
+
 # 测试依赖
 test = [
     "pytest",
@@ -64,6 +70,8 @@ test = [
 # 完整安装（包含所有可选功能）
 full = [
     "pandas",
+    "flask>=2.3.0",
+    "flask-cors>=4.0.0",
 ]
 
 
@@ -79,6 +87,7 @@ profile = "black"
 [tool.hatch.build]
 include = [
     "flaxkv2/**/*.py",
+    "flaxkv2/static/**/*",
 ]
 exclude = [
 ]
