@@ -31,7 +31,10 @@ class Inspector:
         self.db_name = db_name
         self.path = path
         self.backend = backend
-        self.db = FlaxKV(db_name, path, backend=backend, **kwargs)
+
+        # 将 'auto' 转换为 None，让 FlaxKV 自动检测
+        backend_param = None if backend == 'auto' else backend
+        self.db = FlaxKV(db_name, path, backend=backend_param, **kwargs)
 
     def close(self):
         """关闭数据库连接"""
@@ -169,6 +172,21 @@ class Inspector:
 
     def _get_value_preview(self, value: Any, max_length: int = 100) -> Any:
         """获取值的预览（截断长内容）"""
+        # 处理 NestedDBList 和 NestedDBDict - 转换为普通类型
+        type_name = type(value).__name__
+        if type_name == 'NestedDBList':
+            # 转换为普通列表
+            try:
+                value = value.to_list()
+            except:
+                value = list(value)
+        elif type_name == 'NestedDBDict':
+            # 转换为普通字典
+            try:
+                value = value.to_dict()
+            except:
+                value = dict(value)
+
         if isinstance(value, (str, bytes)):
             if len(value) > max_length:
                 preview = value[:max_length]

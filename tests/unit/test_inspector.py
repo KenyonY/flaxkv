@@ -250,5 +250,178 @@ class TestInspectorWithCache:
             shutil.rmtree(temp_dir)
 
 
+class TestInspectorBackendAuto:
+    """测试 Inspector 的 backend='auto' 功能"""
+
+    def test_backend_auto_with_local_path(self):
+        """测试 backend='auto' 对本地路径的处理"""
+        temp_dir = tempfile.mkdtemp()
+        db_name = "test_auto_local"
+
+        try:
+            # 创建测试数据
+            db = FlaxKV(db_name, temp_dir)
+            db['test1'] = 'value1'
+            db['test2'] = 'value2'
+            db.close()
+
+            # 使用 backend='auto' 连接
+            with Inspector(db_name, temp_dir, backend='auto') as inspector:
+                count = inspector.count_keys()
+                assert count == 2
+
+                keys = inspector.list_keys()
+                assert 'test1' in keys
+                assert 'test2' in keys
+
+                info = inspector.get_value_info('test1')
+                assert info is not None
+                assert info['value'] == 'value1'
+
+        finally:
+            shutil.rmtree(temp_dir)
+
+    def test_backend_auto_with_tcp_url(self):
+        """测试 backend='auto' 对 tcp:// URL 的自动检测
+
+        注意：此测试需要 ZeroMQ 服务器运行，暂时跳过
+        """
+        pytest.skip("需要运行的 ZeroMQ 服务器")
+
+    def test_backend_auto_parameter_conversion(self):
+        """测试 Inspector 正确将 'auto' 转换为 None"""
+        temp_dir = tempfile.mkdtemp()
+        db_name = "test_conversion"
+
+        try:
+            # 创建测试数据
+            db = FlaxKV(db_name, temp_dir)
+            db['key1'] = 'value1'
+            db.close()
+
+            # 使用 backend='auto'，Inspector 应该正确处理
+            inspector = Inspector(db_name, temp_dir, backend='auto')
+
+            # 验证 Inspector 保存了原始 backend 值
+            assert inspector.backend == 'auto'
+
+            # 验证数据库正常工作（说明 'auto' 被正确转换为 None）
+            count = inspector.count_keys()
+            assert count == 1
+
+            inspector.close()
+
+        finally:
+            shutil.rmtree(temp_dir)
+
+
+class TestInspectorNestedSerialization:
+    """测试 Inspector 对 NestedDB 类型的 JSON 序列化"""
+
+    def test_nested_list_json_serialization(self):
+        """测试 NestedDBList 可以被 JSON 序列化"""
+        import json
+        temp_dir = tempfile.mkdtemp()
+        db_name = "test_nested_list"
+
+        try:
+            # 创建包含嵌套列表的数据
+            db = FlaxKV(db_name, temp_dir)
+            db['nested_list'] = [{'id': 1, 'name': 'A'}, {'id': 2, 'name': 'B'}]
+            db.close()
+
+            # 使用 Inspector 读取
+            with Inspector(db_name, temp_dir, backend='auto') as inspector:
+                info = inspector.get_value_info('nested_list')
+
+                # 验证类型
+                assert info is not None
+                assert info['type'] == 'list'
+
+                # 验证可以 JSON 序列化
+                json_str = json.dumps(info)
+                assert json_str is not None
+
+                # 验证可以反序列化
+                parsed = json.loads(json_str)
+                assert parsed['type'] == 'list'
+                assert isinstance(parsed['value'], list)
+
+        finally:
+            shutil.rmtree(temp_dir)
+
+    def test_nested_dict_json_serialization(self):
+        """测试 NestedDBDict 可以被 JSON 序列化"""
+        import json
+        temp_dir = tempfile.mkdtemp()
+        db_name = "test_nested_dict"
+
+        try:
+            # 创建包含嵌套字典的数据
+            db = FlaxKV(db_name, temp_dir)
+            db['nested_dict'] = {
+                'config': {'timeout': 30, 'retries': 3},
+                'metadata': {'version': '1.0', 'author': 'test'}
+            }
+            db.close()
+
+            # 使用 Inspector 读取
+            with Inspector(db_name, temp_dir, backend='auto') as inspector:
+                info = inspector.get_value_info('nested_dict')
+
+                # 验证类型
+                assert info is not None
+                assert info['type'] == 'dict'
+
+                # 验证可以 JSON 序列化
+                json_str = json.dumps(info)
+                assert json_str is not None
+
+                # 验证可以反序列化
+                parsed = json.loads(json_str)
+                assert parsed['type'] == 'dict'
+                assert isinstance(parsed['value'], dict)
+
+        finally:
+            shutil.rmtree(temp_dir)
+
+    def test_mixed_nested_data_json_serialization(self):
+        """测试混合嵌套数据的 JSON 序列化"""
+        import json
+        temp_dir = tempfile.mkdtemp()
+        db_name = "test_mixed"
+
+        try:
+            # 创建各种类型的数据
+            db = FlaxKV(db_name, temp_dir)
+            db['str'] = 'string'
+            db['num'] = 42
+            db['list'] = [1, 2, 3]
+            db['dict'] = {'a': 1, 'b': 2}
+            db['nested_list'] = [{'x': 1}, {'x': 2}]
+            db['nested_dict'] = {'inner': {'y': 3}}
+            db.close()
+
+            # 使用 Inspector 读取所有键
+            with Inspector(db_name, temp_dir, backend='auto') as inspector:
+                keys = inspector.list_keys()
+
+                # 验证每个键都可以 JSON 序列化
+                for key in keys:
+                    info = inspector.get_value_info(key)
+                    assert info is not None
+
+                    # 尝试 JSON 序列化
+                    json_str = json.dumps(info)
+                    assert json_str is not None
+
+                    # 验证可以反序列化
+                    parsed = json.loads(json_str)
+                    assert parsed['key'] == key
+
+        finally:
+            shutil.rmtree(temp_dir)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

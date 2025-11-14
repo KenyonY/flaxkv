@@ -85,6 +85,35 @@ pytest tests/unit/ --cov=flaxkv2 --cov-report=html
 python -m pytest tests/stress/ -v
 ```
 
+### Configuration File (Optional)
+FlaxKV2 CLI supports TOML configuration files for easier management:
+
+```bash
+# Generate sample config file
+flaxkv2 config init
+
+# Show current configuration
+flaxkv2 config show
+
+# List defined servers
+flaxkv2 config servers
+
+# List available profiles
+flaxkv2 config profiles
+```
+
+Configuration file locations (searched in order):
+1. Current directory: `flaxkv.toml` or `.flaxkv.toml`
+2. Home directory: `~/flaxkv.toml` or `~/.flaxkv.toml`
+
+Key features:
+- **Multiple server definitions**: Define servers by name, reference with `@name`
+- **Profiles**: Different configurations for different environments (dev, staging, prod)
+- **Defaults**: Global defaults for all commands
+- **Priority**: Command-line args > Profile > Section defaults > Global defaults
+
+See `docs/CONFIG_FILE_GUIDE.md` for detailed documentation.
+
 ### Running the Server
 ```bash
 # Start ZeroMQ server (CLI)
@@ -92,6 +121,9 @@ flaxkv2 run --host 0.0.0.0 --port 5555 --data-dir ./data
 
 # Or via Python module
 python -m flaxkv2 run --host 0.0.0.0 --port 5555 --data-dir ./data
+
+# Using configuration file with profile
+flaxkv2 run --profile production
 ```
 
 ### Using Inspector (Visualization Tool)
@@ -119,6 +151,11 @@ flaxkv2 web mydb --path /data --port 8080
 
 # Remote database inspection
 flaxkv2 inspect keys mydb --path 127.0.0.1:5555 --backend remote
+
+# Using configuration file with server reference
+flaxkv2 list --server @production
+flaxkv2 set myfile.txt --server @staging
+flaxkv2 get data.pkl --server @ml_cluster
 
 # See docs/INSPECTOR.md for detailed documentation
 ```
@@ -148,11 +185,12 @@ make rm
 ## Code Structure Guidelines
 
 ### Key Files by Layer
-1. **User Interface**: `flaxkv2/__init__.py` (FlaxKV factory)
+1. **User Interface**: `flaxkv2/__init__.py` (FlaxKV factory), `flaxkv2/cli.py` (CLI commands)
 2. **Core Implementations**: `flaxkv2/core/{raw_leveldb_dict.py, cached_leveldb_dict.py, nested_structures.py}`
 3. **Network Layer**: `flaxkv2/server/zmq_server.py`, `flaxkv2/client/zmq_client.py`
 4. **Data Layer**: `flaxkv2/serialization/{encoder.py, decoder.py, value_meta.py}`
-5. **Utilities**: `flaxkv2/utils/{unified_cache.py, ttl_cleanup.py, key_manager.py, log.py}`
+5. **Utilities**: `flaxkv2/utils/{unified_cache.py, ttl_cleanup.py, key_manager.py, log.py, config_loader.py}`
+6. **Configuration**: `flaxkv2/config.py` (performance profiles), `flaxkv2/utils/config_loader.py` (TOML config loader)
 
 ### When Modifying Cache Logic
 - Cache tests: `tests/unit/test_unified_cache.py` (35 tests covering all cache functionality)

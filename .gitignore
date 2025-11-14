@@ -8,6 +8,13 @@ test_db/
 
 /data/
 
+/train_data_preview
+# Configuration files (may contain passwords)
+flaxkv.toml
+.flaxkv.toml
+*secret*.toml
+*password*.toml
+
 .pyc
 .idea
 .ipynb_checkpoints

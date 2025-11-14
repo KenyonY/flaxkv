@@ -37,6 +37,7 @@ dependencies = [
     "plyvel-ci>=1.5.0; sys_platform == 'win32'",
     "plyvel-ci>=1.5.0; sys_platform == 'darwin'",
     "typing-extensions>=4.7.1; python_version<'3.11'",
+    "tomli>=2.0.0; python_version<'3.11'",
 ]
 
 dynamic = ["version"]
