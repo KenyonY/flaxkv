@@ -8,6 +8,8 @@ test_db/
 
 /data/
 
+/kunyuan*
+
 /train_data_preview
 # Configuration files (may contain passwords)
 flaxkv.toml

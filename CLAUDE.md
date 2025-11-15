@@ -2,318 +2,371 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## 项目概述
 
-FlaxKV2 is a high-performance persistent key-value storage library for Python built on LevelDB. It provides a dict-like interface with support for:
-- Thread-safe local LevelDB backend with optional unified caching
-- Remote access via ZeroMQ client/server architecture
-- Rich data types (strings, numbers, lists, dicts, NumPy arrays, Pandas DataFrames)
-- TTL (time-to-live) support with automatic expiration
-- Nested dict/list storage for efficient partial updates
-- 6 performance profiles for different workload scenarios
+FlaxKV2 是一个高性能的 Python 键值存储库，基于 LevelDB，提供类字典接口。核心特性包括：
+- 🚀 本地和远程（ZeroMQ）两种后端
+- 🎯 智能缓存系统（读缓存 + 写缓冲）
+- 📦 支持丰富的数据类型（NumPy、Pandas、嵌套字典/列表）
+- ⏰ TTL 自动过期功能
+- 🔒 线程安全
 
-## Core Architecture
+**重要架构变化**: 项目已从 `LevelDBDict` 迁移到 `RawLevelDBDict` 和 `CachedLevelDBDict`，新架构提供 13-25% 性能提升。
 
-### Backend Types
-- **RawLevelDBDict** (`flaxkv2/core/raw_leveldb_dict.py`): Default local backend, no caching, data safety prioritized
-- **CachedLevelDBDict** (`flaxkv2/core/cached_leveldb_dict.py`): Local backend with unified cache (Write-back Cache design)
-  - Read cache (LRU): ~20x performance boost for hot data
-  - Write buffer: 1.6-10x performance boost with batch writes
-  - Async flush option for extreme performance (with trade-offs)
-- **RemoteDBDict** (`flaxkv2/client/zmq_client.py`): ZeroMQ client for remote server access
-- **LevelDBDict** (deprecated): Old implementation, removed from main exports
+## 开发命令
 
-### Factory Pattern
-The `FlaxKV` class in `flaxkv2/__init__.py` is a factory that creates the appropriate backend:
-- Local backend: `FlaxKV("mydb", "./data")` or `FlaxKV("mydb", "./data", use_cache=True)`
-- Remote backend: `FlaxKV("mydb", "tcp://host:5555")` or with explicit `backend='remote'`
-
-### Key Components
-- **Serialization** (`flaxkv2/serialization/`):
-  - `encoder.py`: Serializes Python objects to bytes (msgpack, pickle, numpy, pandas)
-  - `decoder.py`: Deserializes bytes back to Python objects
-  - `value_meta.py`: Metadata wrapper for values with TTL info
-- **Server** (`flaxkv2/server/zmq_server.py`): ZeroMQ server for remote access
-- **Nested Structures** (`flaxkv2/core/nested_structures.py`): NestedDBDict and NestedDBList for efficient nested data access
-- **Unified Cache** (`flaxkv2/utils/unified_cache.py`): Write-back cache with LRU eviction, dirty tracking, and async flush
-- **TTL Management** (`flaxkv2/utils/ttl_cleanup.py`): Background thread for automatic expiration
-- **Config** (`flaxkv2/config.py`): 6 performance profiles (balanced, read_optimized, write_optimized, memory_constrained, large_database, ml_workload)
-- **Inspector** (`flaxkv2/inspector/`): Visualization and management tools (CLI + Web UI)
-  - `__init__.py`: Core Inspector class for data browsing, stats, and management
-  - `cli.py`: CLI commands for terminal-based inspection
-  - `web.py`: Flask-based Web UI server
-  - `flaxkv2/static/`: Web UI static files (HTML/CSS/JS)
-
-### Cache Design
-The unified cache uses a Write-back Cache pattern:
-- Single cache for both reads and writes (avoids dual-cache complexity)
-- Dirty tracking with flush triggers (threshold, interval, manual)
-- LRU eviction that flushes dirty entries before eviction
-- Optional async flush with double-buffering for non-blocking writes
-- Thread-safe with RLock (recursive lock)
-
-See `CACHE_DESIGN_REVIEW.md` for detailed design analysis.
-
-## Development Commands
-
-### Installation
+### 测试
 ```bash
-# Development install
-pip install -e .
+# 运行所有测试
+pytest -v -s
 
-# With optional dependencies
-pip install -e .[full]    # pandas support + web UI
-pip install -e .[web]     # web UI support (Flask)
-pip install -e .[test]    # test dependencies
+# 运行特定测试文件
+pytest tests/unit/test_core.py -v
+
+# 并行运行测试（需要 pytest-xdist）
+pytest -n auto
+
+# 运行测试并生成覆盖率报告
+pytest --cov=flaxkv2 --cov-report=html
+
+# 运行单个测试
+pytest tests/unit/test_core.py::test_basic_operations -v
 ```
 
-### Testing
+### 代码格式化
 ```bash
-# Run all unit tests (excluding stress tests)
-python -m pytest tests/unit/ -v -k "not stress"
+# 格式化代码（black）
+black flaxkv2 tests
 
-# Run specific test file
-python -m pytest tests/unit/test_unified_cache.py -v
+# 排序导入（isort，使用 black profile）
+isort flaxkv2 tests --profile black
 
-# Run integration tests
-python -m pytest tests/integration/ -v
+# 运行所有 pre-commit 钩子
+pre-commit run --all-files
 
-# Run with coverage
-pytest tests/unit/ --cov=flaxkv2 --cov-report=html
-
-# Run stress/concurrency tests
-python -m pytest tests/stress/ -v
+# 基础语法检查（flake8）
+flake8 flaxkv2 --count --select=E9,F63,F7,F82 --show-source --statistics
 ```
 
-### Configuration File (Optional)
-FlaxKV2 CLI supports TOML configuration files for easier management:
-
+### 启动服务器
 ```bash
-# Generate sample config file
-flaxkv2 config init
+# 启动本地服务器（仅本地访问）
+flaxkv2 run --host 127.0.0.1 --port 5555 --data-dir ./data
 
-# Show current configuration
-flaxkv2 config show
-
-# List defined servers
-flaxkv2 config servers
-
-# List available profiles
-flaxkv2 config profiles
-```
-
-Configuration file locations (searched in order):
-1. Current directory: `flaxkv.toml` or `.flaxkv.toml`
-2. Home directory: `~/flaxkv.toml` or `~/.flaxkv.toml`
-
-Key features:
-- **Multiple server definitions**: Define servers by name, reference with `@name`
-- **Profiles**: Different configurations for different environments (dev, staging, prod)
-- **Defaults**: Global defaults for all commands
-- **Priority**: Command-line args > Profile > Section defaults > Global defaults
-
-See `docs/CONFIG_FILE_GUIDE.md` for detailed documentation.
-
-### Running the Server
-```bash
-# Start ZeroMQ server (CLI)
+# 启动网络可访问服务器（⚠️ 无加密/认证）
 flaxkv2 run --host 0.0.0.0 --port 5555 --data-dir ./data
 
-# Or via Python module
-python -m flaxkv2 run --host 0.0.0.0 --port 5555 --data-dir ./data
-
-# Using configuration file with profile
-flaxkv2 run --profile production
+# 自定义配置启动
+flaxkv2 run --host 127.0.0.1 --port 5555 --data-dir ./data --log-level DEBUG
 ```
 
-### Using Inspector (Visualization Tool)
+### Inspector 可视化工具
 ```bash
-# CLI: List all keys
-flaxkv2 inspect keys mydb --path /data
+# 查看所有键
+flaxkv2 inspect keys mydb --path ./data
 
-# CLI: View key details
-flaxkv2 inspect get mydb user123 --path /data
+# 查看键详情
+flaxkv2 inspect get mydb user123 --path ./data
 
-# CLI: Get statistics
-flaxkv2 inspect stats mydb --path /data
+# 统计分析
+flaxkv2 inspect stats mydb --path ./data
 
-# CLI: Search keys
-flaxkv2 inspect search mydb "user_.*" --path /data
-
-# CLI: Delete key
-flaxkv2 inspect delete mydb temp_key --path /data
-
-# CLI: Set key value
-flaxkv2 inspect set mydb name "John" --path /data
-
-# Web UI: Start visualization server
-flaxkv2 web mydb --path /data --port 8080
-
-# Remote database inspection
-flaxkv2 inspect keys mydb --path 127.0.0.1:5555 --backend remote
-
-# Using configuration file with server reference
-flaxkv2 list --server @production
-flaxkv2 set myfile.txt --server @staging
-flaxkv2 get data.pkl --server @ml_cluster
-
-# See docs/INSPECTOR.md for detailed documentation
-```
-
-### Benchmarks
-```bash
-# Located in benchmarks/ directory
-python benchmarks/unified_cache_benchmark.py
-python benchmarks/comprehensive_comparison.py
+# 启动 Web UI（需要安装 flask: pip install flaxkv2[web]）
+flaxkv2 web mydb --path ./data --port 8080
 ```
 
 ### Docker
 ```bash
-# Build image
+# 构建镜像
 make build
 
-# Start container
+# 启动容器
 make start
 
-# View logs
+# 查看日志
 make log
 
-# Remove container
+# 进入容器
+make exec
+
+# 删除容器
 make rm
 ```
 
-## Code Structure Guidelines
-
-### Key Files by Layer
-1. **User Interface**: `flaxkv2/__init__.py` (FlaxKV factory), `flaxkv2/cli.py` (CLI commands)
-2. **Core Implementations**: `flaxkv2/core/{raw_leveldb_dict.py, cached_leveldb_dict.py, nested_structures.py}`
-3. **Network Layer**: `flaxkv2/server/zmq_server.py`, `flaxkv2/client/zmq_client.py`
-4. **Data Layer**: `flaxkv2/serialization/{encoder.py, decoder.py, value_meta.py}`
-5. **Utilities**: `flaxkv2/utils/{unified_cache.py, ttl_cleanup.py, key_manager.py, log.py, config_loader.py}`
-6. **Configuration**: `flaxkv2/config.py` (performance profiles), `flaxkv2/utils/config_loader.py` (TOML config loader)
-
-### When Modifying Cache Logic
-- Cache tests: `tests/unit/test_unified_cache.py` (35 tests covering all cache functionality)
-- Cache implementation: `flaxkv2/utils/unified_cache.py` (461 lines)
-- Integration with LevelDB: `flaxkv2/core/cached_leveldb_dict.py`
-- Always verify thread safety and dirty tracking
-- Test both sync and async flush modes
-
-### When Modifying Serialization
-- Encoder tests: Check existing tests for type support
-- Decoder tests: Verify round-trip serialization
-- Add new type support in both `encoder.py` and `decoder.py`
-- Update `value_meta.py` if TTL metadata format changes
-
-### TTL Implementation
-- Metadata stored in `ValueWithMeta` during serialization
-- Cache-level expiration check on reads (in UnifiedCache)
-- Persistent-level cleanup via background thread (`TTLCleanupThread`)
-- Tests: `test_default_ttl.py`, `test_ttl_persistence.py`, `test_raw_leveldb_ttl.py`
-
-## Testing Strategy
-
-### Test Organization
-- `tests/unit/`: Unit tests for individual components (147 tests)
-- `tests/integration/`: Integration tests for multi-component interactions
-- `tests/stress/`: Concurrency and stress tests
-- `tests/benchmarks/`: Performance benchmarks
-
-### Critical Test Files
-- `test_unified_cache.py`: 35 tests for cache core (LRU, flush, TTL, thread safety)
-- `test_cached_write_buffer.py`: Write buffer functionality
-- `test_core.py`: Basic DB operations
-- `test_nested_list.py`: Nested structure tests
-- `test_zmq_remote.py`: Remote client/server tests
-
-### Running Single Tests
+### 包管理
 ```bash
-# Run a single test function
-pytest tests/unit/test_unified_cache.py::test_basic_put_get -v
+# 安装开发环境（可编辑模式）
+pip install -e .
 
-# Run a test class
-pytest tests/unit/test_core.py::TestFlaxKV -v
+# 安装完整功能（包括 Pandas 和 Web UI）
+pip install -e .[full]
+
+# 安装测试依赖
+pip install -e .[test]
+
+# 构建包
+python -m build
 ```
 
-## Performance Profiles
+## 核心架构
 
-Choose the right profile in `FlaxKV()` constructor:
-- `balanced` (default): 256MB cache, 128MB write buffer - general purpose
-- `read_optimized`: 512MB cache, 64MB write buffer - caching, API queries
-- `write_optimized`: 128MB cache, 256MB write buffer - logging, batch imports
-- `memory_constrained`: 64MB cache, 32MB write buffer - embedded devices
-- `large_database`: 1GB cache, 256MB write buffer - databases >100GB
-- `ml_workload`: 512MB cache, 512MB write buffer - ML model parameters, arrays
+### 后端层次结构
 
-## Important Notes
+```
+FlaxKV (工厂类)
+├── 本地后端
+│   ├── RawLevelDBDict (无缓存，简单可靠)
+│   └── CachedLevelDBDict (智能缓存，极致性能)
+└── 远程后端
+    └── RemoteDBDict (ZeroMQ 客户端)
+        └── FlaxKVServer (ZeroMQ 服务器)
+```
 
-### Data Safety
-- **RawLevelDBDict** (default): Immediate writes, safest option
-- **CachedLevelDBDict with sync flush**: Safe, writes are synchronous
-- **CachedLevelDBDict with async flush**: Fast but data may be lost on process crash before flush completes
-- Always call `db.close()` or use context manager to ensure data is flushed
+### 关键组件位置
 
-### Security Considerations
-- Uses pickle for complex objects (security risk from untrusted data)
-- Remote server has no authentication/encryption (use VPN/SSH tunnel in production)
-- Documented in README.md "安全注意事项" section
+**核心实现**:
+- `flaxkv2/__init__.py` - FlaxKV 工厂类，智能后端选择
+- `flaxkv2/core/raw_leveldb_dict.py` - 无缓存本地后端（默认）
+- `flaxkv2/core/cached_leveldb_dict.py` - 缓存本地后端（高性能）
+- `flaxkv2/client/zmq_client.py` - 远程客户端 (RemoteDBDict)
+- `flaxkv2/server/zmq_server.py` - 远程服务器 (FlaxKVServer)
 
-### Logging
-- Library is silent by default (doesn't pollute application logs)
-- Enable via `from flaxkv2.utils.log import enable_logging; enable_logging(level="INFO")`
-- Or set environment variables: `FLAXKV_ENABLE_LOGGING=1` and `FLAXKV_LOG_LEVEL=DEBUG`
+**支撑模块**:
+- `flaxkv2/serialization/` - 编码器/解码器（msgpack, pickle, NumPy, Pandas）
+- `flaxkv2/core/nested_structures.py` - 嵌套字典/列表实现
+- `flaxkv2/utils/ttl_cleanup.py` - TTL 自动清理
+- `flaxkv2/instance_manager.py` - 数据库实例缓存
+- `flaxkv2/auto_close.py` - 程序退出时自动清理
+- `flaxkv2/config.py` - 性能配置文件
 
-### Deprecated Code
-- `LevelDBDict` is deprecated but still available for backwards compatibility
-- New code should use `RawLevelDBDict` or `CachedLevelDBDict`
-- 13-25% performance improvement over old implementation
+**CLI 和工具**:
+- `flaxkv2/cli.py` - 命令行接口（基于 Fire）
+- `flaxkv2/inspector/` - 数据可视化和管理工具
 
-## Common Tasks
+### 后端选择逻辑
 
-### Adding a New Test
-1. Choose appropriate directory: `tests/unit/`, `tests/integration/`, or `tests/stress/`
-2. Follow naming convention: `test_*.py`
-3. Use pytest fixtures for test data/cleanup
-4. Run the test: `pytest tests/unit/test_newfile.py -v`
+FlaxKV 根据参数自动选择最优后端：
 
-### Adding a New Performance Profile
-1. Edit `flaxkv2/config.py` → `PerformanceProfiles` class
-2. Add new dict with LevelDB parameters
-3. Update `PerformanceProfiles.list_profiles()` method
-4. Document in README.md
+1. **检测 URL 类型**:
+   - `tcp://...` → RemoteDBDict (远程后端)
+   - 其他 → 本地后端
 
-### Debugging Cache Issues
-1. Enable logging: `enable_logging(level="DEBUG")`
-2. Check cache stats: `db._cache.stats()` (if using CachedLevelDBDict)
-3. Monitor flush behavior: Look for "Flushing" log messages
-4. Run cache-specific tests: `pytest tests/unit/test_unified_cache.py -v -s`
+2. **检测缓存参数**（本地后端）:
+   - 无 `read_cache_size`/`write_buffer_size` → RawLevelDBDict（无缓存）
+   - 有缓存参数 → CachedLevelDBDict（智能缓存）
 
-### Testing Remote Server
-1. Start server: `flaxkv2 run --host 127.0.0.1 --port 5555 --data-dir /tmp/test_data`
-2. In another terminal: `pytest tests/integration/test_zmq_remote.py -v`
-3. Or test manually:
+### 数据流
+
+**本地写入**:
+```
+db["key"] = value
+→ Encoder.encode(value)
+→ TTLManager (如果有 default_ttl)
+→ 缓存层 (如果启用)
+→ plyvel.DB.put()
+→ LevelDB
+```
+
+**本地读取**:
+```
+value = db["key"]
+→ 缓存层查找 (如果启用)
+→ TTLManager.is_expired()
+→ plyvel.DB.get()
+→ Decoder.decode()
+→ Python 对象
+```
+
+**远程通信**:
+```
+客户端: Encoder.encode() → ZeroMQ [CMD, db_name, args...] → 服务器
+服务器: RawLevelDBDict 操作 → ZeroMQ [STATUS, data] → 客户端
+```
+
+## 关键技术细节
+
+### 缓存系统
+
+CachedLevelDBDict 提供两层缓存：
+
+1. **读缓存**（LRU）:
+   - 默认 10000 条目
+   - 热数据读取性能提升 ~10-13x
+
+2. **写缓冲**（批量写入优化）:
+   - 默认 500 条目或 30 秒刷新
+   - 支持异步（async_flush=True, 极致性能）和同步（async_flush=False, 更安全）两种模式
+
+### 序列化策略
+
+1. **msgpack** - 基本类型（最快）
+2. **二进制序列化** - NumPy 数组（保留 dtype/shape）
+3. **二进制格式** - Pandas DataFrame（可选依赖）
+4. **pickle** - 复杂对象（⚠️ 安全风险，仅用于可信环境）
+
+**类型缓存优化**（P1）:
+- Encoder 缓存每个 Python 类型的最佳序列化方法
+- 避免重复的 try-except 开销
+- 99%+ 缓存命中率，15-30% 性能提升
+
+### TTL 实现
+
+- TTL 元数据以 `__ttl__:<原始键>` 前缀存储在 LevelDB
+- 值为过期时间戳（float）
+- 服务端验证减少 ~50% 网络请求
+- 后台线程自动清理（默认 60 秒间隔）
+
+### 嵌套字典/列表
+
+- 基于 LevelDB 的 `prefixed_db()` 功能
+- 键格式: `<prefix>:<field>`
+- 每个字段独立序列化（避免整个对象序列化）
+- 递归嵌套支持
+- 启用方式: `auto_nested=True` 或 `db.nested(prefix)`
+
+### 性能配置文件
+
+6 种预设配置（在 `flaxkv2/config.py` 中定义）：
+
+- `balanced` - 通用平衡（默认）
+- `read_optimized` - 读密集型（512MB 缓存）
+- `write_optimized` - 写密集型（256MB 写缓冲）
+- `memory_constrained` - 内存受限（64MB 缓存）
+- `large_database` - 大数据库 >100GB（1GB 缓存）
+- `ml_workload` - 机器学习（512MB 缓存，64KB 块）
+
+使用方式:
 ```python
-from flaxkv2 import FlaxKV
-db = FlaxKV("testdb", "127.0.0.1:5555", backend='remote')
-db["key"] = "value"
-print(db["key"])
-db.close()
+db = FlaxKV("mydb", "./data", performance_profile='read_optimized')
 ```
 
-## Architecture Decisions
+### 远程协议（ZeroMQ）
 
-### Why Unified Cache (Not Separate Read/Write Caches)?
-- Simplicity: Single source of truth, no synchronization needed
-- Proven pattern: Write-back cache is used in CPUs, databases (InnoDB buffer pool)
-- Natural consistency: No read-write cache coherency issues
-- See `CACHE_DESIGN_REVIEW.md` for detailed analysis
+- 客户端: REQ socket，服务器: ROUTER socket
+- 消息格式: `[command_type, db_name, ...args]`
+- 响应格式: `[status_code, data]`
+- 支持命令: CONNECT, GET, SET, DELETE, KEYS, VALUES, ITEMS, UPDATE, PING
+- 服务端仅处理二进制数据，客户端负责所有序列化
 
-### Why Three Backend Implementations?
-- **RawLevelDBDict**: For users who prioritize data safety over performance
-- **CachedLevelDBDict**: For users who want performance but can accept write buffer risks
-- **RemoteDBDict**: For distributed access, multi-process scenarios
+## 测试结构
 
-### Why Nested Structures?
-- Avoid frequent full serialization/deserialization of large dicts/lists
-- Store nested keys separately in LevelDB (e.g., `parent_key/child_key`)
-- Trade-off: More LevelDB keys but better performance for partial updates
+```
+tests/
+├── conftest.py                    # 共享 fixtures
+├── unit/                          # 单元测试
+│   ├── test_core.py              # RawLevelDBDict 核心功能
+│   ├── test_cached_*.py          # CachedLevelDBDict 测试
+│   ├── test_*_ttl.py             # TTL 相关测试
+│   ├── test_nested_list.py       # 嵌套列表测试
+│   └── test_special_values.py    # 边界情况和特殊值
+├── integration/                   # 集成测试
+│   ├── test_zmq_remote.py        # 远程 ZeroMQ 后端
+│   ├── test_nested_dict.py       # 嵌套字典
+│   └── test_auto_nested.py       # 自动嵌套功能
+├── stress/                        # 压力测试
+│   └── test_concurrency.py       # 并发测试
+└── benchmarks/                    # 性能基准测试
+    ├── benchmark_cache.py         # 缓存性能
+    └── benchmark_nested.py        # 嵌套结构性能
+```
+
+运行远程测试需要测试服务器（在 fixtures 中自动启动/关闭）。
+
+## 代码风格
+
+- **格式化**: black (24.3.0)
+- **导入排序**: isort (black profile)
+- **行长度**: 127 字符
+- **Pre-commit hooks**: 自动格式化
+
+## 性能基准
+
+### 基准性能（SSD）
+
+**无缓存** (RawLevelDBDict):
+- 热数据读取: 107K ops/s
+- 写入: 1649 ops/s
+
+**智能缓存** (CachedLevelDBDict):
+- 只读缓存: 1064K ops/s (9.9x)
+- 同步写缓冲: 926K ops/s (8.6x)
+- 异步写缓冲: 1434K ops/s (13.4x)
+
+### 近期优化（2025-10）
+
+✅ **P0: LevelDB 配置优化**
+- 启用 256MB LRU 缓存（默认 8MB）
+- 添加布隆过滤器（10 bits/key）
+- 优化块大小（16KB）
+- 结果: 4-25% 性能提升
+
+✅ **P1: 智能类型缓存**
+- 缓存每个类型的最佳编码器
+- 99%+ 缓存命中率
+- 结果: 14-30% 编码性能提升
+
+**综合影响**: 典型工作负载 ~20-50% 性能提升
+
+## 安全注意事项
+
+⚠️ **Pickle 序列化风险**:
+- FlaxKV2 对复杂对象使用 pickle，可能执行任意代码
+- 仅在可信环境中使用
+- 生产环境建议仅存储简单数据类型
+
+⚠️ **远程连接无加密/认证**:
+- ZeroMQ 服务器默认无安全机制
+- 仅在可信网络使用
+- 建议通过防火墙、VPN、SSH 隧道或绑定 127.0.0.1
+
+## 文档参考
+
+项目文档位于 `docs/` 目录：
+
+- `docs/design/ARCHITECTURE.md` - 详细架构设计
+- `docs/design/CORE_DESIGN.md` - 核心设计文档
+- `docs/LOGGING.md` - 日志配置指南
+- `docs/INSPECTOR.md` - Inspector 工具使用
+- `docs/CONFIG_FILE_GUIDE.md` - 配置文件指南
+- `docs/README.md` - 文档目录树
+
+## 开发最佳实践
+
+1. **使用上下文管理器**:
+   ```python
+   with FlaxKV("mydb", "./data") as db:
+       db["key"] = "value"
+   # 自动关闭，确保缓冲区刷新
+   ```
+
+2. **启用缓存后必须正常关闭**:
+   - 使用 `with` 语句（推荐）
+   - 或手动调用 `close()`
+
+3. **生产环境建议**:
+   - 使用 `async_flush=False`（同步模式更安全）
+   - 选择合适的 `performance_profile`
+   - 设置合理的 `read_cache_size` 和 `write_buffer_size`
+
+4. **性能调优**:
+   ```python
+   # 读密集型
+   db = FlaxKV("cache", "./data",
+               performance_profile='read_optimized',
+               read_cache_size=10000)
+
+   # 写密集型
+   db = FlaxKV("logs", "./data",
+               performance_profile='write_optimized',
+               write_buffer_size=1000,
+               async_flush=True)
+   ```
+
+5. **TTL 使用**:
+   ```python
+   # 设置默认 TTL
+   db = FlaxKV("cache", "./data", default_ttl=3600)
+
+   # 单个键设置 TTL
+   db.set_ttl("session:123", 1800)
+   ```

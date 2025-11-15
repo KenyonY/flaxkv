@@ -43,6 +43,7 @@ class TTLCleanup:
         self.batch_size = batch_size
         self.running = False
         self.thread = None
+        self._stop_event = threading.Event()  # 用于可中断的休眠
 
         logger.debug(f"TTLCleanup initialized: interval={cleanup_interval}s, batch_size={batch_size}")
 
@@ -63,6 +64,7 @@ class TTLCleanup:
             return
 
         self.running = False
+        self._stop_event.set()  # 立即唤醒休眠中的线程
         if self.thread:
             self.thread.join(timeout=5)
         logger.info("TTLCleanup thread stopped")
@@ -113,8 +115,9 @@ class TTLCleanup:
                 # 发生错误时重置迭代器
                 iterator = None
 
-            # 休眠
+            # 可中断的休眠：使用 Event.wait() 替代 time.sleep()
+            # 当调用 stop() 时，_stop_event.set() 会立即唤醒等待
             if self.running:
-                time.sleep(self.cleanup_interval)
+                self._stop_event.wait(timeout=self.cleanup_interval)
 
         logger.debug("TTLCleanup loop exited")
