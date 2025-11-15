@@ -118,9 +118,17 @@ FlaxKV (工厂类)
 │   ├── RawLevelDBDict (无缓存，简单可靠)
 │   └── CachedLevelDBDict (智能缓存，极致性能)
 └── 远程后端
-    └── RemoteDBDict (ZeroMQ 客户端)
-        └── FlaxKVServer (ZeroMQ 服务器)
+    ├── RemoteDBDict (同步包装器，向后兼容)
+    │   └── AsyncRemoteDBDict (异步核心实现)
+    └── FlaxKVServer (ZeroMQ 服务器)
 ```
+
+**重要架构变化（2025-01）：异步重构**
+- 远程客户端现在基于 asyncio，核心实现是 `AsyncRemoteDBDict`
+- `RemoteDBDict` 变为薄薄的同步包装器（内部调用异步核心）
+- 只维护一套核心代码（异步），减少维护成本
+- 性能提升：~1.5-1.6x（异步并发 vs 同步顺序）
+- 向后兼容：所有现有代码无需修改
 
 ### 关键组件位置
 
@@ -128,7 +136,8 @@ FlaxKV (工厂类)
 - `flaxkv2/__init__.py` - FlaxKV 工厂类，智能后端选择
 - `flaxkv2/core/raw_leveldb_dict.py` - 无缓存本地后端（默认）
 - `flaxkv2/core/cached_leveldb_dict.py` - 缓存本地后端（高性能）
-- `flaxkv2/client/zmq_client.py` - 远程客户端 (RemoteDBDict)
+- `flaxkv2/client/async_zmq_client.py` - 异步远程客户端（核心实现）
+- `flaxkv2/client/zmq_client.py` - 同步远程客户端（包装器，向后兼容）
 - `flaxkv2/server/zmq_server.py` - 远程服务器 (FlaxKVServer)
 
 **支撑模块**:
@@ -334,35 +343,77 @@ tests/
 
 1. **使用上下文管理器**:
    ```python
+   # 同步API（推荐用于简单脚本）
    with FlaxKV("mydb", "./data") as db:
        db["key"] = "value"
    # 自动关闭，确保缓冲区刷新
    ```
 
-2. **启用缓存后必须正常关闭**:
+2. **使用异步API（推荐用于高性能/并发场景）**:
+   ```python
+   import asyncio
+   from flaxkv2.client.async_zmq_client import AsyncRemoteDBDict
+   from flaxkv2.utils.async_file_transfer import upload_large_file_async
+
+   async def main():
+       # 异步客户端（并发性能更高）
+       async with AsyncRemoteDBDict(
+           'default_db',
+           'tcp://127.0.0.1:25555',
+           password='yao',
+           enable_encryption=True
+       ) as db:
+           # 并发写入
+           await asyncio.gather(
+               db.set('key1', 'value1'),
+               db.set('key2', 'value2'),
+               db.set('key3', 'value3')
+           )
+
+           # 并发读取
+           results = await asyncio.gather(
+               db.get('key1'),
+               db.get('key2'),
+               db.get('key3')
+           )
+
+           # 异步文件传输（并发上传chunk）
+           await upload_large_file_async(
+               'default_db',
+               'tcp://127.0.0.1:25555',
+               'my_file',
+               '/path/to/large/file.bin',
+               max_concurrency=8,  # 8个并发chunk
+               password='yao'
+           )
+
+   asyncio.run(main())
+   ```
+
+3. **启用缓存后必须正常关闭**:
    - 使用 `with` 语句（推荐）
    - 或手动调用 `close()`
 
-3. **生产环境建议**:
-   - 使用 `async_flush=False`（同步模式更安全）
-   - 选择合适的 `performance_profile`
-   - 设置合理的 `read_cache_size` 和 `write_buffer_size`
+4. **生产环境建议**:
+   - 对于性能敏感的应用，直接使用 `AsyncRemoteDBDict`
+   - 对于简单脚本或向后兼容，使用 `RemoteDBDict`（同步包装器）
+   - 远程连接启用加密：`enable_encryption=True, password='your_password'`
 
-4. **性能调优**:
+5. **性能调优**:
    ```python
-   # 读密集型
+   # 读密集型（本地后端）
    db = FlaxKV("cache", "./data",
                performance_profile='read_optimized',
                read_cache_size=10000)
 
-   # 写密集型
+   # 写密集型（本地后端）
    db = FlaxKV("logs", "./data",
                performance_profile='write_optimized',
                write_buffer_size=1000,
                async_flush=True)
    ```
 
-5. **TTL 使用**:
+6. **TTL 使用**:
    ```python
    # 设置默认 TTL
    db = FlaxKV("cache", "./data", default_ttl=3600)

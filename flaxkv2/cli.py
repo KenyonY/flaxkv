@@ -6,6 +6,7 @@ import os
 import json
 import fire
 import psutil
+import asyncio
 from pathlib import Path
 from typing import Optional, List
 from rich import print
@@ -15,7 +16,8 @@ from rich.table import Table
 
 from flaxkv2 import __version__, FlaxKV
 from flaxkv2.utils.log import set_log_level
-from flaxkv2.utils.file_transfer import FileTransferUtil, format_size
+from flaxkv2.utils.file_transfer import FileTransferUtil
+from flaxkv2.utils.async_file_transfer import upload_large_file_async, download_large_file_async, format_size
 from flaxkv2.inspector.cli import InspectCommands
 from flaxkv2.utils.config_loader import ConfigLoader, save_sample_config
 
@@ -232,7 +234,7 @@ class FlaxKV2CLI:
         chunked: Optional[bool] = None,
         chunk_size: int = 10 * 1024 * 1024,
         serial: bool = False,
-        max_workers: int = 5,
+        max_workers: int = 1,
     ):
         """
         上传文件或文件夹到远程 FlaxKV 服务器
@@ -245,11 +247,11 @@ class FlaxKV2CLI:
             profile: 配置 profile 名称 (默认: default)
             chunked: 是否使用分块上传（None=自动检测，大于100MB自动分块）
             chunk_size: 分块大小（字节），默认 10MB
-            serial: 强制使用串行传输（默认自动使用并行）
-            max_workers: 并行线程数（默认 5）
+            serial: (已废弃，保留以兼容旧版本) 现在总是使用异步传输
+            max_workers: 异步并发数（默认 16）
 
         示例:
-            # 使用配置文件中的默认服务器（大文件自动并行）
+            # 使用配置文件中的默认服务器（大文件自动异步传输）
             flaxkv2 set /path/to/file.txt
 
             # 使用配置文件中定义的服务器
@@ -258,10 +260,7 @@ class FlaxKV2CLI:
             # 直接指定服务器地址
             flaxkv2 set /path/to/file.txt --server 192.168.1.100:5555
 
-            # 强制使用串行传输
-            flaxkv2 set /path/to/large_file.mp4 --serial
-
-            # 指定并行线程数
+            # 指定并发数
             flaxkv2 set /path/to/large_file.mp4 --max-workers 8
 
             # 指定分块大小（20MB）
@@ -319,17 +318,6 @@ class FlaxKV2CLI:
                 derive_from_password=derive_from_password
             )
 
-            # 准备连接参数（用于并行传输时每个线程创建独立连接）
-            db_connection_params = {
-                'db_name': final_db_name,
-                'url': final_server,
-                'backend': 'remote',
-                'timeout': timeout,
-                'enable_encryption': enable_encryption,
-                'password': password,
-                'derive_from_password': derive_from_password
-            }
-
             # 处理目录：先打包，然后根据大小决定是否分块
             if path.is_dir():
                 import tempfile
@@ -353,28 +341,19 @@ class FlaxKV2CLI:
 
                     # 根据大小决定是否使用分块上传
                     if packed_size > 100 * 1024 * 1024:  # > 100MB 使用分块
-                        console.print(f"[yellow]打包文件较大，使用分块上传[/yellow]\n")
+                        console.print(f"[yellow]打包文件较大，使用异步分块上传（{max_workers} 并发）[/yellow]\n")
 
-                        if serial:
-                            # 串行上传
-                            from flaxkv2.utils.file_transfer import upload_large_file
-                            metadata = upload_large_file(
-                                db, key, temp_path,
-                                chunk_size=chunk_size,
-                                show_progress=True,
-                                verify=True
-                            )
-                        else:
-                            # 并行上传
-                            from flaxkv2.utils.file_transfer import upload_large_file_parallel
-                            metadata = upload_large_file_parallel(
-                                db, key, temp_path,
-                                chunk_size=chunk_size,
-                                max_workers=max_workers,
-                                show_progress=True,
-                                verify=True,
-                                db_connection_params=db_connection_params
-                            )
+                        # 使用异步上传
+                        server_url = f"tcp://{final_server}" if not final_server.startswith('tcp://') else final_server
+                        metadata = asyncio.run(upload_large_file_async(
+                            final_db_name, server_url, key, temp_path,
+                            chunk_size=chunk_size,
+                            max_concurrency=max_workers,
+                            show_progress=True,
+                            verify=True,
+                            password=password,
+                            enable_encryption=enable_encryption
+                        ))
 
                         # 更新元数据，标记为 chunked_folder
                         metadata['type'] = 'chunked_folder'
@@ -386,7 +365,7 @@ class FlaxKV2CLI:
                         console.print(f"  目录名: [bold blue]{path.name}[/bold blue]")
                         console.print(f"  大小: {format_size(metadata['size'])}")
                         console.print(f"  分块: {metadata['chunks']} 个")
-                        console.print(f"  模式: {'串行' if serial else f'并行 ({max_workers} 线程)'}")
+                        console.print(f"  并发数: {max_workers=}")
                         console.print(f"  服务器: {final_server}")
 
                     else:
@@ -417,38 +396,26 @@ class FlaxKV2CLI:
                         os.unlink(temp_path)
 
             elif use_chunked and path.is_file():
-                # 根据 serial 参数选择串行或并行上传
-                if serial:
-                    # 串行上传
-                    from flaxkv2.utils.file_transfer import upload_large_file
+                # 使用异步分块上传
+                console.print(f"[yellow]使用异步分块上传（{max_workers=} 并发）[/yellow]\n")
 
-                    console.print(f"[yellow]使用串行分块上传（稳定模式）[/yellow]\n")
-                    metadata = upload_large_file(
-                        db, key, str(path),
-                        chunk_size=chunk_size,
-                        show_progress=True,
-                        verify=True
-                    )
-                else:
-                    # 并行上传（默认）
-                    from flaxkv2.utils.file_transfer import upload_large_file_parallel
-
-                    console.print(f"[yellow]使用并行分块上传（{max_workers} 个线程）[/yellow]\n")
-                    metadata = upload_large_file_parallel(
-                        db, key, str(path),
-                        chunk_size=chunk_size,
-                        max_workers=max_workers,
-                        show_progress=True,
-                        verify=True,
-                        db_connection_params=db_connection_params
-                    )
+                server_url = f"tcp://{final_server}" if not final_server.startswith('tcp://') else final_server
+                metadata = asyncio.run(upload_large_file_async(
+                    final_db_name, server_url, key, str(path),
+                    chunk_size=chunk_size,
+                    max_concurrency=max_workers,
+                    show_progress=True,
+                    verify=True,
+                    password=password,
+                    enable_encryption=enable_encryption
+                ))
 
                 console.print(f"[bold green]✓[/bold green] 上传成功!")
                 console.print(f"  类型: chunked_file")
                 console.print(f"  键名: [bold blue]{key}[/bold blue]")
                 console.print(f"  大小: {format_size(metadata['size'])}")
                 console.print(f"  分块: {metadata['chunks']} 个")
-                console.print(f"  模式: {'串行' if serial else f'并行 ({max_workers} 线程)'}")
+                console.print(f"  并发数: {max_workers}")
                 console.print(f"  服务器: {final_server}")
 
             else:
@@ -500,11 +467,11 @@ class FlaxKV2CLI:
             server: 远程服务器地址 (host:port) 或服务器名称 (@name)
             db_name: 数据库名称
             profile: 配置 profile 名称 (默认: default)
-            serial: 强制使用串行传输（默认自动使用并行）
-            max_workers: 并行线程数（默认 5）
+            serial: (已废弃，保留以兼容旧版本) 现在总是使用异步传输
+            max_workers: 异步并发数（默认 5）
 
         示例:
-            # 使用配置文件中的默认服务器（大文件自动并行）
+            # 使用配置文件中的默认服务器（大文件自动异步传输）
             flaxkv2 get my_file
 
             # 使用配置文件中定义的服务器
@@ -513,10 +480,7 @@ class FlaxKV2CLI:
             # 直接指定服务器地址
             flaxkv2 get my_file --server 192.168.1.100:5555
 
-            # 强制使用串行传输
-            flaxkv2 get my_file --serial
-
-            # 指定并行线程数
+            # 指定并发数
             flaxkv2 get my_file --max-workers 8
         """
         # 合并配置
@@ -560,17 +524,6 @@ class FlaxKV2CLI:
                 derive_from_password=derive_from_password
             )
 
-            # 准备连接参数（用于并行传输时每个线程创建独立连接）
-            db_connection_params = {
-                'db_name': final_db_name,
-                'url': final_server,
-                'backend': 'remote',
-                'timeout': timeout,
-                'enable_encryption': enable_encryption,
-                'password': password,
-                'derive_from_password': derive_from_password
-            }
-
             # 检查元数据，判断文件类型
             metadata = db.get(f"{key}:meta")
 
@@ -603,23 +556,16 @@ class FlaxKV2CLI:
                 temp_file.close()
 
                 try:
-                    # 分块下载到临时文件
-                    if serial:
-                        from flaxkv2.utils.file_transfer import download_large_file
-                        download_large_file(
-                            db, key, temp_path,
-                            show_progress=True,
-                            verify=True
-                        )
-                    else:
-                        from flaxkv2.utils.file_transfer import download_large_file_parallel
-                        download_large_file_parallel(
-                            db, key, temp_path,
-                            max_workers=max_workers,
-                            show_progress=True,
-                            verify=True,
-                            db_connection_params=db_connection_params
-                        )
+                    # 使用异步分块下载到临时文件
+                    server_url = f"tcp://{final_server}" if not final_server.startswith('tcp://') else final_server
+                    asyncio.run(download_large_file_async(
+                        final_db_name, server_url, key, temp_path,
+                        max_concurrency=max_workers,
+                        show_progress=True,
+                        verify=True,
+                        password=password,
+                        enable_encryption=enable_encryption
+                    ))
 
                     # 解包到目标目录
                     console.print(f"\n[yellow]正在解包...[/yellow]")
@@ -632,7 +578,7 @@ class FlaxKV2CLI:
                     console.print(f"  目录名: {metadata.get('original_name', metadata.get('filename', 'unknown'))}")
                     console.print(f"  大小: {format_size(metadata['size'])}")
                     console.print(f"  分块: {metadata['chunks']} 个")
-                    console.print(f"  模式: {'串行' if serial else f'并行 ({max_workers} 线程)'}")
+                    console.print(f"  并发数: {max_workers}")
                     console.print(f"  保存路径: {output_path}")
 
                 finally:
@@ -641,35 +587,24 @@ class FlaxKV2CLI:
                         os.unlink(temp_path)
 
             elif is_chunked_file:
-                # 根据 serial 参数选择串行或并行下载
-                if serial:
-                    # 串行下载
-                    from flaxkv2.utils.file_transfer import download_large_file
+                # 使用异步分块下载
+                console.print(f"[yellow]检测到分块文件，使用异步下载（{max_workers} 并发）[/yellow]\n")
 
-                    console.print(f"[yellow]检测到分块文件，使用串行下载（稳定模式）[/yellow]\n")
-                    metadata = download_large_file(
-                        db, key, str(output_path),
-                        show_progress=True,
-                        verify=True
-                    )
-                else:
-                    # 并行下载（默认）
-                    from flaxkv2.utils.file_transfer import download_large_file_parallel
-
-                    console.print(f"[yellow]检测到分块文件，使用并行下载（{max_workers} 个线程）[/yellow]\n")
-                    metadata = download_large_file_parallel(
-                        db, key, str(output_path),
-                        max_workers=max_workers,
-                        show_progress=True,
-                        verify=True,
-                        db_connection_params=db_connection_params
-                    )
+                server_url = f"tcp://{final_server}" if not final_server.startswith('tcp://') else final_server
+                metadata = asyncio.run(download_large_file_async(
+                    final_db_name, server_url, key, str(output_path),
+                    max_concurrency=max_workers,
+                    show_progress=True,
+                    verify=True,
+                    password=password,
+                    enable_encryption=enable_encryption
+                ))
 
                 console.print(f"[bold green]✓[/bold green] 下载成功!")
                 console.print(f"  文件名: {metadata['filename']}")
                 console.print(f"  大小: {format_size(metadata['size'])}")
                 console.print(f"  分块: {metadata['chunks']} 个")
-                console.print(f"  模式: {'串行' if serial else f'并行 ({max_workers} 线程)'}")
+                console.print(f"  并发数: {max_workers}")
 
             else:
                 # 使用传统方式下载

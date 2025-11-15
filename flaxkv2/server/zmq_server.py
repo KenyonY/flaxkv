@@ -275,8 +275,10 @@ class FlaxKVServer:
             
             # DISCONNECT 命令
             if command == self.CMD_DISCONNECT:
-                success = self._close_db(db_name)
-                return [self.STATUS_OK, success]
+                # 不关闭数据库，保持打开以支持多个并发连接
+                # 数据库由服务器统一管理，在服务器停止时关闭
+                logger.debug(f"Client disconnected from database: {db_name}")
+                return [self.STATUS_OK, True]
             
             # 其他命令需要数据库实例
             try:
@@ -517,8 +519,15 @@ class FlaxKVServer:
         # 主接收循环
         while self.running:
             try:
-                # 异步接收消息
-                frames = await self.socket.recv_multipart()
+                # 异步接收消息（带超时，以便定期检查running标志）
+                try:
+                    frames = await asyncio.wait_for(
+                        self.socket.recv_multipart(),
+                        timeout=1.0  # 1秒超时
+                    )
+                except asyncio.TimeoutError:
+                    # 超时后继续循环，检查running标志
+                    continue
 
                 if len(frames) < 2:
                     logger.warning(f"Invalid message format: {len(frames)} frames")
@@ -541,8 +550,16 @@ class FlaxKVServer:
                 if e.errno == zmq.ETERM:
                     logger.info("Context terminated")
                     break
+                # 如果服务器正在关闭，任何ZMQ错误都应该退出循环
+                if not self.running:
+                    logger.info(f"ZMQ error during shutdown: {e}, exiting loop")
+                    break
                 logger.error(f"ZMQ error in server loop: {e}")
             except Exception as e:
+                # 如果服务器正在关闭，任何异常都应该退出循环
+                if not self.running:
+                    logger.info(f"Exception during shutdown: {e}, exiting loop")
+                    break
                 logger.error(f"Error in server loop: {e}", exc_info=True)
 
         logger.info("Server loop stopped")
@@ -628,6 +645,15 @@ class FlaxKVServer:
         logger.info("Stopping FlaxKV Server...")
         self.running = False
 
+        # 先关闭socket，中断阻塞的recv
+        if self.socket:
+            try:
+                self.socket.close()
+                self.socket = None
+                logger.info("Socket closed")
+            except Exception as e:
+                logger.error(f"Error closing socket: {e}")
+
         # 等待所有pending异步任务完成（最多5秒）
         if self.pending_tasks:
             logger.info(f"Waiting for {len(self.pending_tasks)} pending tasks to complete...")
@@ -636,7 +662,9 @@ class FlaxKVServer:
         # 关闭线程池executor
         if self.executor:
             logger.info("Shutting down executor...")
-            self.executor.shutdown(wait=True, timeout=5.0)
+            # 不等待任务完成，立即关闭（避免hang住）
+            # 注：使用 wait=False 可能导致正在执行的任务被中断，但这在关闭时是可接受的
+            self.executor.shutdown(wait=False)
             self.executor = None
 
         # 关闭所有数据库
@@ -649,11 +677,6 @@ class FlaxKVServer:
                     logger.error(f"Error closing database {db_name}: {e}")
             self.databases.clear()
 
-        # 关闭 socket
-        if self.socket:
-            self.socket.close()
-            self.socket = None
-
         # 停止认证器
         if self.auth:
             try:
@@ -663,7 +686,10 @@ class FlaxKVServer:
             self.auth = None
 
         # 终止 context
-        self.context.term()
+        try:
+            self.context.term()
+        except Exception as e:
+            logger.error(f"Error terminating context: {e}")
 
         # 打印统计信息
         logger.info(f"Server stopped. Stats: {self.stats}")
