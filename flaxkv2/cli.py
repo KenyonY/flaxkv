@@ -538,6 +538,10 @@ class FlaxKV2CLI:
                 db.close()
                 return
 
+            # 处理元数据格式（可能是 JSON 字符串或字典）
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+
             # 判断文件类型
             file_type = metadata.get('type')
             is_chunked_file = file_type == 'chunked_file'
@@ -616,10 +620,7 @@ class FlaxKV2CLI:
                     # 下载数据
                     task = progress.add_task(f"正在下载...", total=None)
 
-                    # 从 JSON 字符串解析元数据（传统方式）
-                    if isinstance(metadata, str):
-                        metadata = json.loads(metadata)
-
+                    # metadata 已在前面统一处理为字典格式
                     content = db[key]
                     progress.update(task, completed=True)
 
@@ -755,7 +756,10 @@ class FlaxKV2CLI:
                 try:
                     meta_key = f"{key}:meta"
                     if meta_key in db:
-                        metadata = json.loads(db[meta_key])
+                        metadata = db[meta_key]
+                        # 处理元数据格式（可能是 JSON 字符串或字典）
+                        if isinstance(metadata, str):
+                            metadata = json.loads(metadata)
                         table.add_row(
                             key,
                             metadata.get('type', 'unknown'),
