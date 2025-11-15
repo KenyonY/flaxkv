@@ -17,6 +17,7 @@ from flaxkv2.utils.ttl_cleanup import TTLCleanup
 from flaxkv2.utils.rwlock import RWLock
 from flaxkv2.utils.unified_cache import UnifiedCache
 from flaxkv2.instance_manager import db_instance_manager
+from flaxkv2.auto_close import db_close_manager
 from flaxkv2.config import create_leveldb_options
 
 logger = get_logger(__name__)
@@ -266,7 +267,11 @@ class CachedLevelDBDict:
 
         # 注册到实例管理器
         db_instance_manager.register_instance(self.db_path, self)
-        logger.debug(f"数据库实例已注册: {self.db_path}")
+        logger.debug(f"数据库实例已注册到实例管理器: {self.db_path}")
+
+        # 注册到自动关闭管理器（程序退出时自动清理）
+        db_close_manager.register(self)
+        logger.debug(f"数据库实例已注册到自动关闭管理器: {self.db_path}")
 
         # 标记初始化完成，删除临时标志
         del self._is_new_instance
@@ -957,7 +962,11 @@ class CachedLevelDBDict:
 
                 # 从实例管理器中移除
                 db_instance_manager.unregister_instance(self.db_path)
-                logger.debug(f"数据库实例已从管理器移除: {self.db_path}")
+                logger.debug(f"数据库实例已从实例管理器移除: {self.db_path}")
+
+                # 从自动关闭管理器中移除
+                db_close_manager.unregister(self)
+                logger.debug(f"数据库实例已从自动关闭管理器移除: {self.db_path}")
             except Exception as e:
                 logger.error(f"Error closing cached LevelDB: {self.name}, error: {e}")
 

@@ -313,6 +313,11 @@ class FlaxKV:
         timeout: int = 5000,
         max_retries: int = 3,
         retry_delay: float = 0.1,
+        enable_encryption: bool = False,
+        password: Optional[str] = None,
+        server_public_key: Optional[str] = None,
+        derive_from_password: bool = True,
+        enable_compression: bool = False,
         **kwargs
     ):
         """
@@ -332,19 +337,48 @@ class FlaxKV:
             max_retries: 最大重试次数（默认 3）
             retry_delay: 重试延迟（秒，默认 0.1）
 
+            enable_encryption: 是否启用 CurveZMQ 加密（默认 False）
+            password: 服务器密码（与 server_public_key 二选一）
+                • 使用密码时会自动管理密钥对
+                • 服务器端必须使用相同的密码
+            server_public_key: 服务器公钥（Z85 编码，与 password 二选一）
+                • 从服务器日志中获取
+                • 适用于公钥分发场景
+            derive_from_password: 是否从密码直接派生密钥（默认 True，推荐）
+                • True: 确定性派生，相同密码总是生成相同密钥
+                • False: 使用文件存储密钥
+            enable_compression: 是否启用 LZ4 压缩（默认 False）
+
             **kwargs: 其他参数传递给底层实现
                 • port: 端口号（会覆盖 URL 中的端口）
+                • read_cache_size: 客户端读缓存大小
+                • enable_write_buffer: 是否启用写缓冲
 
         Returns:
             RemoteDBDict: 远程数据库客户端实例
 
         示例：
+            >>> # 不加密连接
             >>> db = FlaxKV._create_remote_backend("mydb", "tcp://127.0.0.1:5555")
-            >>> db = FlaxKV._create_remote_backend("mydb", "127.0.0.1:5555")
-            >>> db = FlaxKV._create_remote_backend("mydb", "localhost", port=5555)
+
+            >>> # 使用密码加密
+            >>> db = FlaxKV._create_remote_backend(
+            ...     "mydb", "tcp://127.0.0.1:5555",
+            ...     enable_encryption=True,
+            ...     password="mypassword"
+            ... )
+
+            >>> # 使用公钥加密
+            >>> db = FlaxKV._create_remote_backend(
+            ...     "mydb", "tcp://127.0.0.1:5555",
+            ...     enable_encryption=True,
+            ...     server_public_key="<从服务器日志复制的公钥>"
+            ... )
 
         注意：
             • 如果 kwargs 中传递了 port 参数，会覆盖 URL 中解析的端口
+            • 启用加密时，必须提供 password 或 server_public_key
+            • password 和 server_public_key 不能同时指定
         """
         from flaxkv2.client.zmq_client import RemoteDBDict
 
@@ -381,6 +415,11 @@ class FlaxKV:
             timeout=timeout,
             max_retries=max_retries,
             retry_delay=retry_delay,
+            enable_encryption=enable_encryption,
+            password=password,
+            server_public_key=server_public_key,
+            derive_from_password=derive_from_password,
+            enable_compression=enable_compression,
             **kwargs
         )
 
@@ -528,6 +567,28 @@ class FlaxKV:
 
                 retry_delay: float, optional
                     重试延迟（秒，默认 0.1）
+
+                enable_encryption: bool, optional
+                    启用 CurveZMQ 加密（默认 False）
+                    • 必须与服务器配置一致
+
+                password: str, optional
+                    服务器密码（与 server_public_key 二选一）
+                    • 服务器端必须使用相同密码
+                    • 自动管理密钥对
+
+                server_public_key: str, optional
+                    服务器公钥（Z85 编码，与 password 二选一）
+                    • 从服务器日志中获取
+                    • 适用于公钥分发场景
+
+                derive_from_password: bool, optional
+                    从密码派生密钥（默认 True，推荐）
+                    • True: 确定性派生
+                    • False: 文件存储
+
+                enable_compression: bool, optional
+                    启用 LZ4 压缩（默认 False）
 
         Returns:
             根据参数智能选择后端类型：

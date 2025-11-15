@@ -363,8 +363,16 @@ def derive_keypair_from_password(password: str, salt: Optional[bytes] = None) ->
     public_key_bytes, secret_key_bytes = nacl.bindings.crypto_box_seed_keypair(kdf)
 
     # 转换为ZMQ的Z85编码格式
-    public_key = zmq.utils.z85.encode(public_key_bytes).decode('utf-8')
-    secret_key = zmq.utils.z85.encode(secret_key_bytes).decode('utf-8')
+    # PyZMQ 的 z85 编码直接在 zmq 命名空间下
+    try:
+        # 尝试新版本 PyZMQ 的 API
+        public_key = zmq.z85.encode(public_key_bytes).decode('utf-8')
+        secret_key = zmq.z85.encode(secret_key_bytes).decode('utf-8')
+    except AttributeError:
+        # 兼容旧版本 PyZMQ
+        import zmq.utils.z85 as z85_module
+        public_key = z85_module.encode(public_key_bytes).decode('utf-8')
+        secret_key = z85_module.encode(secret_key_bytes).decode('utf-8')
 
     return {
         'public_key': public_key,
@@ -402,7 +410,14 @@ def _derive_keypair_simple(password: str) -> Dict[str, str]:
     # 我们需要确保密钥符合ZMQ的格式要求
 
     # 将私钥转换为Z85格式
-    secret_key = zmq.utils.z85.encode(secret_key_bytes).decode('utf-8')
+    # PyZMQ 的 z85 编码直接在 zmq 命名空间下
+    try:
+        # 尝试新版本 PyZMQ 的 API
+        secret_key = zmq.z85.encode(secret_key_bytes).decode('utf-8')
+    except AttributeError:
+        # 兼容旧版本 PyZMQ
+        import zmq.utils.z85 as z85_module
+        secret_key = z85_module.encode(secret_key_bytes).decode('utf-8')
 
     # 从私钥派生公钥
     public_key_bytes = zmq.curve_public(secret_key.encode('utf-8'))

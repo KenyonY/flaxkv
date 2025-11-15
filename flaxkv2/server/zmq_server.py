@@ -121,6 +121,16 @@ class FlaxKVServer:
                 # 使用直接指定的密钥或自动生成
                 self.server_secret_key = server_secret_key
                 self.server_public_key = None
+
+                # ⚠️ 重要警告：如果启用加密但没有提供密码或密钥，密钥将随机生成
+                if not server_secret_key:
+                    logger.warning("=" * 80)
+                    logger.warning("⚠️  警告：启用了加密但未提供密码或密钥！")
+                    logger.warning("⚠️  服务器将生成随机密钥对，客户端需要使用服务器公钥连接。")
+                    logger.warning("⚠️  建议：")
+                    logger.warning("    1. 使用密码：在配置文件或命令行中提供 --password 参数")
+                    logger.warning("    2. 或在客户端使用下方的公钥进行连接")
+                    logger.warning("=" * 80)
         else:
             self.server_secret_key = None
             self.server_public_key = None

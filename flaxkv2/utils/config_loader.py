@@ -336,6 +336,11 @@ path = "./data"
 # 连接超时（秒）
 timeout = 30
 
+# 客户端加密配置（连接远程服务器时使用）
+enable_encryption = false
+# password = ""
+# derive_from_password = true
+
 # 客户端配置 profiles
 [client.profiles.local]
 backend = "local"
@@ -357,23 +362,34 @@ timeout = 60
 [servers.local]
 host = "127.0.0.1"
 port = 5555
-# 可选：密码
+# 加密配置
+enable_encryption = false
 # password = "local-password"
+# derive_from_password = true
 
 [servers.production]
 host = "192.168.1.100"
 port = 5555
+# 加密配置（生产环境建议启用）
+enable_encryption = true
 # password = "prod-password"
+# derive_from_password = true
 
 [servers.staging]
 host = "192.168.1.200"
 port = 5555
+# 加密配置
+enable_encryption = false
 # password = "staging-password"
+# derive_from_password = true
 
 [servers.ml_cluster]
 host = "ml.example.com"
 port = 5555
+# 加密配置
+enable_encryption = false
 # password = "ml-password"
+# derive_from_password = true
 
 
 # ============================================================================

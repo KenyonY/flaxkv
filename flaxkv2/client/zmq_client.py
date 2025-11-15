@@ -19,6 +19,7 @@ from flaxkv2.serialization.value_meta import ValueWithMeta
 from flaxkv2.utils.log import get_logger
 from flaxkv2.utils.unified_cache import UnifiedCache
 from flaxkv2.utils.key_manager import get_keypair_from_password
+from flaxkv2.auto_close import db_close_manager
 
 # 尝试导入LZ4压缩
 try:
@@ -108,6 +109,7 @@ class RemoteDBDict:
         """
         self.name = db_name
         self.db_name = db_name
+        self.db_path = f"tcp://{host}:{port}/{db_name}"  # 虚拟路径，用于日志显示
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -193,6 +195,10 @@ class RemoteDBDict:
         logger.info(f"  Encryption: {'Enabled' if enable_encryption else 'Disabled'}")
         logger.info(f"  Compression: {'Enabled' if enable_compression else 'Disabled'}")
         logger.info(f"  Write Buffer: {'Enabled' if enable_write_buffer else 'Disabled'}")
+
+        # 注册到自动关闭管理器（程序退出时自动清理）
+        db_close_manager.register(self)
+        logger.debug(f"远程数据库实例已注册到自动关闭管理器: {self.db_path}")
     
     def _connect_socket(self):
         """创建并连接 socket"""
@@ -300,7 +306,24 @@ class RemoteDBDict:
                     # 重新连接 socket
                     self._connect_socket()
                 else:
-                    raise TimeoutError(f"Request timeout after {retries} attempts")
+                    # 如果启用了加密，超时很可能是加密配置错误
+                    if self.enable_encryption:
+                        raise TimeoutError(
+                            f"连接超时 (重试 {retries} 次后失败)。\n"
+                            f"可能的原因：\n"
+                            f"  1. 服务器未启用加密，但客户端启用了加密\n"
+                            f"  2. 密码不正确（服务器密码: ?, 客户端密码已配置）\n"
+                            f"  3. 服务器未运行或网络不可达\n"
+                            f"请检查服务器配置和密码是否一致。"
+                        )
+                    else:
+                        raise TimeoutError(
+                            f"连接超时 (重试 {retries} 次后失败)。\n"
+                            f"可能的原因：\n"
+                            f"  1. 服务器启用了加密，但客户端未启用加密\n"
+                            f"  2. 服务器未运行或网络不可达\n"
+                            f"请检查服务器是否启动，以及是否需要启用加密。"
+                        )
 
             except zmq.ZMQError as e:
                 logger.error(f"ZMQ error: {e}")
@@ -321,13 +344,28 @@ class RemoteDBDict:
     
     def _connect_db(self):
         """连接到远程数据库"""
-        request = [self.CMD_CONNECT, self.db_name.encode('utf-8')]
-        status, result = self._send_request(request)
-        
-        if status != self.STATUS_OK:
-            raise RuntimeError(f"Failed to connect to database: {result}")
-        
-        self._connected = True
+        # 初始连接测试：使用较短的超时时间快速检测配置错误
+        # 保存原超时时间
+        original_timeout = self.socket.getsockopt(zmq.RCVTIMEO)
+
+        try:
+            # 使用 2 秒超时进行初始连接测试
+            initial_timeout = min(2000, self.timeout)  # 最多 2 秒
+            self.socket.setsockopt(zmq.RCVTIMEO, initial_timeout)
+            self.socket.setsockopt(zmq.SNDTIMEO, initial_timeout)
+
+            request = [self.CMD_CONNECT, self.db_name.encode('utf-8')]
+            status, result = self._send_request(request, retry=False)
+
+            if status != self.STATUS_OK:
+                raise RuntimeError(f"Failed to connect to database: {result}")
+
+            self._connected = True
+
+        finally:
+            # 恢复原超时时间
+            self.socket.setsockopt(zmq.RCVTIMEO, original_timeout)
+            self.socket.setsockopt(zmq.SNDTIMEO, original_timeout)
     
     def ping(self) -> bool:
         """测试连接"""
@@ -714,6 +752,10 @@ class RemoteDBDict:
 
         self._closed = True
         self._connected = False
+
+        # 从自动关闭管理器中移除
+        db_close_manager.unregister(self)
+        logger.debug(f"远程数据库实例已从自动关闭管理器移除: {self.db_path}")
 
         logger.info(f"RemoteDBDict closed: {self.db_name}")
     

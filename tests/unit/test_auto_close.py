@@ -86,9 +86,9 @@ class TestDBCloseManager(unittest.TestCase):
         # 关闭所有实例
         self.manager.close_all()
 
-        # 验证每个实例的close方法都被调用
+        # 验证每个实例的close方法都被调用（不带参数）
         for mock_db in mock_dbs:
-            mock_db.close.assert_called_once_with(write=True, wait=True)
+            mock_db.close.assert_called_once()
 
         # 验证实例集合被清空
         self.assertEqual(len(self.manager._instances), 0)

@@ -102,7 +102,7 @@ class DBCloseManager:
         for instance in instances_to_close:
             try:
                 logger.debug(f"自动关闭数据库实例: {instance.name} (路径: {instance.db_path})")
-                instance.close(write=True, wait=True)
+                instance.close()  # 修复：close() 方法不接受参数
                 logger.debug(f"数据库实例 {instance.name} 已成功关闭")
             except Exception as e:
                 logger.error(f"关闭数据库实例 {instance.name} 时发生错误: {e}")

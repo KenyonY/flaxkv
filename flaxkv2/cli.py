@@ -116,6 +116,7 @@ class FlaxKV2CLI:
         profile: str = 'default',
         enable_encryption: Optional[bool] = None,
         password: Optional[str] = None,
+        derive_from_password: Optional[bool] = None,
         enable_compression: Optional[bool] = None,
         performance_profile: Optional[str] = None,
     ):
@@ -131,6 +132,7 @@ class FlaxKV2CLI:
             profile: 配置 profile 名称 (默认: default)
             enable_encryption: 启用 CurveZMQ 加密
             password: 服务器密码（用于加密）
+            derive_from_password: 从密码派生密钥（推荐 True，默认 True）
             enable_compression: 启用 LZ4 压缩
             performance_profile: 性能配置文件名称
 
@@ -143,6 +145,9 @@ class FlaxKV2CLI:
 
             # 命令行参数覆盖配置文件
             flaxkv2 run --profile production --port 6666
+
+            # 启用加密
+            flaxkv2 run --enable-encryption --password mypassword
         """
         from flaxkv2.server.zmq_server import FlaxKVServer
 
@@ -157,6 +162,7 @@ class FlaxKV2CLI:
             log_level=log_level,
             enable_encryption=enable_encryption,
             password=password,
+            derive_from_password=derive_from_password,
             enable_compression=enable_compression,
             performance_profile=performance_profile,
         )
@@ -169,6 +175,7 @@ class FlaxKV2CLI:
         final_log_level = config.get('log_level', 'INFO')
         final_enable_encryption = config.get('enable_encryption', False)
         final_password = config.get('password')
+        final_derive_from_password = config.get('derive_from_password', True)
         final_enable_compression = config.get('enable_compression', False)
         final_performance_profile = config.get('performance_profile')
 
@@ -204,6 +211,7 @@ class FlaxKV2CLI:
             server_kwargs['enable_encryption'] = True
             if final_password:
                 server_kwargs['password'] = final_password
+                server_kwargs['derive_from_password'] = final_derive_from_password
 
         if final_enable_compression:
             server_kwargs['enable_compression'] = True
@@ -219,6 +227,10 @@ class FlaxKV2CLI:
         server: Optional[str] = None,
         db_name: Optional[str] = None,
         profile: str = 'default',
+        chunked: Optional[bool] = None,
+        chunk_size: int = 10 * 1024 * 1024,
+        serial: bool = False,
+        max_workers: int = 5,
     ):
         """
         上传文件或文件夹到远程 FlaxKV 服务器
@@ -229,9 +241,13 @@ class FlaxKV2CLI:
             server: 远程服务器地址 (host:port) 或服务器名称 (@name)
             db_name: 数据库名称
             profile: 配置 profile 名称 (默认: default)
+            chunked: 是否使用分块上传（None=自动检测，大于100MB自动分块）
+            chunk_size: 分块大小（字节），默认 10MB
+            serial: 强制使用串行传输（默认自动使用并行）
+            max_workers: 并行线程数（默认 5）
 
         示例:
-            # 使用配置文件中的默认服务器
+            # 使用配置文件中的默认服务器（大文件自动并行）
             flaxkv2 set /path/to/file.txt
 
             # 使用配置文件中定义的服务器
@@ -239,6 +255,15 @@ class FlaxKV2CLI:
 
             # 直接指定服务器地址
             flaxkv2 set /path/to/file.txt --server 192.168.1.100:5555
+
+            # 强制使用串行传输
+            flaxkv2 set /path/to/large_file.mp4 --serial
+
+            # 指定并行线程数
+            flaxkv2 set /path/to/large_file.mp4 --max-workers 8
+
+            # 指定分块大小（20MB）
+            flaxkv2 set /path/to/large_file.mp4 --chunk-size 20971520
         """
         # 合并配置
         config = self._merge_config(
@@ -265,36 +290,178 @@ class FlaxKV2CLI:
         if key is None:
             key = path.name
 
+        # 自动检测是否使用分块上传（文件 > 100MB）
+        use_chunked = chunked
+        if use_chunked is None and path.is_file():
+            file_size = path.stat().st_size
+            use_chunked = file_size > 100 * 1024 * 1024  # 100MB
+
         try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console
-            ) as progress:
-                # 打包文件/文件夹
-                task = progress.add_task(f"正在打包 {path.name}...", total=None)
-                content, metadata = FileTransferUtil.pack(str(path))
-                progress.update(task, completed=True)
+            # 连接到远程服务器
+            console.print(f"正在连接到 {final_server}...")
 
-                # 连接到远程服务器
-                task = progress.add_task(f"正在连接到 {final_server}...", total=None)
-                db = FlaxKV(final_db_name, final_server, backend='remote')
-                progress.update(task, completed=True)
+            # 从配置中获取连接参数
+            timeout = config.get('timeout', 5) * 1000  # 转换为毫秒
+            enable_encryption = config.get('enable_encryption', False)
+            password = config.get('password')
+            derive_from_password = config.get('derive_from_password', True)
 
-                # 上传数据
-                task = progress.add_task(f"正在上传 ({format_size(len(content))})...", total=None)
-                db[key] = content
-                db[f"{key}:meta"] = json.dumps(metadata)
-                progress.update(task, completed=True)
+            # 创建客户端连接，传递配置参数
+            db = FlaxKV(
+                final_db_name,
+                final_server,
+                backend='remote',
+                timeout=timeout,
+                enable_encryption=enable_encryption,
+                password=password,
+                derive_from_password=derive_from_password
+            )
 
-                # 关闭连接
-                db.close()
+            # 处理目录：先打包，然后根据大小决定是否分块
+            if path.is_dir():
+                import tempfile
+                import tarfile
 
-            console.print(f"\n[bold green]✓[/bold green] 上传成功!")
-            console.print(f"  类型: {metadata['type']}")
-            console.print(f"  键名: [bold blue]{key}[/bold blue]")
-            console.print(f"  大小: {format_size(metadata['size'])}")
-            console.print(f"  服务器: {final_server}")
+                console.print(f"[yellow]检测到目录，正在打包...[/yellow]")
+
+                # 创建临时 tar.gz 文件
+                temp_file = tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False)
+                temp_path = temp_file.name
+                temp_file.close()
+
+                try:
+                    # 打包目录
+                    with tarfile.open(temp_path, 'w:gz') as tar:
+                        tar.add(path, arcname=path.name)
+
+                    # 检查打包后的文件大小
+                    packed_size = Path(temp_path).stat().st_size
+                    console.print(f"   打包完成: {format_size(packed_size)}")
+
+                    # 根据大小决定是否使用分块上传
+                    if packed_size > 100 * 1024 * 1024:  # > 100MB 使用分块
+                        console.print(f"[yellow]打包文件较大，使用分块上传[/yellow]\n")
+
+                        if serial:
+                            # 串行上传
+                            from flaxkv2.utils.file_transfer import upload_large_file
+                            metadata = upload_large_file(
+                                db, key, temp_path,
+                                chunk_size=chunk_size,
+                                show_progress=True,
+                                verify=True
+                            )
+                        else:
+                            # 并行上传
+                            from flaxkv2.utils.file_transfer import upload_large_file_parallel
+                            metadata = upload_large_file_parallel(
+                                db, key, temp_path,
+                                chunk_size=chunk_size,
+                                max_workers=max_workers,
+                                show_progress=True,
+                                verify=True
+                            )
+
+                        # 更新元数据，标记为 chunked_folder
+                        metadata['type'] = 'chunked_folder'
+                        metadata['original_name'] = path.name
+                        db[f"{key}:meta"] = metadata
+
+                        console.print(f"[bold green]✓[/bold green] 目录上传成功!")
+                        console.print(f"  类型: chunked_folder")
+                        console.print(f"  目录名: [bold blue]{path.name}[/bold blue]")
+                        console.print(f"  大小: {format_size(metadata['size'])}")
+                        console.print(f"  分块: {metadata['chunks']} 个")
+                        console.print(f"  模式: {'串行' if serial else f'并行 ({max_workers} 线程)'}")
+                        console.print(f"  服务器: {final_server}")
+
+                    else:
+                        # 小于 100MB，传统方式上传
+                        console.print(f"[yellow]使用传统方式上传[/yellow]")
+
+                        with open(temp_path, 'rb') as f:
+                            content = f.read()
+
+                        metadata = {
+                            'type': 'folder',
+                            'name': path.name,
+                            'size': packed_size,
+                        }
+
+                        db[key] = content
+                        db[f"{key}:meta"] = json.dumps(metadata)
+
+                        console.print(f"[bold green]✓[/bold green] 目录上传成功!")
+                        console.print(f"  类型: folder")
+                        console.print(f"  目录名: [bold blue]{path.name}[/bold blue]")
+                        console.print(f"  大小: {format_size(packed_size)}")
+                        console.print(f"  服务器: {final_server}")
+
+                finally:
+                    # 删除临时文件
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+
+            elif use_chunked and path.is_file():
+                # 根据 serial 参数选择串行或并行上传
+                if serial:
+                    # 串行上传
+                    from flaxkv2.utils.file_transfer import upload_large_file
+
+                    console.print(f"[yellow]使用串行分块上传（稳定模式）[/yellow]\n")
+                    metadata = upload_large_file(
+                        db, key, str(path),
+                        chunk_size=chunk_size,
+                        show_progress=True,
+                        verify=True
+                    )
+                else:
+                    # 并行上传（默认）
+                    from flaxkv2.utils.file_transfer import upload_large_file_parallel
+
+                    console.print(f"[yellow]使用并行分块上传（{max_workers} 个线程）[/yellow]\n")
+                    metadata = upload_large_file_parallel(
+                        db, key, str(path),
+                        chunk_size=chunk_size,
+                        max_workers=max_workers,
+                        show_progress=True,
+                        verify=True
+                    )
+
+                console.print(f"[bold green]✓[/bold green] 上传成功!")
+                console.print(f"  类型: chunked_file")
+                console.print(f"  键名: [bold blue]{key}[/bold blue]")
+                console.print(f"  大小: {format_size(metadata['size'])}")
+                console.print(f"  分块: {metadata['chunks']} 个")
+                console.print(f"  模式: {'串行' if serial else f'并行 ({max_workers} 线程)'}")
+                console.print(f"  服务器: {final_server}")
+
+            else:
+                # 使用传统方式上传（适合小文件和文件夹）
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console
+                ) as progress:
+                    # 打包文件/文件夹
+                    task = progress.add_task(f"正在打包 {path.name}...", total=None)
+                    content, metadata = FileTransferUtil.pack(str(path))
+                    progress.update(task, completed=True)
+
+                    # 上传数据
+                    task = progress.add_task(f"正在上传 ({format_size(len(content))})...", total=None)
+                    db[key] = content
+                    db[f"{key}:meta"] = json.dumps(metadata)
+                    progress.update(task, completed=True)
+
+                console.print(f"\n[bold green]✓[/bold green] 上传成功!")
+                console.print(f"  类型: {metadata['type']}")
+                console.print(f"  键名: [bold blue]{key}[/bold blue]")
+                console.print(f"  大小: {format_size(metadata['size'])}")
+                console.print(f"  服务器: {final_server}")
+
+            # 关闭连接
+            db.close()
 
         except Exception as e:
             console.print(f"\n[bold red]✗ 上传失败:[/bold red] {str(e)}")
@@ -306,6 +473,8 @@ class FlaxKV2CLI:
         server: Optional[str] = None,
         db_name: Optional[str] = None,
         profile: str = 'default',
+        serial: bool = False,
+        max_workers: int = 5,
     ):
         """
         从远程 FlaxKV 服务器下载文件或文件夹
@@ -316,9 +485,11 @@ class FlaxKV2CLI:
             server: 远程服务器地址 (host:port) 或服务器名称 (@name)
             db_name: 数据库名称
             profile: 配置 profile 名称 (默认: default)
+            serial: 强制使用串行传输（默认自动使用并行）
+            max_workers: 并行线程数（默认 5）
 
         示例:
-            # 使用配置文件中的默认服务器
+            # 使用配置文件中的默认服务器（大文件自动并行）
             flaxkv2 get my_file
 
             # 使用配置文件中定义的服务器
@@ -326,6 +497,12 @@ class FlaxKV2CLI:
 
             # 直接指定服务器地址
             flaxkv2 get my_file --server 192.168.1.100:5555
+
+            # 强制使用串行传输
+            flaxkv2 get my_file --serial
+
+            # 指定并行线程数
+            flaxkv2 get my_file --max-workers 8
         """
         # 合并配置
         config = self._merge_config(
@@ -348,57 +525,160 @@ class FlaxKV2CLI:
         output_path = Path(output)
 
         try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console
-            ) as progress:
-                # 连接到远程服务器
-                task = progress.add_task(f"正在连接到 {final_server}...", total=None)
-                db = FlaxKV(final_db_name, final_server, backend='remote')
-                progress.update(task, completed=True)
+            # 连接到远程服务器
+            console.print(f"正在连接到 {final_server}...")
 
-                # 下载数据
-                task = progress.add_task(f"正在下载...", total=None)
+            # 从配置中获取连接参数
+            timeout = config.get('timeout', 5) * 1000  # 转换为毫秒
+            enable_encryption = config.get('enable_encryption', False)
+            password = config.get('password')
+            derive_from_password = config.get('derive_from_password', True)
 
-                # 检查键是否存在
+            # 创建客户端连接，传递配置参数
+            db = FlaxKV(
+                final_db_name,
+                final_server,
+                backend='remote',
+                timeout=timeout,
+                enable_encryption=enable_encryption,
+                password=password,
+                derive_from_password=derive_from_password
+            )
+
+            # 检查元数据，判断文件类型
+            metadata = db.get(f"{key}:meta")
+
+            if metadata is None:
+                # 尝试检查键是否存在（非通过 flaxkv set 上传的文件）
                 if key not in db:
-                    progress.stop()
                     console.print(f"[bold red]错误:[/bold red] 键不存在: {key}")
                     db.close()
                     return
 
-                content = db[key]
-                metadata_str = db.get(f"{key}:meta")
-
-                if metadata_str is None:
-                    progress.stop()
-                    console.print(f"[bold red]错误:[/bold red] 元数据不存在，该键可能不是通过 'flaxkv set' 上传的")
-                    db.close()
-                    return
-
-                metadata = json.loads(metadata_str)
-                progress.update(task, completed=True)
-
-                # 解包文件/文件夹
-                task = progress.add_task(f"正在解包...", total=None)
-                FileTransferUtil.unpack(content, metadata, str(output_path))
-                progress.update(task, completed=True)
-
-                # 关闭连接
+                console.print(f"[bold red]错误:[/bold red] 元数据不存在，该键可能不是通过 'flaxkv set' 上传的")
                 db.close()
+                return
 
-            # 确定实际保存路径
-            if output_path.is_dir():
-                actual_path = output_path / metadata['name']
+            # 判断文件类型
+            file_type = metadata.get('type')
+            is_chunked_file = file_type == 'chunked_file'
+            is_chunked_folder = file_type == 'chunked_folder'
+
+            if is_chunked_folder:
+                # 下载分块打包的目录
+                import tempfile
+                import tarfile
+
+                console.print(f"[yellow]检测到分块目录，正在下载...[/yellow]\n")
+
+                # 创建临时文件用于存储下载的 tar.gz
+                temp_file = tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False)
+                temp_path = temp_file.name
+                temp_file.close()
+
+                try:
+                    # 分块下载到临时文件
+                    if serial:
+                        from flaxkv2.utils.file_transfer import download_large_file
+                        download_large_file(
+                            db, key, temp_path,
+                            show_progress=True,
+                            verify=True
+                        )
+                    else:
+                        from flaxkv2.utils.file_transfer import download_large_file_parallel
+                        download_large_file_parallel(
+                            db, key, temp_path,
+                            max_workers=max_workers,
+                            show_progress=True,
+                            verify=True
+                        )
+
+                    # 解包到目标目录
+                    console.print(f"\n[yellow]正在解包...[/yellow]")
+                    output_path.mkdir(parents=True, exist_ok=True)
+
+                    with tarfile.open(temp_path, 'r:gz') as tar:
+                        tar.extractall(output_path)
+
+                    console.print(f"[bold green]✓[/bold green] 目录下载成功!")
+                    console.print(f"  目录名: {metadata.get('original_name', metadata.get('filename', 'unknown'))}")
+                    console.print(f"  大小: {format_size(metadata['size'])}")
+                    console.print(f"  分块: {metadata['chunks']} 个")
+                    console.print(f"  模式: {'串行' if serial else f'并行 ({max_workers} 线程)'}")
+                    console.print(f"  保存路径: {output_path}")
+
+                finally:
+                    # 删除临时文件
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+
+            elif is_chunked_file:
+                # 根据 serial 参数选择串行或并行下载
+                if serial:
+                    # 串行下载
+                    from flaxkv2.utils.file_transfer import download_large_file
+
+                    console.print(f"[yellow]检测到分块文件，使用串行下载（稳定模式）[/yellow]\n")
+                    metadata = download_large_file(
+                        db, key, str(output_path),
+                        show_progress=True,
+                        verify=True
+                    )
+                else:
+                    # 并行下载（默认）
+                    from flaxkv2.utils.file_transfer import download_large_file_parallel
+
+                    console.print(f"[yellow]检测到分块文件，使用并行下载（{max_workers} 个线程）[/yellow]\n")
+                    metadata = download_large_file_parallel(
+                        db, key, str(output_path),
+                        max_workers=max_workers,
+                        show_progress=True,
+                        verify=True
+                    )
+
+                console.print(f"[bold green]✓[/bold green] 下载成功!")
+                console.print(f"  文件名: {metadata['filename']}")
+                console.print(f"  大小: {format_size(metadata['size'])}")
+                console.print(f"  分块: {metadata['chunks']} 个")
+                console.print(f"  模式: {'串行' if serial else f'并行 ({max_workers} 线程)'}")
+
             else:
-                actual_path = output_path
+                # 使用传统方式下载
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console
+                ) as progress:
+                    # 下载数据
+                    task = progress.add_task(f"正在下载...", total=None)
 
-            console.print(f"\n[bold green]✓[/bold green] 下载成功!")
-            console.print(f"  类型: {metadata['type']}")
-            console.print(f"  键名: [bold blue]{key}[/bold blue]")
-            console.print(f"  保存路径: {actual_path}")
-            console.print(f"  大小: {format_size(metadata['size'])}")
+                    # 从 JSON 字符串解析元数据（传统方式）
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata)
+
+                    content = db[key]
+                    progress.update(task, completed=True)
+
+                    # 解包文件/文件夹
+                    task = progress.add_task(f"正在解包...", total=None)
+                    FileTransferUtil.unpack(content, metadata, str(output_path))
+                    progress.update(task, completed=True)
+
+                # 确定实际保存路径
+                if output_path.is_dir():
+                    actual_path = output_path / metadata['name']
+                else:
+                    actual_path = output_path
+
+                console.print(f"\n[bold green]✓[/bold green] 下载成功!")
+                console.print(f"  类型: {metadata['type']}")
+                console.print(f"  键名: [bold blue]{key}[/bold blue]")
+                console.print(f"  保存路径: {actual_path}")
+                console.print(f"  大小: {format_size(metadata['size'])}")
+
+            # 关闭连接
+            db.close()
 
         except Exception as e:
             console.print(f"\n[bold red]✗ 下载失败:[/bold red] {str(e)}")
@@ -441,6 +721,13 @@ class FlaxKV2CLI:
 
         # 解析服务器地址
         final_server = self._resolve_server_address(final_server)
+
+        # 从配置中获取连接参数
+        timeout = config.get('timeout', 5) * 1000  # 转换为毫秒
+        enable_encryption = config.get('enable_encryption', False)
+        password = config.get('password')
+        derive_from_password = config.get('derive_from_password', True)
+
         try:
             with Progress(
                 SpinnerColumn(),
@@ -449,7 +736,15 @@ class FlaxKV2CLI:
             ) as progress:
                 # 连接到远程服务器
                 task = progress.add_task(f"正在连接到 {final_server}...", total=None)
-                db = FlaxKV(final_db_name, final_server, backend='remote')
+                db = FlaxKV(
+                    final_db_name,
+                    final_server,
+                    backend='remote',
+                    timeout=timeout,
+                    enable_encryption=enable_encryption,
+                    password=password,
+                    derive_from_password=derive_from_password
+                )
                 progress.update(task, completed=True)
 
                 # 获取所有键
@@ -470,7 +765,15 @@ class FlaxKV2CLI:
                 return
 
             # 重新连接获取详细信息
-            db = FlaxKV(final_db_name, final_server, backend='remote')
+            db = FlaxKV(
+                final_db_name,
+                final_server,
+                backend='remote',
+                timeout=timeout,
+                enable_encryption=enable_encryption,
+                password=password,
+                derive_from_password=derive_from_password
+            )
 
             console.print(f"\n[bold]服务器上的文件列表[/bold]")
             console.print(f"服务器: [blue]{final_server}[/blue]")
