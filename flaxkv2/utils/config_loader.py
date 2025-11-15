@@ -238,192 +238,68 @@ def create_sample_config() -> str:
         TOML 格式的示例配置
     """
     return '''# FlaxKV2 配置文件
-# 支持服务器端和客户端配置，以及多服务器管理
 
 # ============================================================================
-# 默认设置（全局）
-# ============================================================================
-[defaults]
-# 默认数据目录
-data_dir = "./data"
-
-# 默认日志级别 (DEBUG, INFO, WARNING, ERROR)
-log_level = "INFO"
-
-# 默认数据库名称
-db_name = "default_db"
-
-
-# ============================================================================
-# 服务器端配置 (用于 'flaxkv2 run' 命令)
+# 服务器配置 (flaxkv2 run)
 # ============================================================================
 [server]
-# 监听地址
-host = "127.0.0.1"
+host = "127.0.0.1"           # 监听地址 (0.0.0.0 表示所有网络接口)
+port = 5555                   # 监听端口
+data_dir = "./data"           # 数据存储目录
+workers = 4                   # 工作线程数
+log_level = "INFO"            # 日志级别: DEBUG, INFO, WARNING, ERROR
 
-# 监听端口
-port = 5555
+# 加密配置 (推荐启用)
+enable_encryption = false     # 是否启用 CurveZMQ 加密
+# password = "your-password"  # 服务器密码 (启用加密时必需)
+derive_from_password = true   # 从密码派生密钥 (推荐)
 
-# 数据目录
-data_dir = "./data"
-
-# 工作线程数
-workers = 4
-
-# 日志级别
-log_level = "INFO"
-
-# 启用加密 (CurveZMQ)
-enable_encryption = false
-
-# 服务器密码（启用加密时使用）
-# password = "your-secure-password"
-
-# 从密码派生密钥（推荐）
-derive_from_password = true
-
-# 启用压缩 (LZ4)
-enable_compression = false
-
-# 性能配置文件
-# 可选值: balanced, read_optimized, write_optimized, memory_constrained, large_database, ml_workload
+# 可选配置
+enable_compression = false    # 启用 LZ4 压缩
+# 性能配置: balanced, read_optimized, write_optimized, memory_constrained, large_database, ml_workload
 performance_profile = "balanced"
-
-# 服务器配置 profiles（用于不同的部署场景）
-[server.profiles.production]
-host = "0.0.0.0"
-port = 5555
-workers = 8
-log_level = "WARNING"
-enable_encryption = true
-enable_compression = true
-performance_profile = "balanced"
-
-[server.profiles.development]
-host = "127.0.0.1"
-port = 5555
-workers = 2
-log_level = "DEBUG"
-enable_encryption = false
-enable_compression = false
-performance_profile = "memory_constrained"
-
-[server.profiles.high_performance]
-host = "0.0.0.0"
-port = 5555
-workers = 16
-log_level = "WARNING"
-enable_compression = true
-performance_profile = "read_optimized"
 
 
 # ============================================================================
-# 客户端配置（用于各种客户端命令）
+# 客户端配置 (flaxkv2 set/get/list)
 # ============================================================================
 [client]
-# 默认服务器地址
-server = "127.0.0.1:5555"
+server = "127.0.0.1:5555"     # 默认服务器地址
+db_name = "default_db"        # 默认数据库名称
+timeout = 30                  # 连接超时（秒）
 
-# 默认数据库名称
-db_name = "default_db"
-
-# 后端类型 ('local', 'remote', 'auto')
-backend = "auto"
-
-# 本地数据库路径
-path = "./data"
-
-# 连接超时（秒）
-timeout = 30
-
-# 客户端加密配置（连接远程服务器时使用）
-enable_encryption = false
-# password = ""
-# derive_from_password = true
-
-# 客户端配置 profiles
-[client.profiles.local]
-backend = "local"
-path = "./data"
-
-[client.profiles.remote]
-backend = "remote"
-server = "127.0.0.1:5555"
-
-[client.profiles.production]
-backend = "remote"
-server = "prod-server:5555"
-timeout = 60
+# 加密配置 (需与服务器匹配)
+enable_encryption = false     # 是否启用加密
+# password = "your-password"  # 客户端密码 (需与服务器一致)
+derive_from_password = true   # 从密码派生密钥
 
 
 # ============================================================================
-# 远程服务器定义（可以定义多个服务器，通过名称引用）
+# 多服务器管理 (可选)
 # ============================================================================
-[servers.local]
-host = "127.0.0.1"
-port = 5555
-# 加密配置
-enable_encryption = false
-# password = "local-password"
-# derive_from_password = true
+# 定义多个服务器，通过 --server @name 引用
+# 示例：flaxkv2 list --server @production
 
 [servers.production]
 host = "192.168.1.100"
 port = 5555
-# 加密配置（生产环境建议启用）
 enable_encryption = true
 # password = "prod-password"
-# derive_from_password = true
-
-[servers.staging]
-host = "192.168.1.200"
-port = 5555
-# 加密配置
-enable_encryption = false
-# password = "staging-password"
-# derive_from_password = true
-
-[servers.ml_cluster]
-host = "ml.example.com"
-port = 5555
-# 加密配置
-enable_encryption = false
-# password = "ml-password"
-# derive_from_password = true
 
 
 # ============================================================================
-# Inspector Web UI 配置
+# 使用示例
 # ============================================================================
-[inspector]
-# 默认监听地址
-host = "127.0.0.1"
-
-# 默认监听端口
-port = 8080
-
-# 调试模式
-debug = false
-
-
-# ============================================================================
-# 使用示例：
-# ============================================================================
-# 1. 启动服务器（使用默认配置）：
-#    flaxkv2 run
+# 启动服务器：
+#   flaxkv2 run
+#   flaxkv2 run --enable-encryption --password mypass
 #
-# 2. 启动服务器（使用 production profile）：
-#    flaxkv2 run --profile production
+# 客户端操作：
+#   flaxkv2 set myfile.txt                    # 使用默认配置
+#   flaxkv2 list --server @production         # 使用定义的服务器
+#   flaxkv2 get myfile --output ./downloads/  # 下载文件
 #
-# 3. 连接到定义的服务器：
-#    flaxkv2 list --server @production
-#    flaxkv2 set myfile.txt --server @staging
-#
-# 4. 使用客户端 profile：
-#    flaxkv2 inspect keys mydb --profile remote
-#
-# 5. 命令行参数会覆盖配置文件中的值：
-#    flaxkv2 run --port 6666 --workers 8
+# 命令行参数会覆盖配置文件
 '''
 
 
