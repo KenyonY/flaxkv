@@ -5,11 +5,13 @@ FlaxKV2 命令行接口 (使用Fire实现)
 import os
 import json
 import fire
+import psutil
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from rich import print
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
 from flaxkv2 import __version__, FlaxKV
 from flaxkv2.utils.log import set_log_level
@@ -1016,6 +1018,239 @@ class FlaxKV2CLI:
         else:
             console.print(f"[bold red]错误:[/bold red] 未知的操作: {action}")
             console.print("可用操作: show, init, path, servers, profiles")
+
+    def _find_pids_by_port(self, port: int) -> List[dict]:
+        """
+        根据端口查找进程 PID（跨平台）
+
+        Returns:
+            [{'pid': int, 'name': str, 'cmdline': str}, ...]
+        """
+        import platform
+        import subprocess
+
+        pids_info = []
+        system = platform.system()
+
+        try:
+            if system == 'Darwin' or system == 'Linux':
+                # macOS 和 Linux: 使用 lsof
+                result = subprocess.run(
+                    ['lsof', '-ti', f':{port}'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    pids = [int(pid.strip()) for pid in result.stdout.strip().split('\n') if pid.strip()]
+                    for pid in pids:
+                        try:
+                            proc = psutil.Process(pid)
+                            pids_info.append({
+                                'pid': pid,
+                                'name': proc.name(),
+                                'cmdline': ' '.join(proc.cmdline()[:3]) if proc.cmdline() else proc.name(),
+                            })
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+
+            elif system == 'Windows':
+                # Windows: 使用 netstat
+                result = subprocess.run(
+                    ['netstat', '-ano'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if f':{port}' in line and 'LISTENING' in line:
+                            parts = line.split()
+                            if parts:
+                                try:
+                                    pid = int(parts[-1])
+                                    proc = psutil.Process(pid)
+                                    pids_info.append({
+                                        'pid': pid,
+                                        'name': proc.name(),
+                                        'cmdline': ' '.join(proc.cmdline()[:3]) if proc.cmdline() else proc.name(),
+                                    })
+                                except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied):
+                                    pass
+
+        except subprocess.TimeoutExpired:
+            pass
+        except FileNotFoundError:
+            # lsof 或 netstat 命令不存在，使用 psutil 后备方案
+            try:
+                for conn in psutil.net_connections(kind='inet'):
+                    if conn.status == 'LISTEN' and conn.laddr.port == port:
+                        try:
+                            proc = psutil.Process(conn.pid)
+                            pids_info.append({
+                                'pid': conn.pid,
+                                'name': proc.name(),
+                                'cmdline': ' '.join(proc.cmdline()[:3]) if proc.cmdline() else proc.name(),
+                            })
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+            except (PermissionError, psutil.AccessDenied):
+                pass
+
+        return pids_info
+
+    def kill(self, *ports):
+        """
+        根据端口号 kill 进程（跨平台支持）
+
+        Args:
+            *ports: 一个或多个端口号
+
+        示例:
+            # kill 单个端口
+            flaxkv2 kill 5555
+
+            # kill 多个端口
+            flaxkv2 kill 5555 8080 3000
+
+            # kill FlaxKV 服务器（默认端口 5555）
+            flaxkv2 kill 5555
+        """
+        if not ports:
+            console.print("[bold red]错误:[/bold red] 请指定至少一个端口号")
+            console.print("用法: flaxkv2 kill <port1> [port2] ...]")
+            return
+
+        # 转换端口为整数
+        port_list = []
+        for port in ports:
+            try:
+                port_num = int(port)
+                if not (1 <= port_num <= 65535):
+                    console.print(f"[bold red]错误:[/bold red] 无效的端口号: {port} (必须在 1-65535 之间)")
+                    return
+                port_list.append(port_num)
+            except ValueError:
+                console.print(f"[bold red]错误:[/bold red] 无效的端口号: {port}")
+                return
+
+        console.print(f"\n[bold]正在查找监听端口的进程...[/bold]")
+
+        # 记录每个端口的处理结果
+        results = []
+
+        for port in port_list:
+            try:
+                # 查找监听该端口的进程
+                listening_processes = self._find_pids_by_port(port)
+
+                if not listening_processes:
+                    results.append({
+                        'port': port,
+                        'status': 'not_found',
+                        'message': '未找到监听该端口的进程'
+                    })
+                    continue
+
+                # kill 所有监听该端口的进程
+                killed_processes = []
+                failed_processes = []
+
+                for proc_info in listening_processes:
+                    try:
+                        proc = psutil.Process(proc_info['pid'])
+                        proc.kill()  # 强制 kill
+                        try:
+                            proc.wait(timeout=3)  # 等待进程退出
+                        except psutil.TimeoutExpired:
+                            # 进程未在超时时间内退出，但 kill 信号已发送
+                            pass
+                        killed_processes.append(proc_info)
+                    except psutil.NoSuchProcess:
+                        # 进程已经不存在了
+                        killed_processes.append(proc_info)
+                    except psutil.AccessDenied:
+                        failed_processes.append({
+                            **proc_info,
+                            'reason': '权限不足'
+                        })
+                    except Exception as e:
+                        failed_processes.append({
+                            **proc_info,
+                            'reason': f'{type(e).__name__}: {str(e)}'
+                        })
+
+                if killed_processes:
+                    results.append({
+                        'port': port,
+                        'status': 'success',
+                        'processes': killed_processes,
+                        'failed': failed_processes
+                    })
+                else:
+                    results.append({
+                        'port': port,
+                        'status': 'failed',
+                        'failed': failed_processes
+                    })
+
+            except Exception as e:
+                results.append({
+                    'port': port,
+                    'status': 'error',
+                    'message': f'发生错误: {type(e).__name__}: {str(e)}'
+                })
+
+        # 显示结果
+        console.print()
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("端口", style="cyan", no_wrap=True)
+        table.add_column("状态", style="yellow")
+        table.add_column("详情", style="white")
+
+        for result in results:
+            port = result['port']
+            status = result['status']
+
+            if status == 'success':
+                killed = result['processes']
+                failed = result.get('failed', [])
+
+                if killed:
+                    killed_info = '\n'.join([
+                        f"✓ PID {p['pid']}: {p['name']}"
+                        for p in killed
+                    ])
+                    if failed:
+                        failed_info = '\n'.join([
+                            f"✗ PID {p['pid']}: {p['name']} ({p['reason']})"
+                            for p in failed
+                        ])
+                        info = killed_info + '\n' + failed_info
+                        table.add_row(str(port), "[green]部分成功[/green]", info)
+                    else:
+                        table.add_row(str(port), "[green]成功[/green]", killed_info)
+                else:
+                    table.add_row(str(port), "[red]失败[/red]", "所有进程都无法 kill")
+
+            elif status == 'failed':
+                failed_info = '\n'.join([
+                    f"✗ PID {p['pid']}: {p['name']} ({p['reason']})"
+                    for p in result['failed']
+                ])
+                table.add_row(str(port), "[red]失败[/red]", failed_info)
+
+            elif status == 'not_found':
+                table.add_row(str(port), "[yellow]未找到[/yellow]", result['message'])
+
+            elif status == 'permission_denied':
+                table.add_row(str(port), "[red]权限不足[/red]", result['message'])
+
+            else:  # error
+                table.add_row(str(port), "[red]错误[/red]", result['message'])
+
+        console.print(table)
+        console.print()
 
 
 def main():

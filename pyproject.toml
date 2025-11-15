@@ -78,6 +78,7 @@ full = [
 
 [project.scripts]
 flaxkv2 = "flaxkv2.__main__:main"
+fkv = "flaxkv2.__main__:main"
 
 [tool.hatch.version]
 path = "flaxkv2/__init__.py"
