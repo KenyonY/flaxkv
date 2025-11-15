@@ -585,7 +585,8 @@ def upload_large_file_parallel(
     chunk_size: int = 10 * 1024 * 1024,  # 默认 10MB
     max_workers: int = 5,  # 最大并行线程数
     show_progress: bool = True,
-    verify: bool = True
+    verify: bool = True,
+    db_connection_params: Optional[Dict] = None  # 新增：数据库连接参数
 ) -> Dict:
     """
     并行分块上传大文件（多线程版本）
@@ -661,6 +662,9 @@ def upload_large_file_parallel(
     progress_lock = threading.Lock()
     completed_chunks = 0
 
+    # 检测是否为远程连接，如果是则需要为每个线程创建独立连接
+    is_remote = hasattr(db, '_backend_type') and db._backend_type == 'remote'
+
     def upload_chunk(chunk_index: int) -> bool:
         """上传单个分块（线程函数）"""
         nonlocal completed_chunks
@@ -671,8 +675,17 @@ def upload_large_file_parallel(
                 f.seek(chunk_index * chunk_size)
                 chunk_data = f.read(chunk_size)
 
-            # 上传分块
-            db[f"{key}:chunk:{chunk_index}"] = chunk_data
+            # 如果是远程连接，创建线程独立的数据库连接（ZMQ 不是线程安全的）
+            if is_remote and db_connection_params:
+                from flaxkv2 import FlaxKV
+                thread_db = FlaxKV(**db_connection_params)
+                try:
+                    thread_db[f"{key}:chunk:{chunk_index}"] = chunk_data
+                finally:
+                    thread_db.close()
+            else:
+                # 本地连接或未提供连接参数，使用共享连接
+                db[f"{key}:chunk:{chunk_index}"] = chunk_data
 
             # 更新进度
             with progress_lock:
@@ -750,7 +763,8 @@ def download_large_file_parallel(
     output_path: str,
     max_workers: int = 5,  # 最大并行线程数
     show_progress: bool = True,
-    verify: bool = True
+    verify: bool = True,
+    db_connection_params: Optional[Dict] = None  # 新增：数据库连接参数
 ) -> Dict:
     """
     并行分块下载大文件（多线程版本）
@@ -819,13 +833,25 @@ def download_large_file_parallel(
     progress_lock = threading.Lock()
     completed_chunks = 0
 
+    # 检测是否为远程连接
+    is_remote = hasattr(db, '_backend_type') and db._backend_type == 'remote'
+
     def download_chunk(chunk_index: int) -> bool:
         """下载单个分块（线程函数）"""
         nonlocal completed_chunks
 
         try:
-            # 下载分块
-            chunk = db.get(f"{key}:chunk:{chunk_index}")
+            # 如果是远程连接，创建线程独立的数据库连接（ZMQ 不是线程安全的）
+            if is_remote and db_connection_params:
+                from flaxkv2 import FlaxKV
+                thread_db = FlaxKV(**db_connection_params)
+                try:
+                    chunk = thread_db.get(f"{key}:chunk:{chunk_index}")
+                finally:
+                    thread_db.close()
+            else:
+                # 本地连接或未提供连接参数，使用共享连接
+                chunk = db.get(f"{key}:chunk:{chunk_index}")
 
             if chunk is None:
                 raise ValueError(f"分块缺失: chunk {chunk_index}/{total_chunks}")

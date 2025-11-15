@@ -319,6 +319,17 @@ class FlaxKV2CLI:
                 derive_from_password=derive_from_password
             )
 
+            # 准备连接参数（用于并行传输时每个线程创建独立连接）
+            db_connection_params = {
+                'db_name': final_db_name,
+                'url': final_server,
+                'backend': 'remote',
+                'timeout': timeout,
+                'enable_encryption': enable_encryption,
+                'password': password,
+                'derive_from_password': derive_from_password
+            }
+
             # 处理目录：先打包，然后根据大小决定是否分块
             if path.is_dir():
                 import tempfile
@@ -361,7 +372,8 @@ class FlaxKV2CLI:
                                 chunk_size=chunk_size,
                                 max_workers=max_workers,
                                 show_progress=True,
-                                verify=True
+                                verify=True,
+                                db_connection_params=db_connection_params
                             )
 
                         # 更新元数据，标记为 chunked_folder
@@ -427,7 +439,8 @@ class FlaxKV2CLI:
                         chunk_size=chunk_size,
                         max_workers=max_workers,
                         show_progress=True,
-                        verify=True
+                        verify=True,
+                        db_connection_params=db_connection_params
                     )
 
                 console.print(f"[bold green]✓[/bold green] 上传成功!")
@@ -547,6 +560,17 @@ class FlaxKV2CLI:
                 derive_from_password=derive_from_password
             )
 
+            # 准备连接参数（用于并行传输时每个线程创建独立连接）
+            db_connection_params = {
+                'db_name': final_db_name,
+                'url': final_server,
+                'backend': 'remote',
+                'timeout': timeout,
+                'enable_encryption': enable_encryption,
+                'password': password,
+                'derive_from_password': derive_from_password
+            }
+
             # 检查元数据，判断文件类型
             metadata = db.get(f"{key}:meta")
 
@@ -593,7 +617,8 @@ class FlaxKV2CLI:
                             db, key, temp_path,
                             max_workers=max_workers,
                             show_progress=True,
-                            verify=True
+                            verify=True,
+                            db_connection_params=db_connection_params
                         )
 
                     # 解包到目标目录
@@ -636,7 +661,8 @@ class FlaxKV2CLI:
                         db, key, str(output_path),
                         max_workers=max_workers,
                         show_progress=True,
-                        verify=True
+                        verify=True,
+                        db_connection_params=db_connection_params
                     )
 
                 console.print(f"[bold green]✓[/bold green] 下载成功!")
