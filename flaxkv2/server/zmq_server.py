@@ -13,9 +13,12 @@ import os
 import signal
 import threading
 import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, Optional
 import msgpack
 import zmq
+import zmq.asyncio
 import zmq.auth
 from zmq.auth.thread import ThreadAuthenticator
 
@@ -143,14 +146,15 @@ class FlaxKVServer:
         self.databases: Dict[str, RawLevelDBDict] = {}
         self.db_lock = threading.RLock()
 
-        # ZeroMQ 上下文
-        self.context = zmq.Context()
+        # ZeroMQ 上下文（使用asyncio）
+        self.context = zmq.asyncio.Context()
         self.socket = None
         self.auth = None  # CurveZMQ认证器
 
         # 运行状态
         self.running = False
-        self.worker_threads = []
+        self.executor = None  # 线程池执行器（用于LevelDB同步操作）
+        self.pending_tasks = set()  # 跟踪未完成的异步任务
 
         # 统计信息
         self.stats = {
@@ -452,80 +456,90 @@ class FlaxKVServer:
                 self.stats['errors'] += 1
             return [self.STATUS_ERROR, str(e).encode('utf-8')]
     
-    def _server_loop(self):
-        """服务器主循环（单线程处理所有请求）"""
-        logger.info("Server loop started")
+    async def _server_loop(self):
+        """异步服务器主循环（并发处理所有请求）"""
+        logger.info(f"Async server loop started with {self.max_workers} workers")
 
+        async def process_request(identity, request_data_compressed):
+            """处理单个请求的异步协程"""
+            try:
+                # 统计接收字节数
+                with self.stats_lock:
+                    self.stats['bytes_received'] += len(request_data_compressed)
+
+                # 解压缩请求数据
+                try:
+                    request_data = self._decompress_data(request_data_compressed)
+                except Exception as e:
+                    logger.error(f"Error decompressing request: {e}")
+                    response = [self.STATUS_ERROR, b"Decompression failed"]
+                    response_data = msgpack.packb(response, use_bin_type=True)
+                    response_data_compressed = self._compress_data(response_data)
+                    await self.socket.send_multipart([identity, response_data_compressed])
+                    return
+
+                # 解包请求
+                try:
+                    request = msgpack.unpackb(request_data, raw=True)
+                except Exception as e:
+                    logger.error(f"Error unpacking request: {e}")
+                    response = [self.STATUS_ERROR, b"Invalid request format"]
+                    response_data = msgpack.packb(response, use_bin_type=True)
+                    response_data_compressed = self._compress_data(response_data)
+                    await self.socket.send_multipart([identity, response_data_compressed])
+                    return
+
+                # 在线程池中执行同步的LevelDB操作
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    self.executor,
+                    self._handle_request,
+                    identity,
+                    request
+                )
+
+                # 打包响应
+                response_data = msgpack.packb(response, use_bin_type=True)
+
+                # 压缩响应数据
+                response_data_compressed = self._compress_data(response_data)
+
+                # 统计发送字节数
+                with self.stats_lock:
+                    self.stats['bytes_sent'] += len(response_data_compressed)
+
+                # 异步发送响应
+                await self.socket.send_multipart([identity, response_data_compressed])
+
+            except Exception as e:
+                logger.error(f"Error processing request: {e}", exc_info=True)
+
+        # 主接收循环
         while self.running:
             try:
-                # 接收消息（非阻塞）
-                if self.socket.poll(timeout=100):  # 100ms 超时
-                    # 接收多帧消息
-                    # DEALER 发送 [request_data]
-                    # ROUTER 接收 [identity, request_data]
-                    frames = self.socket.recv_multipart(zmq.NOBLOCK)
+                # 异步接收消息
+                frames = await self.socket.recv_multipart()
 
-                    if len(frames) < 2:
-                        logger.warning(f"Invalid message format: {len(frames)} frames: {frames}")
-                        continue
+                if len(frames) < 2:
+                    logger.warning(f"Invalid message format: {len(frames)} frames")
+                    continue
 
-                    identity = frames[0]
-                    request_data_compressed = frames[1]
+                identity = frames[0]
+                request_data_compressed = frames[1]
 
-                    # 统计接收字节数
-                    with self.stats_lock:
-                        self.stats['bytes_received'] += len(request_data_compressed)
+                # 创建异步任务处理请求（不等待，立即接收下一个请求）
+                task = asyncio.create_task(process_request(identity, request_data_compressed))
 
-                    # 解压缩请求数据
-                    try:
-                        request_data = self._decompress_data(request_data_compressed)
-                    except Exception as e:
-                        logger.error(f"Error decompressing request: {e}")
-                        response = [self.STATUS_ERROR, b"Decompression failed"]
-                        response_data = msgpack.packb(response, use_bin_type=True)
-                        response_data_compressed = self._compress_data(response_data)
-                        self.socket.send_multipart([identity, response_data_compressed], zmq.NOBLOCK)
-                        continue
+                # 跟踪任务（用于优雅关闭）
+                self.pending_tasks.add(task)
+                task.add_done_callback(self.pending_tasks.discard)
 
-                    # 解包请求
-                    try:
-                        request = msgpack.unpackb(request_data, raw=True)  # raw=True 保持 bytes
-                    except Exception as e:
-                        logger.error(f"Error unpacking request: {e}")
-                        response = [self.STATUS_ERROR, b"Invalid request format"]
-                        response_data = msgpack.packb(response, use_bin_type=True)
-                        response_data_compressed = self._compress_data(response_data)
-                        self.socket.send_multipart([identity, response_data_compressed], zmq.NOBLOCK)
-                        continue
-
-                    # 处理请求
-                    response = self._handle_request(identity, request)
-
-                    # 打包响应
-                    response_data = msgpack.packb(response, use_bin_type=True)
-
-                    # 压缩响应数据
-                    response_data_compressed = self._compress_data(response_data)
-
-                    # 统计发送字节数
-                    with self.stats_lock:
-                        self.stats['bytes_sent'] += len(response_data_compressed)
-
-                    # 发送响应
-                    # ROUTER 发送 [identity, response_data]
-                    # DEALER 接收 [response_data]
-                    self.socket.send_multipart([identity, response_data_compressed], zmq.NOBLOCK)
-
-            except zmq.Again:
-                # 非阻塞操作，没有消息
-                continue
+            except asyncio.CancelledError:
+                logger.info("Server loop cancelled")
+                break
             except zmq.ZMQError as e:
                 if e.errno == zmq.ETERM:
-                    # Context 被终止
-                    break
-                elif e.errno == zmq.ENOTSOCK:
-                    # Socket 已关闭（服务器正在停止）
-                    logger.debug("Socket closed, stopping server loop")
+                    logger.info("Context terminated")
                     break
                 logger.error(f"ZMQ error in server loop: {e}")
             except Exception as e:
@@ -585,9 +599,12 @@ class FlaxKVServer:
         # 设置 socket 选项
         self.socket.setsockopt(zmq.LINGER, 0)
 
+        # 创建线程池用于LevelDB同步操作
+        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
+
         self.running = True
 
-        logger.info(f"Server started (single-threaded mode)")
+        logger.info(f"Server started (async mode with {self.max_workers} workers)")
 
         # 只在主线程中注册信号处理
         if register_signals:
@@ -611,9 +628,16 @@ class FlaxKVServer:
         logger.info("Stopping FlaxKV Server...")
         self.running = False
 
-        # 等待工作线程结束
-        for thread in self.worker_threads:
-            thread.join(timeout=5.0)
+        # 等待所有pending异步任务完成（最多5秒）
+        if self.pending_tasks:
+            logger.info(f"Waiting for {len(self.pending_tasks)} pending tasks to complete...")
+            # 注意：在asyncio.run()退出时，所有任务会自动取消
+
+        # 关闭线程池executor
+        if self.executor:
+            logger.info("Shutting down executor...")
+            self.executor.shutdown(wait=True, timeout=5.0)
+            self.executor = None
 
         # 关闭所有数据库
         with self.db_lock:
@@ -647,10 +671,10 @@ class FlaxKVServer:
     def run(self):
         """运行服务器（阻塞）"""
         self.start()
-        
+
         try:
-            # 运行服务器循环
-            self._server_loop()
+            # 运行异步服务器循环
+            asyncio.run(self._server_loop())
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received")
         finally:

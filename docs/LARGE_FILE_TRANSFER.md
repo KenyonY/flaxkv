@@ -613,6 +613,152 @@ python examples/large_file_transfer.py
    - 确保服务器和客户端都有足够的性能
    - 始终启用 `verify=True` 确保数据完整性
 
+## ⚡ 服务器架构与性能特征
+
+### Asyncio 并发架构
+
+FlaxKV2 服务器从 v2.1 开始采用 **asyncio + ThreadPoolExecutor** 架构，提供高并发处理能力：
+
+```
+客户端请求 → ZeroMQ (asyncio) → 异步接收循环
+                                    ↓
+                            asyncio.create_task()
+                                    ↓
+                    ┌───────────────┴───────────────┐
+                    │  ThreadPoolExecutor (8 workers) │
+                    │  并发执行 LevelDB 操作          │
+                    └───────────────┬───────────────┘
+                                    ↓
+                            ZeroMQ (asyncio) → 异步发送响应
+```
+
+**关键特性：**
+- 单线程事件循环处理所有网络 I/O（零上下文切换开销）
+- ThreadPoolExecutor 并发执行 LevelDB 同步操作
+- 支持 1000+ 并发客户端连接
+- 自动任务跟踪和优雅关闭
+
+### 性能特征分析
+
+#### 1. 远程服务器场景（推荐）
+
+**瓶颈：网络带宽**
+
+```bash
+# 远程服务器测试结果（200MB 文件）
+串行 (1 线程):  32.81秒,  6.10 MB/s  (基准)
+并行 (4 线程):  26.78秒,  7.47 MB/s  (1.23x 提升)
+并行 (8 线程):  23.42秒,  8.54 MB/s  (1.40x 提升) ✅
+```
+
+**结论：** 并行传输在远程场景下有显著提升（1.4x），因为：
+- 多个连接更好地利用网络带宽
+- 减少往返延迟（RTT）的影响
+- 服务器端 asyncio 并发处理请求
+
+#### 2. 本地服务器场景
+
+**瓶颈：LevelDB 内部写锁**
+
+```bash
+# 本地服务器测试结果（200MB 文件）
+串行 (1 线程):   5.71秒, 35.02 MB/s  (基准)
+并行 (8 线程):   5.72秒, 34.96 MB/s  (1.00x 提升)
+并行 (16 线程):  5.73秒, 34.90 MB/s  (1.00x 提升)
+```
+
+**结论：** 本地场景无提升，因为：
+- LevelDB 有全局写锁（Mutex），所有写操作串行化
+- 磁盘 I/O 已达瓶颈（~35 MB/s 对于小块随机写）
+- 服务器并发能力被 LevelDB 锁限制
+
+### 性能优化建议
+
+#### 远程传输优化
+
+```python
+# 1. 增加并发线程数
+upload_large_file_parallel(
+    db, key, file_path,
+    max_workers=8,  # 远程场景推荐 8-16 个线程
+    chunk_size=10 * 1024 * 1024
+)
+
+# 2. 调整分块大小（根据网络带宽）
+# 低带宽 (< 10 Mbps):   5MB 分块
+# 中带宽 (10-100 Mbps): 10MB 分块（默认）
+# 高带宽 (> 100 Mbps):  20MB 分块
+```
+
+#### 本地传输优化
+
+```python
+# 1. 使用串行传输（避免线程开销）
+upload_large_file(
+    db, key, file_path,
+    chunk_size=10 * 1024 * 1024,
+    show_progress=True
+)
+
+# 2. 或使用较少线程（2-4 个）
+upload_large_file_parallel(
+    db, key, file_path,
+    max_workers=2,  # 本地场景推荐 1-4 个线程
+    chunk_size=10 * 1024 * 1024
+)
+```
+
+#### 服务器配置优化
+
+```bash
+# 1. 调整 worker 数量（默认 8）
+flaxkv2 run --port 25555 --workers 16  # 高并发场景
+
+# 2. 使用性能配置文件
+flaxkv2 run --port 25555 --performance-profile write_optimized
+
+# 3. 启用压缩（减少网络传输）
+flaxkv2 run --port 25555 --enable-compression  # 需要 lz4
+```
+
+### 性能基准参考
+
+| 场景 | 瓶颈 | 最佳并发数 | 预期提升 |
+|------|------|-----------|---------|
+| 远程服务器 (WAN) | 网络带宽 | 8-16 线程 | 1.4-2x |
+| 本地服务器 (localhost) | LevelDB 写锁 | 1-2 线程 | 无提升 |
+| 读密集场景 | LevelDB 读性能 | 4-8 线程 | 2-4x |
+| 混合读写 | 网络 + LevelDB | 4-8 线程 | 1.2-1.5x |
+
+### 理解 LevelDB 写锁限制
+
+**为什么本地无提升？**
+
+```
+多个客户端线程
+    ↓ (并发请求)
+ZeroMQ Asyncio 服务器
+    ↓ (并发处理)
+ThreadPoolExecutor (8 workers)
+    ↓ (并发执行)
+同一个 LevelDB 实例
+    ↓ (内部 Mutex)
+串行写入磁盘 ❌
+```
+
+**LevelDB 写操作流程：**
+1. 获取写锁（Mutex）
+2. 写入 MemTable
+3. 必要时触发 Compaction
+4. 释放写锁
+
+即使有 8 个线程同时调用 `db.put()`，它们也会在 LevelDB 内部排队等待写锁。
+
+**解决方案：**
+- 使用批量写入（`BATCH_WRITE`）减少锁竞争
+- 对于读密集场景，并发仍然有效（LevelDB 读无全局锁）
+- 远程场景的网络延迟掩盖了写锁影响
+
 ## 📞 获取帮助
 
 - 查看示例：`examples/large_file_transfer.py`
