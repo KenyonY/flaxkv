@@ -143,6 +143,9 @@ class FlaxFileServer:
             elif command == b'DELETE':
                 await self.handle_delete(identity, args)
 
+            elif command == b'LIST':
+                await self.handle_list(identity, args)
+
             else:
                 logger.warning(f"未知命令: {command}")
                 await self.socket.send_multipart([identity, b'', b'ERROR', b'Unknown command'])
@@ -321,6 +324,44 @@ class FlaxFileServer:
             await self.socket.send_multipart([identity, b'', b'OK'])
         except Exception as e:
             logger.error(f"删除失败: {e}")
+            await self.socket.send_multipart([identity, b'', b'ERROR', str(e).encode('utf-8')])
+
+    async def handle_list(self, identity: bytes, args: list):
+        """列出指定前缀下的所有文件"""
+        # 获取前缀（可选）
+        prefix = args[0].decode('utf-8') if args else ""
+
+        try:
+            files_info = []
+
+            # 遍历存储目录
+            for file_path in STORAGE_DIR.rglob('*'):
+                if file_path.is_file():
+                    # 计算相对路径
+                    relative_path = file_path.relative_to(STORAGE_DIR)
+                    key = str(relative_path)
+
+                    # 如果指定了前缀，只返回匹配的文件
+                    if prefix and not key.startswith(prefix):
+                        continue
+
+                    # 获取文件信息
+                    stat = file_path.stat()
+                    files_info.append({
+                        'key': key,
+                        'size': stat.st_size,
+                        'mtime': stat.st_mtime
+                    })
+
+            # 序列化文件列表
+            import json
+            files_json = json.dumps(files_info).encode('utf-8')
+
+            logger.info(f"📋 列出文件: 前缀='{prefix}', 数量={len(files_info)}")
+            await self.socket.send_multipart([identity, b'', b'OK', files_json])
+
+        except Exception as e:
+            logger.error(f"列出文件失败: {e}")
             await self.socket.send_multipart([identity, b'', b'ERROR', str(e).encode('utf-8')])
 
     async def stop(self):

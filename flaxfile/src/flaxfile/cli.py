@@ -660,11 +660,9 @@ class SyncCommands:
             password: 密码（可选）
 
         示例:
-            flaxfile sync pull myproject
-            flaxfile sync pull myproject /path/to/download
-            flaxfile sync pull myproject /path/to/download --server prod
-
-        注意: 当前版本暂不支持，待实现
+            flaxfile sync pull my_project
+            flaxfile sync pull my_project /path/to/download
+            flaxfile sync pull my_project /path/to/download --server prod
         """
         from .sync import pull_directory
 

@@ -373,6 +373,37 @@ class AsyncFlaxFileClient:
 
         return frames[1] == b'OK'
 
+    async def list_files(self, prefix: str = "") -> list:
+        """
+        列出服务器上的文件
+
+        Args:
+            prefix: 文件前缀（可选，用于过滤）
+
+        Returns:
+            文件列表，每个文件包含 key, size, mtime
+        """
+        await self.connect()
+
+        await self.socket.send_multipart([b'', b'LIST', prefix.encode('utf-8')])
+        frames = await self.socket.recv_multipart()
+
+        if len(frames) < 2:
+            raise Exception("服务器响应无效")
+
+        if frames[1] == b'ERROR':
+            error_msg = frames[2].decode('utf-8') if len(frames) > 2 else "Unknown error"
+            raise Exception(f"列出文件失败: {error_msg}")
+
+        if frames[1] != b'OK':
+            raise Exception(f"列出文件失败: {frames[1]}")
+
+        # 解析文件列表
+        files_json = frames[2].decode('utf-8')
+        files = json.loads(files_json)
+
+        return files
+
     async def close(self):
         """关闭连接"""
         if self.socket:
@@ -431,6 +462,10 @@ class FlaxFileClient:
     def delete_file(self, file_key: str) -> bool:
         """删除文件 (同步)"""
         return asyncio.run(self.async_client.delete_file(file_key))
+
+    def list_files(self, prefix: str = "") -> list:
+        """列出文件 (同步)"""
+        return asyncio.run(self.async_client.list_files(prefix))
 
     def close(self):
         """关闭连接 (同步)"""

@@ -179,7 +179,12 @@ def push_directory(
     console.print(f"[cyan]📊 总大小: {total_bytes / (1024*1024):.2f} MB")
     console.print()
 
-    # 3. 上传所有文件
+    # 3. 先连接到服务器（在显示进度条之前完成密码输入）
+    console.print("[cyan]🔗 连接到服务器...")
+    client.connect()
+    console.print()
+
+    # 4. 上传所有文件
     uploaded = 0
     failed = 0
     failed_files = []
@@ -264,9 +269,6 @@ def pull_directory(
     """
     从服务器下载目录到本地
 
-    注意：当前实现需要客户端维护远程文件列表
-    后续可以添加服务器端 LIST 命令来优化
-
     Args:
         client: FlaxFileClient 实例
         remote_dir: 远程目录名称
@@ -277,12 +279,143 @@ def pull_directory(
     Returns:
         同步结果统计
     """
-    console.print("[yellow]⚠️  pull 功能需要服务器支持文件列表功能")
-    console.print("[yellow]   当前版本暂不支持，请等待后续更新")
+    # 1. 先连接到服务器（在显示进度条之前完成密码输入）
+    console.print("[cyan]🔗 连接到服务器...")
+    client.connect()
+    console.print()
+
+    # 2. 列出远程文件
+    console.print(f"[cyan]📋 获取远程文件列表: {remote_dir}/")
+
+    try:
+        files = client.list_files(prefix=remote_dir)
+    except Exception as e:
+        console.print(f"[red]✗ 获取文件列表失败: {e}")
+        return {
+            'total_files': 0,
+            'downloaded': 0,
+            'failed': 0,
+            'total_bytes': 0
+        }
+
+    if not files:
+        console.print("[yellow]⚠️  远程目录为空或不存在")
+        return {
+            'total_files': 0,
+            'downloaded': 0,
+            'failed': 0,
+            'total_bytes': 0
+        }
+
+    console.print(f"[green]✓ 发现 {len(files)} 个文件")
+
+    # 3. 计算总大小
+    total_bytes = sum(f['size'] for f in files)
+    console.print(f"[cyan]📊 总大小: {total_bytes / (1024*1024):.2f} MB")
+    console.print()
+
+    # 4. 创建本地目录
+    local_dir_path = Path(local_dir)
+    local_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # 5. 下载所有文件
+    downloaded = 0
+    failed = 0
+    failed_files = []
+
+    if show_progress:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            main_task = progress.add_task(
+                f"[cyan]下载 {remote_dir}/",
+                total=len(files)
+            )
+
+            for file_info in files:
+                remote_key = file_info['key']
+
+                # 计算本地路径（移除远程目录前缀）
+                if remote_key.startswith(remote_dir + '/'):
+                    rel_path = remote_key[len(remote_dir) + 1:]
+                elif remote_key.startswith(remote_dir):
+                    rel_path = remote_key[len(remote_dir):]
+                else:
+                    rel_path = remote_key
+
+                local_path = local_dir_path / rel_path
+
+                try:
+                    # 更新当前文件描述
+                    progress.update(
+                        main_task,
+                        description=f"[cyan]下载: {rel_path}"
+                    )
+
+                    # 创建父目录
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    # 下载文件（不显示单文件进度，避免刷屏）
+                    client.download_file(remote_key, str(local_path), show_progress=False)
+                    downloaded += 1
+
+                except Exception as e:
+                    failed += 1
+                    failed_files.append((rel_path, str(e)))
+                    console.print(f"[red]✗ 下载失败: {rel_path} - {e}")
+
+                # 更新进度
+                progress.update(main_task, advance=1)
+
+    else:
+        # 无进度条模式
+        for file_info in files:
+            remote_key = file_info['key']
+
+            # 计算本地路径
+            if remote_key.startswith(remote_dir + '/'):
+                rel_path = remote_key[len(remote_dir) + 1:]
+            elif remote_key.startswith(remote_dir):
+                rel_path = remote_key[len(remote_dir):]
+            else:
+                rel_path = remote_key
+
+            local_path = local_dir_path / rel_path
+
+            try:
+                console.print(f"[cyan]下载: {rel_path}")
+
+                # 创建父目录
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # 下载文件
+                client.download_file(remote_key, str(local_path), show_progress=False)
+                downloaded += 1
+
+            except Exception as e:
+                failed += 1
+                failed_files.append((rel_path, str(e)))
+                console.print(f"[red]✗ 下载失败: {rel_path} - {e}")
+
+    # 6. 显示结果
+    console.print()
+    if failed == 0:
+        console.print(f"[bold green]✓ 同步完成! 成功下载 {downloaded} 个文件到 {local_dir}")
+    else:
+        console.print(f"[yellow]⚠️  同步完成，但有 {failed} 个文件失败:")
+        for rel_path, error in failed_files:
+            console.print(f"  [red]✗ {rel_path}: {error}")
 
     return {
-        'total_files': 0,
-        'downloaded': 0,
-        'failed': 0,
-        'total_bytes': 0
+        'total_files': len(files),
+        'downloaded': downloaded,
+        'failed': failed,
+        'failed_files': failed_files,
+        'total_bytes': total_bytes
     }
