@@ -144,6 +144,10 @@ class FlaxFileClient:
         if response != b'OK':
             raise Exception(f"服务器未就绪: {response}")
 
+        # ⚠️ 重要：等待一小段时间，确保服务器完成初始化
+        # 避免数据在服务器准备好之前就到达
+        time.sleep(0.5)
+
         # 2. 流式发送文件数据
         bytes_sent = 0
         last_progress = -1

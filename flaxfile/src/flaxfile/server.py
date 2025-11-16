@@ -134,11 +134,8 @@ class FlaxFileServer:
             while True:
                 socks = dict(poller.poll(timeout=1000))
 
-                # 处理上传数据
-                if self.upload_socket in socks:
-                    self.handle_upload_data(current_upload)
-
-                # 处理控制消息（下载请求等）
+                # ⚠️ 重要：先处理控制消息，再处理数据
+                # 避免数据在 UPLOAD_START 之前到达导致被丢弃
                 if self.control_socket in socks:
                     msg = self.control_socket.recv()
                     cmd = json.loads(msg.decode('utf-8'))
@@ -167,6 +164,10 @@ class FlaxFileServer:
                     elif cmd['type'] == 'PING':
                         self.control_socket.send(b'PONG')
 
+                # 处理上传数据（在控制消息之后处理）
+                if self.upload_socket in socks:
+                    self.handle_upload_data(current_upload)
+
         except KeyboardInterrupt:
             print("\n\n服务器停止")
         finally:
@@ -181,6 +182,7 @@ class FlaxFileServer:
         hash_obj = hashlib.sha256()
 
         print(f"📤 开始接收: {file_key} ({file_size/(1024*1024):.1f} MB)")
+        print(f"   [DEBUG] 上传状态已初始化，准备接收数据...")
 
         return {
             'file_key': file_key,
@@ -200,11 +202,15 @@ class FlaxFileServer:
         """
         if not upload_state:
             # 没有活跃的上传，丢弃数据
+            discarded_count = 0
             try:
                 while True:
                     self.upload_socket.recv(zmq.NOBLOCK)
+                    discarded_count += 1
             except zmq.Again:
                 pass
+            if discarded_count > 0:
+                print(f"   [WARNING] 丢弃了 {discarded_count} 个数据包（没有活跃的上传）")
             return
 
         # 批量接收
