@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flaxfile"
+description = "高性能文件传输工具 - 基于ZMQ优化的跨网络文件传输系统"
+authors = [
+    { name = "K.Y", email = "beidongjiedeguang@gmail.com" },
+]
+license = { text = "MIT" }
+readme = "README.md"
+keywords = ["file-transfer", "zmq", "high-performance", "streaming", "network"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Networking",
+    "Topic :: Utilities",
+]
+
+requires-python = ">=3.8"
+
+dependencies = [
+    "pyzmq>=25.0.0",
+    "fire>=0.5.0",
+    "tomli>=2.0.0; python_version<'3.11'",
+]
+
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/KenyonY/flaxkv"
+Documentation = "https://github.com/KenyonY/flaxkv/tree/main/flaxfile#flaxfile"
+Issues = "https://github.com/KenyonY/flaxkv/issues"
+Source = "https://github.com/KenyonY/flaxkv/tree/main/flaxfile"
+
+[project.scripts]
+flaxfile = "flaxfile.cli:main"
+ff = "flaxfile.cli:main"
+
+[tool.hatch.version]
+path = "src/flaxfile/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flaxfile"]
+
+[tool.isort]
+profile = "black"
