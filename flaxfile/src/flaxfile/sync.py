@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import List, Tuple, Optional
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TransferSpeedColumn, TimeRemainingColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TransferSpeedColumn, TimeRemainingColumn, DownloadColumn
 
 console = Console()
 
@@ -194,21 +194,25 @@ def push_directory(
             SpinnerColumn(),
             TextColumn("[bold blue]{task.description}"),
             BarColumn(),
-            TaskProgressColumn(),
+            DownloadColumn(),
             TransferSpeedColumn(),
             TimeRemainingColumn(),
             console=console,
         ) as progress:
             main_task = progress.add_task(
                 f"[cyan]上传到 {remote_dir}/",
-                total=len(files)
+                total=total_bytes
             )
+
+            bytes_uploaded = 0
 
             for abs_path, rel_path in files:
                 # 构造远程 key
                 remote_key = f"{remote_dir}/{rel_path}"
 
                 try:
+                    file_size = os.path.getsize(abs_path)
+
                     # 更新当前文件描述
                     progress.update(
                         main_task,
@@ -219,13 +223,14 @@ def push_directory(
                     client.upload_file(abs_path, remote_key, show_progress=False)
                     uploaded += 1
 
+                    # 更新字节进度
+                    bytes_uploaded += file_size
+                    progress.update(main_task, completed=bytes_uploaded)
+
                 except Exception as e:
                     failed += 1
                     failed_files.append((rel_path, str(e)))
                     console.print(f"[red]✗ 上传失败: {rel_path} - {e}")
-
-                # 更新进度
-                progress.update(main_task, advance=1)
 
     else:
         # 无进度条模式
@@ -328,18 +333,21 @@ def pull_directory(
             SpinnerColumn(),
             TextColumn("[bold blue]{task.description}"),
             BarColumn(),
-            TaskProgressColumn(),
+            DownloadColumn(),
             TransferSpeedColumn(),
             TimeRemainingColumn(),
             console=console,
         ) as progress:
             main_task = progress.add_task(
                 f"[cyan]下载 {remote_dir}/",
-                total=len(files)
+                total=total_bytes
             )
+
+            bytes_downloaded = 0
 
             for file_info in files:
                 remote_key = file_info['key']
+                file_size = file_info['size']
 
                 # 计算本地路径（移除远程目录前缀）
                 if remote_key.startswith(remote_dir + '/'):
@@ -365,13 +373,14 @@ def pull_directory(
                     client.download_file(remote_key, str(local_path), show_progress=False)
                     downloaded += 1
 
+                    # 更新字节进度
+                    bytes_downloaded += file_size
+                    progress.update(main_task, completed=bytes_downloaded)
+
                 except Exception as e:
                     failed += 1
                     failed_files.append((rel_path, str(e)))
                     console.print(f"[red]✗ 下载失败: {rel_path} - {e}")
-
-                # 更新进度
-                progress.update(main_task, advance=1)
 
     else:
         # 无进度条模式

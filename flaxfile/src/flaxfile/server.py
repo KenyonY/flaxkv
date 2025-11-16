@@ -342,8 +342,12 @@ class FlaxFileServer:
                     key = str(relative_path)
 
                     # 如果指定了前缀，只返回匹配的文件
-                    if prefix and not key.startswith(prefix):
-                        continue
+                    if prefix:
+                        # 确保前缀以 / 结尾，避免匹配到前缀相似的其他目录
+                        # 例如 'downloads' 应该匹配 'downloads/' 而不是 'downloads_bk/'
+                        search_prefix = prefix if prefix.endswith('/') else prefix + '/'
+                        if not key.startswith(search_prefix):
+                            continue
 
                     # 获取文件信息
                     stat = file_path.stat()
