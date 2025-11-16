@@ -74,9 +74,7 @@ class ConfigCommands:
         server_config = self._config.get_server_config()
         print(f"\n服务器配置（flaxfile serve）:")
         print(f"  监听地址: {server_config['host']}")
-        print(f"  上传端口: {server_config['upload_port']}")
-        print(f"  下载端口: {server_config['download_port']}")
-        print(f"  控制端口: {server_config['control_port']}")
+        print(f"  端口: {server_config['port']}")
         print(f"  存储目录: {server_config['storage_dir']}")
 
         # 显示客户端配置
@@ -93,9 +91,7 @@ class ConfigCommands:
                 marker = " [默认]" if is_default else ""
                 print(f"\n  {name}{marker}:")
                 print(f"    地址: {config['host']}")
-                print(f"    上传端口: {config['upload_port']}")
-                print(f"    下载端口: {config['download_port']}")
-                print(f"    控制端口: {config['control_port']}")
+                print(f"    端口: {config['port']}")
         else:
             print("\n未配置任何远程服务器")
 
@@ -128,40 +124,31 @@ class FlaxFileCLI:
     def serve(
         self,
         host: Optional[str] = None,
-        upload_port: Optional[int] = None,
-        download_port: Optional[int] = None,
-        control_port: Optional[int] = None,
+        port: Optional[int] = None,
     ):
         """
-        启动FlaxFile服务器
+        启动FlaxFile服务器 (异步单端口)
 
         Args:
             host: 监听地址 (可选，默认从配置文件读取)
-            upload_port: 上传端口 (可选，默认从配置文件读取)
-            download_port: 下载端口 (可选，默认从配置文件读取)
-            control_port: 控制端口 (可选，默认从配置文件读取)
+            port: 端口 (可选，默认从配置文件读取)
 
         示例:
             flaxfile serve                          # 使用配置文件
             flaxfile serve --host 127.0.0.1         # 覆盖配置
-            flaxfile serve --upload-port 26555      # 覆盖端口
+            flaxfile serve --port 26555             # 覆盖端口
         """
+        import asyncio
+
         # 从配置文件读取服务器配置
         server_config = self._config_obj.get_server_config()
 
         # 命令行参数优先级更高
         final_host = host if host is not None else server_config['host']
-        final_upload_port = upload_port if upload_port is not None else server_config['upload_port']
-        final_download_port = download_port if download_port is not None else server_config['download_port']
-        final_control_port = control_port if control_port is not None else server_config['control_port']
+        final_port = port if port is not None else server_config['port']
 
-        server = FlaxFileServer(
-            host=final_host,
-            upload_port=final_upload_port,
-            download_port=final_download_port,
-            control_port=final_control_port
-        )
-        server.start()
+        server = FlaxFileServer(host=final_host, port=final_port)
+        asyncio.run(server.start())
 
     def set(
         self,
@@ -193,9 +180,7 @@ class FlaxFileCLI:
         # 创建客户端
         client = FlaxFileClient(
             server_host=server_config['host'],
-            upload_port=server_config['upload_port'],
-            download_port=server_config['download_port'],
-            control_port=server_config['control_port'],
+            port=server_config['port'],
         )
 
         try:
@@ -236,9 +221,7 @@ class FlaxFileCLI:
         # 创建客户端
         client = FlaxFileClient(
             server_host=server_config['host'],
-            upload_port=server_config['upload_port'],
-            download_port=server_config['download_port'],
-            control_port=server_config['control_port'],
+            port=server_config['port'],
         )
 
         try:
@@ -272,9 +255,7 @@ class FlaxFileCLI:
         # 创建客户端
         client = FlaxFileClient(
             server_host=server_config['host'],
-            upload_port=server_config['upload_port'],
-            download_port=server_config['download_port'],
-            control_port=server_config['control_port'],
+            port=server_config['port'],
         )
 
         try:

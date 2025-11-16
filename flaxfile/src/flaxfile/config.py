@@ -23,17 +23,13 @@ DEFAULT_CONFIG = {
     },
     'server': {
         'host': '0.0.0.0',
-        'upload_port': 25555,
-        'download_port': 25556,
-        'control_port': 25557,
+        'port': 25555,
         'storage_dir': './zmq_streaming_storage',
     },
     'servers': {
         'local': {
             'host': '127.0.0.1',
-            'upload_port': 25555,
-            'download_port': 25556,
-            'control_port': 25557,
+            'port': 25555,
         }
     }
 }
@@ -68,10 +64,8 @@ default_server = "local"
 #   - "127.0.0.1" = 仅本地访问
 host = "0.0.0.0"
 
-# 端口配置
-upload_port = 25555      # 文件上传端口
-download_port = 25556    # 文件下载端口
-control_port = 25557     # 控制命令端口
+# 端口配置 (异步单端口设计)
+port = 25555
 
 # 存储目录
 storage_dir = "./zmq_streaming_storage"
@@ -83,21 +77,17 @@ storage_dir = "./zmq_streaming_storage"
 # 本地服务器
 [servers.local]
 host = "127.0.0.1"
-upload_port = 25555
-download_port = 25556
-control_port = 25557
+port = 25555
 
 # 生产环境服务器示例（取消注释以启用）
 # [servers.prod]
 # host = "192.168.1.100"
-# upload_port = 25555
-# download_port = 25556
-# control_port = 25557
+# port = 25555
 
 # 开发环境服务器示例
 # [servers.dev]
 # host = "10.0.0.5"
-# upload_port = 26555
+# port = 26555
 # download_port = 26556
 # control_port = 26557
 """

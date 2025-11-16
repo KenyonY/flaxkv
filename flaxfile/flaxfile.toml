@@ -8,7 +8,7 @@
 # ============================================================
 [client]
 # 默认使用的服务器（对应 [servers] 中的键名）
-default_server = "prod"
+default_server = "local"
 
 # ============================================================
 # 服务端配置（运行 flaxfile serve 时使用）
@@ -19,13 +19,11 @@ default_server = "prod"
 #   - "127.0.0.1" = 仅本地访问
 host = "0.0.0.0"
 
-# 端口配置
-upload_port = 27555      # 文件上传端口
-download_port = 27556    # 文件下载端口
-control_port = 27557     # 控制命令端口
+# 端口配置 (异步单端口设计)
+port = 25555
 
 # 存储目录
-storage_dir = "./data"
+storage_dir = "./zmq_streaming_storage"
 
 # ============================================================
 # 远程服务器配置
@@ -34,13 +32,9 @@ storage_dir = "./data"
 # 本地服务器
 [servers.local]
 host = "127.0.0.1"
-upload_port = 25555
-download_port = 25556
-control_port = 25557
+port = 25555
 
-# 生产环境服务器示例（取消注释以启用）
+# 生产环境服务器
 [servers.prod]
 host = "74.48.18.223"
-upload_port = 27555      # 文件上传端口
-download_port = 27556    # 文件下载端口
-control_port = 27557     # 控制命令端口
+port = 27555
