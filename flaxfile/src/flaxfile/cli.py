@@ -377,6 +377,7 @@ class FlaxFileCLI:
     def __init__(self):
         self._config_obj = Config()
         self.config = ConfigCommands(self._config_obj)
+        self.sync = SyncCommands(self._config_obj)
 
     def serve(
         self,
@@ -585,6 +586,112 @@ class FlaxFileCLI:
   • [green]高性能[/green] - 上传/下载速度可达 1+ GB/s"""
 
         console.print(Panel(version_text, border_style="cyan", title="[bold]FlaxFile"))
+
+
+class SyncCommands:
+    """目录同步命令"""
+
+    def __init__(self, config_obj):
+        self._config = config_obj
+
+    def push(
+        self,
+        local_dir: str,
+        remote_dir: Optional[str] = None,
+        server: Optional[str] = None,
+        password: Optional[str] = None,
+    ):
+        """
+        上传本地目录到服务器
+
+        Args:
+            local_dir: 本地目录路径
+            remote_dir: 远程目录名称（可选，默认使用本地目录名）
+            server: 服务器名称（可选）
+            password: 密码（可选）
+
+        示例:
+            flaxfile sync push /path/to/myproject
+            flaxfile sync push /path/to/myproject backup_v1
+            flaxfile sync push /path/to/myproject backup_v1 --server prod
+        """
+        from pathlib import Path
+        from .sync import push_directory
+
+        # 如果未指定 remote_dir，使用本地目录名
+        if remote_dir is None:
+            remote_dir = Path(local_dir).name
+
+        # 获取服务器配置
+        server_config = self._config.get_server(server)
+
+        # 创建客户端
+        client = FlaxFileClient(
+            server_host=server_config['host'],
+            port=server_config['port'],
+            password=password,
+        )
+
+        try:
+            result = push_directory(
+                client=client,
+                local_dir=local_dir,
+                remote_dir=remote_dir,
+                show_progress=True,
+                password=password
+            )
+        finally:
+            client.close()
+
+    def pull(
+        self,
+        remote_dir: str,
+        local_dir: Optional[str] = None,
+        server: Optional[str] = None,
+        password: Optional[str] = None,
+    ):
+        """
+        从服务器下载目录到本地
+
+        Args:
+            remote_dir: 远程目录名称
+            local_dir: 本地目录路径（可选，默认使用远程目录名）
+            server: 服务器名称（可选）
+            password: 密码（可选）
+
+        示例:
+            flaxfile sync pull myproject
+            flaxfile sync pull myproject /path/to/download
+            flaxfile sync pull myproject /path/to/download --server prod
+
+        注意: 当前版本暂不支持，待实现
+        """
+        from .sync import pull_directory
+
+        # 如果未指定 local_dir，使用远程目录名
+        if local_dir is None:
+            local_dir = f"./{remote_dir}"
+
+        # 获取服务器配置
+        server_config = self._config.get_server(server)
+
+        # 创建客户端
+        client = FlaxFileClient(
+            server_host=server_config['host'],
+            port=server_config['port'],
+            password=password,
+        )
+
+        try:
+            result = pull_directory(
+                client=client,
+                remote_dir=remote_dir,
+                local_dir=local_dir,
+                show_progress=True,
+                password=password
+            )
+        finally:
+            client.close()
 
 
 def main():

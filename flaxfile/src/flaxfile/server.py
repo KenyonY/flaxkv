@@ -62,7 +62,8 @@ class FlaxFileServer:
             self.password = get_password(
                 prompt="请输入服务器密码（用于加密传输）: ",
                 allow_empty=True,
-                env_var="FLAXFILE_PASSWORD"
+                env_var="FLAXFILE_PASSWORD",
+                is_server=True
             )
 
         logger.info("="*70)

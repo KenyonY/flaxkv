@@ -53,7 +53,8 @@ def derive_client_keypair() -> Tuple[bytes, bytes]:
 def get_password(
     prompt: str = "请输入密码: ",
     allow_empty: bool = False,
-    env_var: str = "FLAXFILE_PASSWORD"
+    env_var: str = "FLAXFILE_PASSWORD",
+    is_server: bool = False
 ) -> Optional[str]:
     """
     获取密码（优先级：环境变量 > 交互输入）
@@ -62,6 +63,7 @@ def get_password(
         prompt: 输入提示
         allow_empty: 是否允许空密码
         env_var: 环境变量名
+        is_server: 是否为服务器端（服务器端会询问是否加密，客户端直接输入密码）
 
     Returns:
         密码字符串，如果允许为空且用户选择无加密则返回 None
@@ -72,18 +74,29 @@ def get_password(
         return password
 
     # 2. 交互式输入
-    if allow_empty:
-        # 使用简单的 input() 避免 questionary 的事件循环问题
+    if allow_empty and is_server:
+        # 服务器端：询问是否启用加密
         response = input("是否启用加密? (需要设置密码) [Y/n]: ").strip().lower()
 
         if response in ['n', 'no']:
             return None
 
     # 输入密码
-    password = getpass.getpass(prompt)
+    if allow_empty and not is_server:
+        # 客户端：直接提示输入密码（留空表示无加密）
+        from rich.console import Console
+        Console().print("[cyan]提示: 如果服务器未启用加密，直接按回车即可")
+        password = getpass.getpass(prompt)
 
-    # 验证密码强度
-    if password and len(password) < 8:
+        # 客户端允许空密码（表示不加密连接）
+        if not password:
+            return None
+    else:
+        # 服务器端或不允许空密码的情况
+        password = getpass.getpass(prompt)
+
+    # 验证密码强度（仅服务器端）
+    if is_server and password and len(password) < 8:
         from rich.console import Console
         Console().print("[yellow]⚠️  警告: 密码强度较弱，建议使用至少 16 个字符的强密码")
 

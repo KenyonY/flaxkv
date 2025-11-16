@@ -58,9 +58,10 @@ class AsyncFlaxFileClient:
         # 获取密码（如果未提供）
         if self.password is None:
             self.password = get_password(
-                prompt="请输入服务器密码（用于加密传输）: ",
+                prompt="服务器密码: ",
                 allow_empty=True,
-                env_var="FLAXFILE_PASSWORD"
+                env_var="FLAXFILE_PASSWORD",
+                is_server=False
             )
 
         # 创建 DEALER socket
