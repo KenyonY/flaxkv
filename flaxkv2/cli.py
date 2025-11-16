@@ -234,7 +234,7 @@ class FlaxKV2CLI:
         chunked: Optional[bool] = None,
         chunk_size: int = 10 * 1024 * 1024,
         serial: bool = False,
-        max_workers: int = 1,
+        max_workers: int = 16,
     ):
         """
         上传文件或文件夹到远程 FlaxKV 服务器
