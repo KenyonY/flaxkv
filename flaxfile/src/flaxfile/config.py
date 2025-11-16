@@ -99,6 +99,13 @@ class Config:
     def __init__(self):
         self.config_file: Optional[Path] = None
         self.config = self.load()
+        self._data = None  # 用于交互式配置时存储修改后的配置
+
+    def _load_config(self) -> Dict[str, Any]:
+        """加载配置（用于交互式配置）"""
+        if self._data is None:
+            self._data = self.load()
+        return self._data
 
     def load(self) -> Dict[str, Any]:
         """

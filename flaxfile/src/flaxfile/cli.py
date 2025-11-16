@@ -113,6 +113,263 @@ class ConfigCommands:
             print(f"\n未找到配置文件，使用默认配置")
             print(f"运行 'flaxfile config init' 创建配置文件")
 
+    def interactive(self):
+        """
+        交互式配置模式
+
+        示例:
+            flaxfile config interactive
+            flaxfile config  # 默认进入交互模式
+        """
+        import questionary
+        from rich.console import Console
+        from rich.panel import Panel
+
+        console = Console()
+        console.print(Panel.fit(
+            "[bold cyan]FlaxFile 交互式配置[/bold cyan]\n使用方向键选择，Enter确认",
+            border_style="cyan"
+        ))
+
+        # 确保有配置文件
+        if not self._config.config_file:
+            if questionary.confirm("未找到配置文件，是否创建?").ask():
+                config_path = Path.cwd() / 'flaxfile.toml'
+                created_path = Config.init_config_file(config_path)
+                console.print(f"[green]✓ 已创建配置文件: {created_path}")
+                # 重新加载配置
+                self._config = Config()
+            else:
+                console.print("[yellow]取消配置")
+                return
+
+        while True:
+            action = questionary.select(
+                "请选择操作:",
+                choices=[
+                    "📡 配置服务器设置 (本地服务器)",
+                    "🌐 管理远程服务器",
+                    "⚙️  设置默认服务器",
+                    "📄 查看当前配置",
+                    "💾 保存并退出",
+                    "❌ 退出不保存",
+                ]
+            ).ask()
+
+            if action is None or action.startswith("❌"):
+                console.print("[yellow]已取消，配置未保存")
+                break
+
+            elif action.startswith("📡"):
+                self._config_server_settings()
+
+            elif action.startswith("🌐"):
+                self._manage_remote_servers()
+
+            elif action.startswith("⚙️"):
+                self._set_default_server()
+
+            elif action.startswith("📄"):
+                self.show()
+
+            elif action.startswith("💾"):
+                self._save_config()
+                console.print("[bold green]✓ 配置已保存")
+                break
+
+    def _config_server_settings(self):
+        """配置本地服务器设置"""
+        import questionary
+        from rich.console import Console
+
+        console = Console()
+        console.print("\n[bold cyan]配置本地服务器设置[/bold cyan]")
+
+        server_config = self._config.get_server_config()
+
+        host = questionary.text(
+            "监听地址 (0.0.0.0=允许远程, 127.0.0.1=仅本地):",
+            default=server_config.get('host', '0.0.0.0')
+        ).ask()
+
+        port = questionary.text(
+            "端口:",
+            default=str(server_config.get('port', 25555))
+        ).ask()
+
+        storage_dir = questionary.text(
+            "存储目录:",
+            default=server_config.get('storage_dir', './zmq_streaming_storage')
+        ).ask()
+
+        # 更新配置
+        if not hasattr(self._config, '_data'):
+            self._config._data = self._config._load_config()
+
+        if 'server' not in self._config._data:
+            self._config._data['server'] = {}
+
+        self._config._data['server']['host'] = host
+        self._config._data['server']['port'] = int(port)
+        self._config._data['server']['storage_dir'] = storage_dir
+
+        console.print("[green]✓ 服务器设置已更新")
+
+    def _manage_remote_servers(self):
+        """管理远程服务器"""
+        import questionary
+        from rich.console import Console
+
+        console = Console()
+
+        while True:
+            servers = self._config.list_servers()
+
+            choices = [f"➕ 添加新服务器"]
+            for name in servers.keys():
+                choices.append(f"✏️  编辑: {name}")
+                choices.append(f"🗑️  删除: {name}")
+            choices.append("⬅️  返回")
+
+            action = questionary.select(
+                "远程服务器管理:",
+                choices=choices
+            ).ask()
+
+            if action is None or action.startswith("⬅️"):
+                break
+
+            elif action.startswith("➕"):
+                self._add_remote_server()
+
+            elif action.startswith("✏️"):
+                server_name = action.split(": ")[1]
+                self._edit_remote_server(server_name)
+
+            elif action.startswith("🗑️"):
+                server_name = action.split(": ")[1]
+                self._delete_remote_server(server_name)
+
+    def _add_remote_server(self):
+        """添加远程服务器"""
+        import questionary
+        from rich.console import Console
+
+        console = Console()
+        console.print("\n[bold cyan]添加远程服务器[/bold cyan]")
+
+        name = questionary.text("服务器名称 (如: prod, dev):").ask()
+        if not name:
+            return
+
+        host = questionary.text("服务器地址:").ask()
+        if not host:
+            return
+
+        port = questionary.text("端口:", default="25555").ask()
+
+        # 更新配置
+        if not hasattr(self._config, '_data'):
+            self._config._data = self._config._load_config()
+
+        if 'servers' not in self._config._data:
+            self._config._data['servers'] = {}
+
+        self._config._data['servers'][name] = {
+            'host': host,
+            'port': int(port)
+        }
+
+        console.print(f"[green]✓ 已添加服务器: {name}")
+
+    def _edit_remote_server(self, server_name: str):
+        """编辑远程服务器"""
+        import questionary
+        from rich.console import Console
+
+        console = Console()
+        console.print(f"\n[bold cyan]编辑服务器: {server_name}[/bold cyan]")
+
+        server_config = self._config.get_server(server_name)
+
+        host = questionary.text("服务器地址:", default=server_config['host']).ask()
+        port = questionary.text("端口:", default=str(server_config['port'])).ask()
+
+        # 更新配置
+        if not hasattr(self._config, '_data'):
+            self._config._data = self._config._load_config()
+
+        self._config._data['servers'][server_name] = {
+            'host': host,
+            'port': int(port)
+        }
+
+        console.print(f"[green]✓ 已更新服务器: {server_name}")
+
+    def _delete_remote_server(self, server_name: str):
+        """删除远程服务器"""
+        import questionary
+        from rich.console import Console
+
+        console = Console()
+
+        if questionary.confirm(f"确认删除服务器 '{server_name}'?").ask():
+            if not hasattr(self._config, '_data'):
+                self._config._data = self._config._load_config()
+
+            if 'servers' in self._config._data and server_name in self._config._data['servers']:
+                del self._config._data['servers'][server_name]
+                console.print(f"[green]✓ 已删除服务器: {server_name}")
+            else:
+                console.print(f"[red]✗ 服务器不存在: {server_name}")
+
+    def _set_default_server(self):
+        """设置默认服务器"""
+        import questionary
+        from rich.console import Console
+
+        console = Console()
+
+        servers = self._config.list_servers()
+        if not servers:
+            console.print("[yellow]⚠ 没有可用的远程服务器")
+            return
+
+        server_names = list(servers.keys())
+        current_default = self._config.get_default_server_name()
+
+        selected = questionary.select(
+            f"选择默认服务器 (当前: {current_default}):",
+            choices=server_names
+        ).ask()
+
+        if selected:
+            if not hasattr(self._config, '_data'):
+                self._config._data = self._config._load_config()
+
+            if 'client' not in self._config._data:
+                self._config._data['client'] = {}
+
+            self._config._data['client']['default_server'] = selected
+            console.print(f"[green]✓ 已设置默认服务器: {selected}")
+
+    def _save_config(self):
+        """保存配置到文件"""
+        import toml
+        from pathlib import Path
+
+        if not hasattr(self._config, '_data'):
+            return
+
+        config_file = self._config.config_file or (Path.cwd() / 'flaxfile.toml')
+
+        with open(config_file, 'w', encoding='utf-8') as f:
+            toml.dump(self._config._data, f)
+
+    def __call__(self):
+        """默认调用 interactive"""
+        self.interactive()
+
 
 class FlaxFileCLI:
     """FlaxFile CLI主类"""
@@ -125,6 +382,7 @@ class FlaxFileCLI:
         self,
         host: Optional[str] = None,
         port: Optional[int] = None,
+        password: Optional[str] = None,
     ):
         """
         启动FlaxFile服务器 (异步单端口)
@@ -132,11 +390,14 @@ class FlaxFileCLI:
         Args:
             host: 监听地址 (可选，默认从配置文件读取)
             port: 端口 (可选，默认从配置文件读取)
+            password: 密码（用于加密传输，可选，优先使用环境变量 FLAXFILE_PASSWORD）
 
         示例:
             flaxfile serve                          # 使用配置文件
             flaxfile serve --host 127.0.0.1         # 覆盖配置
             flaxfile serve --port 26555             # 覆盖端口
+            flaxfile serve --password mysecret      # 启用加密
+            export FLAXFILE_PASSWORD=mysecret && flaxfile serve  # 推荐方式
         """
         import asyncio
 
@@ -147,14 +408,24 @@ class FlaxFileCLI:
         final_host = host if host is not None else server_config['host']
         final_port = port if port is not None else server_config['port']
 
-        server = FlaxFileServer(host=final_host, port=final_port)
-        asyncio.run(server.start())
+        server = FlaxFileServer(host=final_host, port=final_port, password=password)
+
+        # 检查是否有运行中的事件循环
+        try:
+            loop = asyncio.get_running_loop()
+            # 如果有运行中的事件循环，创建任务
+            import sys
+            sys.exit("错误: 请直接运行，不要在已有事件循环中调用")
+        except RuntimeError:
+            # 没有运行中的事件循环，正常启动
+            asyncio.run(server.start())
 
     def set(
         self,
         file_path: str,
         key: Optional[str] = None,
         server: Optional[str] = None,
+        password: Optional[str] = None,
     ):
         """
         上传文件到服务器
@@ -163,11 +434,13 @@ class FlaxFileCLI:
             file_path: 本地文件路径
             key: 文件键名（可选，默认使用文件名）
             server: 服务器名称（可选，默认使用配置中的默认服务器）
+            password: 密码（用于加密传输，可选，优先使用环境变量 FLAXFILE_PASSWORD）
 
         示例:
             flaxfile set /path/to/file.bin              # key = file.bin
             flaxfile set /path/to/file.bin myfile       # key = myfile
             flaxfile set /path/to/video.mp4 --server prod
+            export FLAXFILE_PASSWORD=mysecret && flaxfile set file.bin
         """
         # 如果未指定 key，使用文件名作为 key
         if key is None:
@@ -181,14 +454,12 @@ class FlaxFileCLI:
         client = FlaxFileClient(
             server_host=server_config['host'],
             port=server_config['port'],
+            password=password,
         )
 
         try:
             result = client.upload_file(file_path, key, show_progress=True)
-            print(f"\n✓ 上传成功")
-            print(f"  键名: {key}")
-            print(f"  大小: {result['size'] / (1024*1024):.2f} MB")
-            print(f"  吞吐量: {result['throughput']:.2f} MB/s")
+            # Rich 已经显示了漂亮的结果，这里不需要再打印
         finally:
             client.close()
 
@@ -197,6 +468,7 @@ class FlaxFileCLI:
         key: str,
         output_path: Optional[str] = None,
         server: Optional[str] = None,
+        password: Optional[str] = None,
     ):
         """
         从服务器下载文件
@@ -205,11 +477,13 @@ class FlaxFileCLI:
             key: 文件键名
             output_path: 输出路径（可选，默认使用 key 作为文件名）
             server: 服务器名称（可选）
+            password: 密码（用于加密传输，可选，优先使用环境变量 FLAXFILE_PASSWORD）
 
         示例:
             flaxfile get myfile                     # 保存为 ./myfile
             flaxfile get myfile output.bin          # 保存为 ./output.bin
             flaxfile get video --server prod        # 从 prod 服务器下载
+            export FLAXFILE_PASSWORD=mysecret && flaxfile get myfile
         """
         # 默认输出路径使用 key 作为文件名
         if output_path is None:
@@ -222,14 +496,12 @@ class FlaxFileCLI:
         client = FlaxFileClient(
             server_host=server_config['host'],
             port=server_config['port'],
+            password=password,
         )
 
         try:
             result = client.download_file(key, output_path, show_progress=True)
-            print(f"\n✓ 下载成功")
-            print(f"  保存到: {output_path}")
-            print(f"  大小: {result['size'] / (1024*1024):.2f} MB")
-            print(f"  吞吐量: {result['throughput']:.2f} MB/s")
+            # Rich 已经显示了漂亮的结果，这里不需要再打印
         finally:
             client.close()
 
@@ -237,6 +509,7 @@ class FlaxFileCLI:
         self,
         key: str,
         server: Optional[str] = None,
+        password: Optional[str] = None,
     ):
         """
         删除服务器上的文件
@@ -244,10 +517,12 @@ class FlaxFileCLI:
         Args:
             key: 文件键名
             server: 服务器名称（可选）
+            password: 密码（用于加密传输，可选，优先使用环境变量 FLAXFILE_PASSWORD）
 
         示例:
             flaxfile delete myfile
             flaxfile delete video --server prod
+            export FLAXFILE_PASSWORD=mysecret && flaxfile delete myfile
         """
         # 获取服务器配置
         server_config = self._config_obj.get_server(server)
@@ -256,14 +531,17 @@ class FlaxFileCLI:
         client = FlaxFileClient(
             server_host=server_config['host'],
             port=server_config['port'],
+            password=password,
         )
 
         try:
             success = client.delete_file(key)
             if success:
-                print(f"✓ 删除成功: {key}")
+                from rich.console import Console
+                Console().print(f"[bold green]✓ 删除成功:[/bold green] [cyan]{key}")
             else:
-                print(f"✗ 删除失败: {key}")
+                from rich.console import Console
+                Console().print(f"[bold red]✗ 删除失败:[/bold red] [yellow]{key}")
                 sys.exit(1)
         finally:
             client.close()
@@ -291,9 +569,22 @@ class FlaxFileCLI:
     def version(self):
         """显示版本信息"""
         from . import __version__
-        print(f"FlaxFile v{__version__}")
-        print("高性能文件传输工具")
-        print("基于ZMQ优化的跨网络文件传输系统")
+        from rich.console import Console
+        from rich.panel import Panel
+
+        console = Console()
+        version_text = f"""[bold cyan]FlaxFile v{__version__}[/bold cyan]
+
+[yellow]高性能文件传输工具[/yellow]
+基于 ZMQ + asyncio 的异步单端口文件传输系统
+
+特性:
+  • [green]异步单端口架构[/green] - 简化配置，提升并发性能
+  • [green]DEALER/ROUTER[/green] - 可靠传输，每个chunk都有ACK确认
+  • [green]Rich 进度条[/green] - 美观的终端显示
+  • [green]高性能[/green] - 上传/下载速度可达 1+ GB/s"""
+
+        console.print(Panel(version_text, border_style="cyan", title="[bold]FlaxFile"))
 
 
 def main():

@@ -12,7 +12,15 @@ import hashlib
 import logging
 import asyncio
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn, TransferSpeedColumn, DownloadColumn
+from rich.panel import Panel
+from rich.table import Table
+from rich import print as rprint
+
+from .crypto import get_password, configure_client_encryption
 
 # 配置日志
 logging.basicConfig(
@@ -20,6 +28,9 @@ logging.basicConfig(
     format='%(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# 全局 Console
+console = Console()
 
 
 class AsyncFlaxFileClient:
@@ -29,9 +40,11 @@ class AsyncFlaxFileClient:
         self,
         server_host: str = "127.0.0.1",
         port: int = 25555,
+        password: Optional[str] = None,
     ):
         self.server_host = server_host
         self.port = port
+        self.password = password
 
         self.context = zmq.asyncio.Context()
         self.socket = None
@@ -42,21 +55,50 @@ class AsyncFlaxFileClient:
         if self.connected:
             return
 
+        # 获取密码（如果未提供）
+        if self.password is None:
+            self.password = get_password(
+                prompt="请输入服务器密码（用于加密传输）: ",
+                allow_empty=True,
+                env_var="FLAXFILE_PASSWORD"
+            )
+
         # 创建 DEALER socket
         self.socket = self.context.socket(zmq.DEALER)
         self.socket.setsockopt(zmq.SNDBUF, 128 * 1024 * 1024)
         self.socket.setsockopt(zmq.RCVBUF, 128 * 1024 * 1024)
         self.socket.setsockopt(zmq.LINGER, 0)
+
+        # 配置加密
+        encryption_enabled = configure_client_encryption(self.socket, self.password)
+
         self.socket.connect(f"tcp://{self.server_host}:{self.port}")
 
         # 测试连接
-        await self.socket.send_multipart([b'', b'PING'])
-        frames = await self.socket.recv_multipart()
+        try:
+            await self.socket.send_multipart([b'', b'PING'])
+            frames = await self.socket.recv_multipart()
 
-        if len(frames) < 2 or frames[1] != b'PONG':
-            raise ConnectionError("服务器连接失败")
+            if len(frames) < 2 or frames[1] != b'PONG':
+                raise ConnectionError("服务器连接失败")
 
-        self.connected = True
+            if encryption_enabled:
+                console.print(f"[green]🔒 已建立加密连接: {self.server_host}:{self.port}[/green]")
+            else:
+                console.print(f"[yellow]⚠️  连接到 {self.server_host}:{self.port} (未加密)[/yellow]")
+
+            self.connected = True
+
+        except zmq.error.ZMQError as e:
+            self.socket.close()
+            if encryption_enabled and "Connection refused" not in str(e):
+                raise ConnectionError(
+                    f"加密连接失败，可能原因：\n"
+                    f"  1. 服务器未启用加密\n"
+                    f"  2. 密码不匹配\n"
+                    f"  原始错误: {e}"
+                )
+            raise ConnectionError(f"服务器连接失败: {e}")
 
     async def upload_file(
         self,
@@ -77,76 +119,122 @@ class AsyncFlaxFileClient:
 
         file_size = file_path.stat().st_size
 
-        if show_progress:
-            logger.info(f"\n📤 上传文件: {file_path.name}")
-            logger.info(f"   大小: {file_size / (1024*1024):.1f} MB")
-            logger.info(f"   服务器: {self.server_host}")
-
         await self.connect()
 
         start_time = time.time()
 
-        # 1. 发送上传开始请求
-        await self.socket.send_multipart([
-            b'',
-            b'UPLOAD_START',
-            file_key.encode('utf-8'),
-            str(file_size).encode('utf-8')
-        ])
+        if show_progress:
+            # 使用 Rich Progress
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                DownloadColumn(),
+                TransferSpeedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+            ) as progress:
+                upload_task = progress.add_task(
+                    f"[cyan]上传 {file_path.name}",
+                    total=file_size
+                )
 
-        frames = await self.socket.recv_multipart()
-        if len(frames) < 2 or frames[1] != b'OK':
-            raise Exception(f"服务器未就绪: {frames}")
+                # 1. 发送上传开始请求
+                await self.socket.send_multipart([
+                    b'',
+                    b'UPLOAD_START',
+                    file_key.encode('utf-8'),
+                    str(file_size).encode('utf-8')
+                ])
 
-        # 2. 流式发送文件数据，每个chunk等待ACK
-        bytes_sent = 0
-        chunks_sent = 0
-        last_progress = -1
-
-        with open(file_path, 'rb') as f:
-            while True:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-
-                # 发送数据块
-                await self.socket.send_multipart([b'', b'UPLOAD_CHUNK', chunk])
-
-                # 等待ACK确认
                 frames = await self.socket.recv_multipart()
-                if len(frames) < 2 or frames[1] != b'ACK':
-                    raise Exception(f"服务器响应异常: {frames}")
+                if len(frames) < 2 or frames[1] != b'OK':
+                    raise Exception(f"服务器未就绪: {frames}")
 
-                bytes_sent += len(chunk)
-                chunks_sent += 1
+                # 2. 流式发送文件数据
+                bytes_sent = 0
+                chunks_sent = 0
 
-                if show_progress:
-                    progress = int(bytes_sent / file_size * 100)
-                    if progress != last_progress and progress % 5 == 0:
-                        logger.info(f"   进度: {progress}%")
-                        last_progress = progress
+                with open(file_path, 'rb') as f:
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
 
-        if show_progress and last_progress < 100:
-            logger.info(f"   进度: 100%")
+                        # 发送数据块
+                        await self.socket.send_multipart([b'', b'UPLOAD_CHUNK', chunk])
 
-        # 3. 发送上传结束请求
-        await self.socket.send_multipart([b'', b'UPLOAD_END'])
-        frames = await self.socket.recv_multipart()
+                        # 等待ACK确认
+                        frames = await self.socket.recv_multipart()
+                        if len(frames) < 2 or frames[1] != b'ACK':
+                            raise Exception(f"服务器响应异常: {frames}")
 
-        if len(frames) < 3 or frames[1] != b'OK':
-            raise Exception(f"上传结束失败: {frames}")
+                        bytes_sent += len(chunk)
+                        chunks_sent += 1
 
-        result = json.loads(frames[2].decode('utf-8'))
+                        # 更新进度条
+                        progress.update(upload_task, completed=bytes_sent)
+
+                # 3. 发送上传结束请求
+                await self.socket.send_multipart([b'', b'UPLOAD_END'])
+                frames = await self.socket.recv_multipart()
+
+                if len(frames) < 3 or frames[1] != b'OK':
+                    raise Exception(f"上传结束失败: {frames}")
+
+                result = json.loads(frames[2].decode('utf-8'))
+
+        else:
+            # 无进度条模式 (保持原有逻辑)
+            await self.socket.send_multipart([
+                b'',
+                b'UPLOAD_START',
+                file_key.encode('utf-8'),
+                str(file_size).encode('utf-8')
+            ])
+
+            frames = await self.socket.recv_multipart()
+            if len(frames) < 2 or frames[1] != b'OK':
+                raise Exception(f"服务器未就绪: {frames}")
+
+            bytes_sent = 0
+            chunks_sent = 0
+
+            with open(file_path, 'rb') as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+
+                    await self.socket.send_multipart([b'', b'UPLOAD_CHUNK', chunk])
+                    frames = await self.socket.recv_multipart()
+                    if len(frames) < 2 or frames[1] != b'ACK':
+                        raise Exception(f"服务器响应异常: {frames}")
+
+                    bytes_sent += len(chunk)
+                    chunks_sent += 1
+
+            await self.socket.send_multipart([b'', b'UPLOAD_END'])
+            frames = await self.socket.recv_multipart()
+
+            if len(frames) < 3 or frames[1] != b'OK':
+                raise Exception(f"上传结束失败: {frames}")
+
+            result = json.loads(frames[2].decode('utf-8'))
 
         upload_time = time.time() - start_time
         throughput = (file_size / (1024 * 1024)) / upload_time if upload_time > 0 else 0
 
         if show_progress:
-            logger.info(f"✓ 上传完成:")
-            logger.info(f"   耗时: {upload_time:.2f}秒")
-            logger.info(f"   吞吐量: {throughput:.2f} MB/s")
-            logger.info(f"   chunks: {chunks_sent}")
-            logger.info(f"   SHA256: {result.get('sha256', 'N/A')[:16]}...")
+            # 使用 Rich Table 显示结果
+            table = Table(title="[bold green]✓ 上传完成", show_header=False, border_style="green")
+            table.add_row("文件名", f"[cyan]{file_key}")
+            table.add_row("大小", f"[yellow]{file_size / (1024*1024):.2f} MB")
+            table.add_row("耗时", f"[magenta]{upload_time:.2f}秒")
+            table.add_row("吞吐量", f"[green]{throughput:.2f} MB/s")
+            table.add_row("Chunks", f"{chunks_sent}")
+            table.add_row("SHA256", f"[dim]{result.get('sha256', 'N/A')[:32]}...")
+            console.print(table)
 
         return {
             'file_key': file_key,
@@ -165,10 +253,6 @@ class AsyncFlaxFileClient:
     ) -> Dict[str, Any]:
         """下载文件"""
         await self.connect()
-
-        if show_progress:
-            logger.info(f"\n📥 下载文件: {file_key}")
-            logger.info(f"   服务器: {self.server_host}")
 
         start_time = time.time()
 
@@ -189,49 +273,84 @@ class AsyncFlaxFileClient:
         file_size = int(frames[2].decode('utf-8'))
 
         if show_progress:
-            logger.info(f"   大小: {file_size / (1024*1024):.1f} MB")
+            # 使用 Rich Progress
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                DownloadColumn(),
+                TransferSpeedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+            ) as progress:
+                download_task = progress.add_task(
+                    f"[cyan]下载 {file_key}",
+                    total=file_size
+                )
 
-        # 2. 流式接收数据
-        bytes_received = 0
-        hash_obj = hashlib.sha256()
-        last_progress = -1
+                # 2. 流式接收数据
+                bytes_received = 0
+                hash_obj = hashlib.sha256()
 
-        with open(output_path, 'wb') as f:
-            while True:
-                frames = await self.socket.recv_multipart()
+                with open(output_path, 'wb') as f:
+                    while True:
+                        frames = await self.socket.recv_multipart()
 
-                if len(frames) < 2:
-                    break
+                        if len(frames) < 2:
+                            break
 
-                if frames[1] == b'EOF':
-                    break
+                        if frames[1] == b'EOF':
+                            break
 
-                if frames[1] == b'CHUNK':
-                    if len(frames) < 3:
+                        if frames[1] == b'CHUNK':
+                            if len(frames) < 3:
+                                break
+
+                            data = frames[2]
+                            f.write(data)
+                            hash_obj.update(data)
+                            bytes_received += len(data)
+
+                            # 更新进度条
+                            progress.update(download_task, completed=bytes_received)
+
+        else:
+            # 无进度条模式
+            bytes_received = 0
+            hash_obj = hashlib.sha256()
+
+            with open(output_path, 'wb') as f:
+                while True:
+                    frames = await self.socket.recv_multipart()
+
+                    if len(frames) < 2:
                         break
 
-                    data = frames[2]
-                    f.write(data)
-                    hash_obj.update(data)
-                    bytes_received += len(data)
+                    if frames[1] == b'EOF':
+                        break
 
-                    if show_progress:
-                        progress = int(bytes_received / file_size * 100) if file_size > 0 else 0
-                        if progress != last_progress and progress % 10 == 0:
-                            logger.info(f"   进度: {progress}%")
-                            last_progress = progress
+                    if frames[1] == b'CHUNK':
+                        if len(frames) < 3:
+                            break
 
-        if show_progress and last_progress < 100:
-            logger.info(f"   进度: 100%")
+                        data = frames[2]
+                        f.write(data)
+                        hash_obj.update(data)
+                        bytes_received += len(data)
 
         download_time = time.time() - start_time
         throughput = (bytes_received / (1024 * 1024)) / download_time if download_time > 0 else 0
 
         if show_progress:
-            logger.info(f"✓ 下载完成:")
-            logger.info(f"   耗时: {download_time:.2f}秒")
-            logger.info(f"   吞吐量: {throughput:.2f} MB/s")
-            logger.info(f"   SHA256: {hash_obj.hexdigest()[:16]}...")
+            # 使用 Rich Table 显示结果
+            table = Table(title="[bold green]✓ 下载完成", show_header=False, border_style="green")
+            table.add_row("文件名", f"[cyan]{file_key}")
+            table.add_row("保存到", f"[yellow]{output_path}")
+            table.add_row("大小", f"[yellow]{bytes_received / (1024*1024):.2f} MB")
+            table.add_row("耗时", f"[magenta]{download_time:.2f}秒")
+            table.add_row("吞吐量", f"[green]{throughput:.2f} MB/s")
+            table.add_row("SHA256", f"[dim]{hash_obj.hexdigest()[:32]}...")
+            console.print(table)
 
         return {
             'file_key': file_key,
@@ -275,10 +394,11 @@ class FlaxFileClient:
         self,
         server_host: str = "127.0.0.1",
         port: int = 25555,
+        password: Optional[str] = None,
         **kwargs  # 兼容旧参数
     ):
         # 忽略旧的 upload_port, download_port, control_port
-        self.async_client = AsyncFlaxFileClient(server_host, port)
+        self.async_client = AsyncFlaxFileClient(server_host, port, password)
 
     def connect(self):
         """连接到服务器"""

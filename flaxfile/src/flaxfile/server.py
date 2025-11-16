@@ -13,6 +13,7 @@ import logging
 import asyncio
 from pathlib import Path
 from typing import Optional, Dict
+from .crypto import get_password, configure_server_encryption, get_key_fingerprint, derive_server_keypair
 
 # 配置日志
 logging.basicConfig(
@@ -42,9 +43,11 @@ class FlaxFileServer:
         self,
         host: str = "0.0.0.0",
         port: int = 25555,
+        password: Optional[str] = None,
     ):
         self.host = host
         self.port = port
+        self.password = password
 
         self.context = zmq.asyncio.Context()
         self.socket = None
@@ -54,23 +57,47 @@ class FlaxFileServer:
 
     async def start(self):
         """启动服务器"""
+        # 获取密码（如果未提供）
+        if self.password is None:
+            self.password = get_password(
+                prompt="请输入服务器密码（用于加密传输）: ",
+                allow_empty=True,
+                env_var="FLAXFILE_PASSWORD"
+            )
+
         logger.info("="*70)
         logger.info("FlaxFile 异步单端口文件传输服务器 (DEALER/ROUTER)")
         logger.info("="*70)
         logger.info(f"存储目录: {STORAGE_DIR.absolute()}")
         logger.info(f"服务地址: tcp://{self.host}:{self.port}")
-        logger.info("="*70)
 
         # 创建 ROUTER socket (单端口处理所有通信)
         self.socket = self.context.socket(zmq.ROUTER)
         self.socket.setsockopt(zmq.RCVBUF, 128 * 1024 * 1024)
         self.socket.setsockopt(zmq.SNDBUF, 128 * 1024 * 1024)
         self.socket.setsockopt(zmq.LINGER, 0)
+
+        # 配置加密
+        encryption_enabled = configure_server_encryption(self.socket, self.password)
+
         self.socket.bind(f"tcp://{self.host}:{self.port}")
 
+        logger.info("="*70)
         logger.info(f"✓ 服务器已启动，监听 {self.host}:{self.port}")
         if self.host == "0.0.0.0":
             logger.warning("  监听所有网卡，允许远程连接")
+
+        # 显示加密状态
+        if encryption_enabled:
+            _, server_public_key = derive_server_keypair(self.password)
+            fingerprint = get_key_fingerprint(server_public_key)
+            logger.info(f"🔒 已启用 CurveZMQ 加密")
+            logger.info(f"   服务器公钥指纹: {fingerprint}")
+        else:
+            logger.warning("⚠️  未启用加密 - 数据将明文传输")
+            logger.warning("   建议设置 FLAXFILE_PASSWORD 环境变量或交互输入密码")
+
+        logger.info("="*70)
         logger.info("")
 
         try:
@@ -318,10 +345,11 @@ def main():
     parser = argparse.ArgumentParser(description="FlaxFile Server")
     parser.add_argument('--host', default='0.0.0.0', help='Host to bind')
     parser.add_argument('--port', type=int, default=25555, help='Port to bind')
+    parser.add_argument('--password', default=None, help='Password for encryption (or set FLAXFILE_PASSWORD env var)')
 
     args = parser.parse_args()
 
-    server = FlaxFileServer(host=args.host, port=args.port)
+    server = FlaxFileServer(host=args.host, port=args.port, password=args.password)
     asyncio.run(server.start())
 
 
