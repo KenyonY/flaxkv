@@ -10,6 +10,7 @@ FlaxKV2 ZeroMQ 客户端
 
 import asyncio
 import time
+import threading
 from typing import Any, Dict, List, Tuple, Optional
 
 from flaxkv2.client.async_zmq_client import AsyncRemoteDBDict
@@ -37,6 +38,7 @@ class RemoteDBDict:
         host: str = "127.0.0.1",
         port: int = 5555,
         timeout: int = 5000,  # 毫秒
+        connect_timeout: int = 5000,  # 毫秒
         max_retries: int = 3,
         retry_delay: float = 0.1,  # 秒
         read_cache_size: int = 0,  # 读缓存大小（已废弃，保留用于兼容性）
@@ -57,7 +59,8 @@ class RemoteDBDict:
             db_name: 数据库名称
             host: 服务器地址
             port: 服务器端口
-            timeout: 请求超时时间（毫秒）
+            timeout: 数据请求超时时间（毫秒，0表示无限制）
+            connect_timeout: 连接超时时间（毫秒）
             max_retries: 最大重试次数（已废弃，保留用于兼容性）
             retry_delay: 重试延迟（已废弃，保留用于兼容性）
             read_cache_size: 读缓存大小（已废弃，保留用于兼容性）
@@ -81,25 +84,23 @@ class RemoteDBDict:
         self.port = port
         self._closed = False
 
-        # 创建异步客户端
-        url = f"tcp://{host}:{port}"
-        self._async_client = AsyncRemoteDBDict(
+        # 创建后台事件循环线程
+        self._loop = None
+        self._loop_thread = None
+        self._async_client = None
+
+        # 启动后台事件循环
+        self._start_event_loop(
             db_name=db_name,
-            url=url,
+            host=host,
+            port=port,
             timeout=timeout,
+            connect_timeout=connect_timeout,
             enable_encryption=enable_encryption,
             password=password,
             server_public_key=server_public_key,
             derive_from_password=derive_from_password
         )
-
-        # 连接到服务器（使用临时事件循环）
-        try:
-            # 使用 asyncio.run() 而不是长期保持事件循环
-            # 这样可以在多线程环境下正常工作
-            asyncio.run(self._async_client.connect())
-        except Exception as e:
-            raise RuntimeError(f"Failed to connect to server: {e}") from e
 
         logger.info(f"RemoteDBDict (sync wrapper) connected to {host}:{port}, db={db_name}")
         logger.info(f"  Encryption: {'Enabled' if enable_encryption else 'Disabled'}")
@@ -108,9 +109,57 @@ class RemoteDBDict:
         db_close_manager.register(self)
         logger.debug(f"远程数据库实例已注册到自动关闭管理器: {self.db_path}")
 
+    def _start_event_loop(self, **kwargs):
+        """启动后台事件循环线程"""
+        def run_loop():
+            # 创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
+
+            # 在事件循环中创建并连接异步客户端
+            url = f"tcp://{kwargs['host']}:{kwargs['port']}"
+            self._async_client = AsyncRemoteDBDict(
+                db_name=kwargs['db_name'],
+                url=url,
+                timeout=kwargs['timeout'],
+                connect_timeout=kwargs['connect_timeout'],
+                enable_encryption=kwargs['enable_encryption'],
+                password=kwargs['password'],
+                server_public_key=kwargs['server_public_key'],
+                derive_from_password=kwargs['derive_from_password']
+            )
+
+            # 连接到服务器
+            loop.run_until_complete(self._async_client.connect())
+
+            # 运行事件循环直到被停止
+            loop.run_forever()
+
+            # 清理
+            loop.run_until_complete(self._async_client.close())
+            loop.close()
+
+        # 启动后台线程
+        self._loop_thread = threading.Thread(target=run_loop, daemon=True)
+        self._loop_thread.start()
+
+        # 等待事件循环启动
+        for _ in range(100):  # 最多等待1秒
+            if self._loop is not None and self._async_client is not None:
+                break
+            time.sleep(0.01)
+        else:
+            raise RuntimeError("Failed to start event loop")
+
     def _run_async(self, coro):
-        """在新事件循环中运行异步协程（线程安全）"""
-        return asyncio.run(coro)
+        """在后台事件循环中运行异步协程（线程安全）"""
+        if self._closed:
+            raise RuntimeError("Client is closed")
+
+        # 使用 asyncio.run_coroutine_threadsafe 在后台循环中运行协程
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result()
 
     def __getitem__(self, key: Any) -> Any:
         """获取键值"""
@@ -198,10 +247,15 @@ class RemoteDBDict:
         if self._closed:
             return
 
-        # 关闭异步客户端
-        self._run_async(self._async_client.close())
-
         self._closed = True
+
+        # 停止事件循环
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+
+        # 等待线程结束（最多1秒）
+        if self._loop_thread and self._loop_thread.is_alive():
+            self._loop_thread.join(timeout=1.0)
 
         # 从自动关闭管理器中移除
         db_close_manager.unregister(self)

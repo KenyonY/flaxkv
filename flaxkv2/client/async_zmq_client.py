@@ -52,6 +52,7 @@ class AsyncRemoteDBDict:
         db_name: str,
         url: str,
         timeout: int = 30000,
+        connect_timeout: int = 5000,
         enable_encryption: bool = False,
         password: Optional[str] = None,
         server_public_key: Optional[str] = None,
@@ -63,7 +64,8 @@ class AsyncRemoteDBDict:
         Args:
             db_name: 数据库名称
             url: 服务器地址 (tcp://host:port)
-            timeout: 请求超时时间（毫秒）
+            timeout: 数据请求超时时间（毫秒，0表示无限制，默认30秒）
+            connect_timeout: 连接超时时间（毫秒，默认5秒）
             enable_encryption: 是否启用加密
             password: 加密密码
             server_public_key: 服务器公钥（可选，从密码派生）
@@ -72,6 +74,7 @@ class AsyncRemoteDBDict:
         self.db_name = db_name
         self.url = url
         self.timeout = timeout
+        self.connect_timeout = connect_timeout
         self.enable_encryption = enable_encryption
         self.password = password
         self.server_public_key = server_public_key
@@ -129,9 +132,9 @@ class AsyncRemoteDBDict:
         # 启动后台接收循环（实现真正的并发）
         self._receive_task = asyncio.create_task(self._receive_loop())
 
-        # 发送 CONNECT 命令
+        # 发送 CONNECT 命令（使用连接超时）
         request = [self.CMD_CONNECT, self.db_name.encode('utf-8')]
-        status, result = await self._send_request(request)
+        status, result = await self._send_request(request, timeout=self.connect_timeout)
 
         if status != self.STATUS_OK:
             error_msg = result.decode('utf-8') if isinstance(result, bytes) else str(result)
@@ -215,12 +218,13 @@ class AsyncRemoteDBDict:
         finally:
             logger.debug("Receive loop stopped")
 
-    async def _send_request(self, request):
+    async def _send_request(self, request, timeout=None):
         """
         发送请求并等待响应（使用请求ID，无锁并发）
 
         Args:
             request: 请求列表 [command, ...]
+            timeout: 请求超时时间（毫秒），None表示使用默认timeout
 
         Returns:
             (status, result) 元组
@@ -247,8 +251,17 @@ class AsyncRemoteDBDict:
             # 发送请求（异步，无需等待响应）
             await self.socket.send(request_data_compressed)
 
+            # 确定超时时间
+            if timeout is None:
+                timeout = self.timeout
+
             # 等待后台接收循环设置结果
-            status, result = await asyncio.wait_for(future, timeout=self.timeout / 1000)
+            if timeout > 0:
+                # 有超时限制
+                status, result = await asyncio.wait_for(future, timeout=timeout / 1000)
+            else:
+                # 无超时限制
+                status, result = await future
 
             return status, result
 

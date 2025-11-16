@@ -8,7 +8,7 @@ echo "=========================================="
 # flaxkv2 kill 25555
 echo "=========================================="
 echo "注意：假设 flaxkv2 server 已经在运行"
-echo "      端口: 25555, 加密: 是, 密码: yao"
+echo "      端口: 28855, 加密: 是, 密码: yao"
 echo "=========================================="
 
 # 创建测试文件（150MB）
@@ -23,17 +23,17 @@ with open('test_data/test_150mb.bin', 'wb') as f:
 print('✓ 测试文件创建完成 (150MB)')
 "
 
-# 测试并行上传（个并发）
+# 测试并行上传（16 个并发）
 echo ""
 echo "=========================================="
-echo "2. 测试并行上传（）"
+echo "2. 测试并行上传（16 个并发）"
 echo "=========================================="
 flaxkv2 set test_data/test_150mb.bin --key cli_parallel_test --chunk_size=2097152 --max-workers=16
 
-# 测试并行下载（16 个并发）
+# 测试并行下载（32 个并发）
 echo ""
 echo "=========================================="
-echo "3. 测试并行下载（ 个并发）"
+echo "3. 测试并行下载（32 个并发）"
 echo "=========================================="
 mkdir -p test_data/downloads
 flaxkv2 get cli_parallel_test --output test_data/downloads/test_150mb.bin --max-workers=32

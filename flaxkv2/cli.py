@@ -303,6 +303,7 @@ class FlaxKV2CLI:
 
             # 从配置中获取连接参数
             timeout = config.get('timeout', 5) * 1000  # 转换为毫秒
+            connect_timeout = config.get('connect_timeout', 5) * 1000  # 转换为毫秒
             enable_encryption = config.get('enable_encryption', False)
             password = config.get('password')
             derive_from_password = config.get('derive_from_password', True)
@@ -509,6 +510,7 @@ class FlaxKV2CLI:
 
             # 从配置中获取连接参数
             timeout = config.get('timeout', 5) * 1000  # 转换为毫秒
+            connect_timeout = config.get('connect_timeout', 5) * 1000  # 转换为毫秒
             enable_encryption = config.get('enable_encryption', False)
             password = config.get('password')
             derive_from_password = config.get('derive_from_password', True)
@@ -568,7 +570,8 @@ class FlaxKV2CLI:
                         show_progress=True,
                         verify=True,
                         password=password,
-                        enable_encryption=enable_encryption
+                        enable_encryption=enable_encryption,
+                        connect_timeout=connect_timeout
                     ))
 
                     # 解包到目标目录
@@ -601,7 +604,8 @@ class FlaxKV2CLI:
                     show_progress=True,
                     verify=True,
                     password=password,
-                    enable_encryption=enable_encryption
+                    enable_encryption=enable_encryption,
+                    connect_timeout=connect_timeout
                 ))
 
                 console.print(f"[bold green]✓[/bold green] 下载成功!")
@@ -688,6 +692,7 @@ class FlaxKV2CLI:
 
         # 从配置中获取连接参数
         timeout = config.get('timeout', 5) * 1000  # 转换为毫秒
+        connect_timeout = config.get('connect_timeout', 5) * 1000  # 转换为毫秒
         enable_encryption = config.get('enable_encryption', False)
         password = config.get('password')
         derive_from_password = config.get('derive_from_password', True)

@@ -42,7 +42,8 @@ async def upload_large_file_async(
     show_progress: bool = True,
     verify: bool = True,
     password: Optional[str] = None,
-    enable_encryption: bool = False
+    enable_encryption: bool = False,
+    connect_timeout: int = 5000
 ) -> Dict:
     """
     异步并发上传大文件
@@ -58,6 +59,7 @@ async def upload_large_file_async(
         verify: 是否验证哈希
         password: 加密密码
         enable_encryption: 是否启用加密
+        connect_timeout: 连接超时时间（毫秒，默认5000）
 
     Returns:
         上传信息字典
@@ -120,7 +122,8 @@ async def upload_large_file_async(
     async with AsyncRemoteDBDict(
         db_name,
         server_url,
-        timeout=60000,
+        timeout=0,  # 数据请求无超时限制
+        connect_timeout=connect_timeout,
         enable_encryption=enable_encryption,
         password=password,
         derive_from_password=True
@@ -224,7 +227,8 @@ async def download_large_file_async(
     show_progress: bool = True,
     verify: bool = True,
     password: Optional[str] = None,
-    enable_encryption: bool = False
+    enable_encryption: bool = False,
+    connect_timeout: int = 5000
 ) -> Dict:
     """
     异步并发下载大文件
@@ -239,6 +243,7 @@ async def download_large_file_async(
         verify: 是否验证哈希
         password: 加密密码
         enable_encryption: 是否启用加密
+        connect_timeout: 连接超时时间（毫秒，默认5000）
 
     Returns:
         文件信息字典
@@ -251,7 +256,8 @@ async def download_large_file_async(
     async with AsyncRemoteDBDict(
         db_name,
         server_url,
-        timeout=60000,
+        timeout=0,  # 数据请求无超时限制
+        connect_timeout=connect_timeout,
         enable_encryption=enable_encryption,
         password=password,
         derive_from_password=True
