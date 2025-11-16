@@ -41,7 +41,7 @@ def test_cache_enabled():
 
         assert db._cache_enabled
         assert db._cache is not None
-        assert db._cache.maxsize == 100
+        assert db._cache._maxsize == 100  # 注意：使用私有属性 _maxsize
         print("✓ 缓存已启用，大小=100")
 
         # 写入数据
@@ -149,12 +149,12 @@ def test_cache_delete():
         # 删除
         del db['key1']
         assert len(db._cache) == 0
-        print(f"✓ 删除key1后，缓存条目数={len(db._cache)}")
+        print(f"✓ 删除key1")
 
         # 验证已删除
         try:
             _ = db['key1']
-            assert False
+            assert False, "期望KeyError但没有抛出"
         except KeyError:
             print("✓ key1已删除")
 
@@ -227,8 +227,8 @@ def test_cache_lru_eviction():
         # 验证缓存统计
         stats = db._cache.stats()
         print(f"✓ 缓存统计: {stats}")
-        assert stats['total_items'] == 3
-        assert stats['usage_percent'] == 100.0
+        assert stats['total_entries'] == 3  # 注意：键名是 total_entries 而不是 total_items
+        assert stats['maxsize'] == 3
 
         db.close()
         print("✓ 测试7通过\n")

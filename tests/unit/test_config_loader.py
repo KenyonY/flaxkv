@@ -241,7 +241,7 @@ class TestSampleConfigGeneration:
         assert '[server]' in content
         assert '[client]' in content
         assert '[servers.' in content
-        assert '[defaults]' in content
+        # 注意：新配置文件格式不再包含 [defaults] 部分
 
     def test_save_sample_config_default_path(self, tmp_path):
         """测试保存示例配置到默认路径"""

@@ -47,6 +47,11 @@ except ImportError:
     nacl = None
 
 
+# 密钥派生缓存 - 避免重复计算PBKDF2 (性能优化)
+# 格式: {password_hash: keypair_dict}
+_keypair_cache: Dict[str, Dict[str, str]] = {}
+
+
 class KeyManager:
     """密钥管理器"""
 
@@ -341,14 +346,23 @@ def derive_keypair_from_password(password: str, salt: Optional[bytes] = None) ->
     Raises:
         RuntimeError: 如果缺少必要的库
     """
-    # 检查是否有必要的库
-    if not NACL_AVAILABLE:
-        # 降级方案：使用基于密码的简单派生
-        return _derive_keypair_simple(password)
-
     # 使用固定盐值确保确定性（相同密码生成相同密钥）
     if salt is None:
         salt = b'FlaxKV_CurveZMQ_Salt_v1'
+
+    # 生成缓存键（密码+盐的哈希）
+    cache_key = hashlib.sha256(password.encode('utf-8') + salt).hexdigest()
+
+    # 检查缓存
+    if cache_key in _keypair_cache:
+        return _keypair_cache[cache_key]
+
+    # 检查是否有必要的库
+    if not NACL_AVAILABLE:
+        # 降级方案：使用基于密码的简单派生
+        keypair = _derive_keypair_simple(password)
+        _keypair_cache[cache_key] = keypair
+        return keypair
 
     # 使用PBKDF2从密码派生32字节种子
     kdf = hashlib.pbkdf2_hmac(
@@ -374,10 +388,14 @@ def derive_keypair_from_password(password: str, salt: Optional[bytes] = None) ->
         public_key = z85_module.encode(public_key_bytes).decode('utf-8')
         secret_key = z85_module.encode(secret_key_bytes).decode('utf-8')
 
-    return {
+    keypair = {
         'public_key': public_key,
         'secret_key': secret_key,
     }
+
+    # 缓存结果
+    _keypair_cache[cache_key] = keypair
+    return keypair
 
 
 def _derive_keypair_simple(password: str) -> Dict[str, str]:
@@ -392,8 +410,15 @@ def _derive_keypair_simple(password: str) -> Dict[str, str]:
     Returns:
         包含 public_key 和 secret_key 的字典
     """
-    # 从密码派生64字节的数据（32字节secret_key + 32字节用于公钥派生）
+    # 生成缓存键（密码的哈希）
     salt = b'FlaxKV_Simple_Salt_v1'
+    cache_key = hashlib.sha256(password.encode('utf-8') + salt + b'_simple').hexdigest()
+
+    # 检查缓存
+    if cache_key in _keypair_cache:
+        return _keypair_cache[cache_key]
+
+    # 从密码派生64字节的数据（32字节secret_key + 32字节用于公钥派生）
     derived = hashlib.pbkdf2_hmac(
         'sha256',
         password.encode('utf-8'),
@@ -423,7 +448,11 @@ def _derive_keypair_simple(password: str) -> Dict[str, str]:
     public_key_bytes = zmq.curve_public(secret_key.encode('utf-8'))
     public_key = public_key_bytes.decode('utf-8')
 
-    return {
+    keypair = {
         'public_key': public_key,
         'secret_key': secret_key,
     }
+
+    # 缓存结果
+    _keypair_cache[cache_key] = keypair
+    return keypair

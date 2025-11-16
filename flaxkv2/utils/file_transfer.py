@@ -1,4 +1,4 @@
-"""
+""" 
 文件传输工具模块
 
 提供文件和文件夹的打包、解包功能，用于通过 FlaxKV 进行远程传输
@@ -246,7 +246,7 @@ def upload_large_file(
     verify: bool = True
 ) -> Dict:
     """
-    分块上传大文件
+    分块上传大文件 （已弃用）
 
     适用于大于 100MB 的文件，避免内存占用过高和传输超时。
 
@@ -371,7 +371,7 @@ def download_large_file(
     verify: bool = True
 ) -> Dict:
     """
-    分块下载大文件
+    分块下载大文件（已弃用）
 
     Args:
         db: FlaxKV 实例
@@ -479,7 +479,7 @@ def download_large_file(
 
 def list_large_files(db, show_details: bool = False) -> list:
     """
-    列出所有分块存储的文件
+    列出所有分块存储的文件（已弃用）
 
     Args:
         db: FlaxKV 实例
@@ -523,7 +523,7 @@ def list_large_files(db, show_details: bool = False) -> list:
 
 def delete_large_file(db, key: str, show_progress: bool = True) -> bool:
     """
-    删除分块存储的文件（包括所有分块和元数据）
+    删除分块存储的文件（包括所有分块和元数据）（已弃用）
 
     Args:
         db: FlaxKV 实例
@@ -590,7 +590,7 @@ def upload_large_file_parallel(
     db_connection_params: Optional[Dict] = None  # 新增：数据库连接参数
 ) -> Dict:
     """
-    并行分块上传大文件（多线程版本）
+    并行分块上传大文件（多线程版本）（已弃用）
 
     使用多线程并行上传文件分块，提升传输性能。适用于网络带宽充足的场景。
 
@@ -768,7 +768,7 @@ def download_large_file_parallel(
     db_connection_params: Optional[Dict] = None  # 新增：数据库连接参数
 ) -> Dict:
     """
-    并行分块下载大文件（多线程版本）
+    并行分块下载大文件（多线程版本）（已弃用）
 
     使用多线程并行下载文件分块，然后按顺序写入文件，确保数据完整性。
 
@@ -942,475 +942,5 @@ def download_large_file_parallel(
 
         if show_progress:
             print(f"\n❌ 下载失败: {e}")
-
-        raise
-
-# ============================================================================
-# 异步并发传输功能（Asyncio版本）
-# ============================================================================
-
-async def upload_large_file_async(
-    db,
-    key: str,
-    file_path: str,
-    chunk_size: int = 10 * 1024 * 1024,  # 默认 10MB
-    max_concurrency: int = 8,  # 最大并发数
-    show_progress: bool = True,
-    verify: bool = True,
-    db_connection_params: Optional[Dict] = None
-) -> Dict:
-    """
-    异步并发上传大文件
-    
-    使用asyncio代替多线程，减少GIL影响，适合I/O密集型场景
-    
-    Args:
-        db: FlaxKV 实例（仅用于元数据）
-        key: 存储键名
-        file_path: 本地文件路径
-        chunk_size: 分块大小（字节）
-        max_concurrency: 最大并发任务数
-        show_progress: 是否显示进度
-        verify: 是否验证哈希值
-        db_connection_params: 数据库连接参数（必须提供，用于创建异步连接）
-    
-    Returns:
-        包含文件元数据的字典
-    """
-    import zmq.asyncio
-    
-    file_path = Path(file_path)
-    file_size = file_path.stat().st_size
-    total_chunks = (file_size + chunk_size - 1) // chunk_size
-    
-    if show_progress:
-        print(f"\n📤 异步并行上传文件: {file_path.name}")
-        print(f"   大小: {format_size(file_size)}")
-        print(f"   分块: {total_chunks} 个 (每块 {format_size(chunk_size)})")
-        print(f"   并发: {max_concurrency} 个协程\n")
-    
-    # 计算文件哈希
-    file_hash = None
-    if verify:
-        if show_progress:
-            print("🔍 计算文件哈希值...")
-        file_hash = calculate_file_hash(file_path)
-        if show_progress:
-            print(f"   SHA256: {file_hash}\n")
-    
-    # 元数据
-    metadata = {
-        'filename': file_path.name,
-        'size': file_size,
-        'chunk_size': chunk_size,
-        'total_chunks': total_chunks,
-        'hash': file_hash,
-        'hash_algorithm': 'sha256' if verify else None,
-        'type': 'large_file'
-    }
-    
-    # 存储元数据
-    metadata['status'] = 'uploading'
-    db[f"{key}:meta"] = metadata
-    
-    # 异步进度跟踪（使用asyncio.Lock）
-    progress_lock = asyncio.Lock()
-    completed_chunks = 0
-    
-    # 预读所有分块到内存（在executor中执行）
-    loop = asyncio.get_event_loop()
-    chunks_data = await loop.run_in_executor(
-        None,
-        lambda: [
-            (i, open(file_path, 'rb').seek(i * chunk_size) or open(file_path, 'rb').read(chunk_size))
-            for i in range(total_chunks)
-        ]
-    )
-    
-    # 实际上应该这样读取
-    def read_all_chunks():
-        result = []
-        with open(file_path, 'rb') as f:
-            for i in range(total_chunks):
-                f.seek(i * chunk_size)
-                chunk_data = f.read(chunk_size)
-                result.append((i, chunk_data))
-        return result
-    
-    chunks_data = await loop.run_in_executor(None, read_all_chunks)
-    
-    async def upload_chunk(chunk_index: int, chunk_data: bytes):
-        """上传单个分块的异步协程"""
-        nonlocal completed_chunks
-        
-        try:
-            # 创建异步数据库连接
-            from flaxkv2 import FlaxKV
-
-            # 在executor中执行同步的FlaxKV操作
-            def sync_upload():
-                # 提取必要参数（不修改原字典）
-                thread_db = FlaxKV(
-                    db_connection_params['db_name'],
-                    db_connection_params['url'],
-                    backend=db_connection_params.get('backend', 'remote'),
-                    timeout=db_connection_params.get('timeout', 30000),
-                    enable_encryption=db_connection_params.get('enable_encryption', False),
-                    password=db_connection_params.get('password'),
-                    derive_from_password=db_connection_params.get('derive_from_password', True)
-                )
-                try:
-                    thread_db[f"{key}:chunk:{chunk_index}"] = chunk_data
-                finally:
-                    thread_db.close()
-
-            await loop.run_in_executor(None, sync_upload)
-            
-            # 更新进度
-            async with progress_lock:
-                completed_chunks += 1
-                if show_progress:
-                    progress = completed_chunks * 100 // total_chunks
-                    size_uploaded = min(completed_chunks * chunk_size, file_size)
-                    print(f"   进度: [{progress:3d}%] {format_size(size_uploaded)}/{format_size(file_size)} ({completed_chunks}/{total_chunks} 块)", end='\r')
-            
-            return True
-            
-        except Exception as e:
-            if show_progress:
-                print(f"\n❌ 上传分块 {chunk_index} 失败: {e}")
-            raise
-    
-    # 并发上传所有分块
-    try:
-        tasks = [upload_chunk(idx, data) for idx, data in chunks_data]
-        await asyncio.gather(*tasks)
-        
-        if show_progress:
-            print()  # 换行
-            print("✅ 异步并行上传完成: {}\n".format(file_path.name))
-        
-        # 更新元数据状态
-        metadata['status'] = 'completed'
-        db[f"{key}:meta"] = metadata
-        
-        return metadata
-        
-    except Exception as e:
-        # 上传失败，清理
-        metadata['status'] = 'failed'
-        db[f"{key}:meta"] = metadata
-        
-        if show_progress:
-            print(f"\n❌ 上传失败: {e}")
-        raise
-
-
-async def download_large_file_async(
-    db,
-    key: str,
-    output_path: str,
-    max_concurrency: int = 8,
-    show_progress: bool = True,
-    verify: bool = True,
-    db_connection_params: Optional[Dict] = None
-) -> Dict:
-    """
-    异步并发下载大文件
-    
-    使用asyncio代替多线程，提升I/O性能
-    
-    Args:
-        db: FlaxKV 实例（用于读取元数据）
-        key: 存储键名
-        output_path: 输出路径（文件或目录）
-        max_concurrency: 最大并发任务数
-        show_progress: 是否显示进度
-        verify: 是否验证哈希值
-        db_connection_params: 数据库连接参数
-    
-    Returns:
-        文件元数据字典
-    """
-    # 读取元数据
-    metadata = db.get(f"{key}:meta")
-    if not metadata:
-        raise ValueError(f"文件元数据不存在: {key}")
-    
-    file_size = metadata['size']
-    total_chunks = metadata['total_chunks']
-    
-    # 确定输出文件路径
-    output_path = Path(output_path)
-    if output_path.is_dir():
-        output_path = output_path / metadata['filename']
-    
-    if show_progress:
-        print(f"\n📥 异步并行下载文件: {metadata['filename']}")
-        print(f"   大小: {format_size(file_size)}")
-        print(f"   分块: {total_chunks} 个")
-        print(f"   并发: {max_concurrency} 个协程\n")
-    
-    # 异步进度跟踪
-    progress_lock = asyncio.Lock()
-    chunks_lock = asyncio.Lock()
-    completed_chunks = 0
-    chunks_data = {}
-    
-    async def download_chunk(chunk_index: int):
-        """下载单个分块的异步协程"""
-        nonlocal completed_chunks
-        
-        try:
-            # 在executor中执行同步的FlaxKV操作
-            loop = asyncio.get_event_loop()
-            
-            def sync_download():
-                from flaxkv2 import FlaxKV
-                thread_db = FlaxKV(
-                    db_connection_params['db_name'],
-                    db_connection_params['url'],
-                    backend=db_connection_params.get('backend', 'remote'),
-                    timeout=db_connection_params.get('timeout', 30000),
-                    enable_encryption=db_connection_params.get('enable_encryption', False),
-                    password=db_connection_params.get('password'),
-                    derive_from_password=db_connection_params.get('derive_from_password', True)
-                )
-                try:
-                    return thread_db.get(f"{key}:chunk:{chunk_index}")
-                finally:
-                    thread_db.close()
-            
-            chunk = await loop.run_in_executor(None, sync_download)
-            
-            if chunk is None:
-                raise ValueError(f"分块缺失: chunk {chunk_index}/{total_chunks}")
-            
-            # 存储到字典
-            async with chunks_lock:
-                chunks_data[chunk_index] = chunk
-            
-            # 更新进度
-            async with progress_lock:
-                completed_chunks += 1
-                if show_progress:
-                    progress = completed_chunks * 100 // total_chunks
-                    size_downloaded = min(completed_chunks * metadata['chunk_size'], file_size)
-                    print(f"   进度: [{progress:3d}%] {format_size(size_downloaded)}/{format_size(file_size)} ({completed_chunks}/{total_chunks} 块)", end='\r')
-            
-            return True
-            
-        except Exception as e:
-            if show_progress:
-                print(f"\n❌ 下载分块 {chunk_index} 失败: {e}")
-            raise
-    
-    # 并发下载所有分块
-    try:
-        tasks = [download_chunk(i) for i in range(total_chunks)]
-        await asyncio.gather(*tasks)
-        
-        if show_progress:
-            print()  # 换行
-            print("\n📝 写入文件...")
-        
-        # 在executor中写入文件（I/O操作）
-        loop = asyncio.get_event_loop()
-        
-        def write_file():
-            with open(output_path, 'wb') as f:
-                for i in range(total_chunks):
-                    f.write(chunks_data[i])
-        
-        await loop.run_in_executor(None, write_file)
-        
-        # 验证哈希
-        if verify and metadata.get('hash'):
-            if show_progress:
-                print("🔍 验证文件完整性...")
-            
-            downloaded_hash = await loop.run_in_executor(
-                None,
-                calculate_file_hash,
-                str(output_path)
-            )
-            
-            if downloaded_hash != metadata['hash']:
-                output_path.unlink()
-                raise ValueError(f"文件哈希不匹配！\n  期望: {metadata['hash']}\n  实际: {downloaded_hash}")
-            
-            if show_progress:
-                print("   ✅ 哈希值验证通过\n")
-        
-        if show_progress:
-            print(f"✅ 异步并行下载完成: {output_path}\n")
-        
-        return metadata
-        
-    except Exception as e:
-        if output_path.exists():
-            output_path.unlink()
-        
-        if show_progress:
-            print(f"\n❌ 下载失败: {e}")
-
-        raise
-
-
-def upload_large_file_batch(
-    db,
-    key: str,
-    file_path: str,
-    chunk_size: int = 10 * 1024 * 1024,
-    show_progress: bool = True,
-    verify: bool = True
-) -> Dict:
-    """
-    使用批量写入上传大文件（性能更高，减少锁竞争）
-
-    相比 upload_large_file，此函数将所有 chunks 收集后一次性批量写入，
-    显著减少 LevelDB 写锁竞争，提升 3-5 倍性能。
-
-    Args:
-        db: FlaxKV 实例（必须是 RemoteDBDict，支持 batch_set）
-        key: 存储键名（不包含前缀）
-        file_path: 本地文件路径
-        chunk_size: 分块大小（字节），默认 10MB
-        show_progress: 是否显示进度条
-        verify: 是否计算并验证文件哈希值
-
-    Returns:
-        包含上传信息的字典：
-        {
-            'filename': 文件名,
-            'size': 文件大小,
-            'chunks': 分块数量,
-            'chunk_size': 分块大小,
-            'hash': 文件哈希值（如果 verify=True）
-        }
-
-    示例:
-        >>> from flaxkv2 import FlaxKV
-        >>> from flaxkv2.utils.file_transfer import upload_large_file_batch
-        >>>
-        >>> db = FlaxKV("files", "tcp://127.0.0.1:5555",
-        ...            enable_encryption=True, password="yao")
-        >>>
-        >>> # 批量上传 1GB 文件
-        >>> info = upload_large_file_batch(db, "large_video", "/path/to/video.mp4")
-        >>> print(f"上传完成: {info['filename']}, 大小: {format_size(info['size'])}")
-    """
-    import time
-
-    file_path = Path(file_path)
-
-    if not file_path.exists():
-        raise FileNotFoundError(f"文件不存在: {file_path}")
-
-    if not file_path.is_file():
-        raise ValueError(f"不是文件: {file_path}")
-
-    # 检查 db 是否支持 batch_set
-    if not hasattr(db, 'batch_set'):
-        raise TypeError("数据库实例不支持 batch_set 方法，请使用 RemoteDBDict")
-
-    # 获取文件信息
-    file_size = file_path.stat().st_size
-    total_chunks = (file_size + chunk_size - 1) // chunk_size
-
-    # 计算文件哈希值（如果需要）
-    file_hash = None
-    if verify:
-        if show_progress:
-            print(f"🔍 计算文件哈希值...")
-        file_hash = calculate_file_hash(str(file_path))
-        if show_progress:
-            print(f"   SHA256: {file_hash}")
-
-    # 存储元数据
-    metadata = {
-        'type': 'chunked_file',
-        'filename': file_path.name,
-        'size': file_size,
-        'chunks': total_chunks,
-        'chunk_size': chunk_size,
-        'upload_time': None,
-    }
-
-    if file_hash:
-        metadata['hash'] = file_hash
-        metadata['hash_algorithm'] = 'sha256'
-
-    # 先存储元数据（标记为上传中）
-    metadata['status'] = 'uploading'
-    db[f"{key}:meta"] = metadata
-
-    # 开始批量上传
-    try:
-        if show_progress:
-            print(f"\n📤 批量上传文件: {file_path.name}")
-            print(f"   大小: {format_size(file_size)}")
-            print(f"   分块: {total_chunks} 个 (每块 {format_size(chunk_size)})")
-            print(f"   模式: 批量写入 (WriteBatch)\n")
-
-        start_time = time.time()
-
-        # 读取所有 chunks 到字典
-        chunks_dict = {}
-        with open(file_path, 'rb') as f:
-            for i in range(total_chunks):
-                chunk = f.read(chunk_size)
-                chunks_dict[f"{key}:chunk:{i}"] = chunk
-
-                if show_progress:
-                    progress = (i + 1) * 100 // total_chunks
-                    size_read = min((i + 1) * chunk_size, file_size)
-                    print(f"   读取: [{progress:3d}%] {format_size(size_read)}/{format_size(file_size)}", end='\r')
-
-        if show_progress:
-            print()
-
-        # 一次性批量写入所有 chunks
-        if show_progress:
-            print(f"   批量写入 {total_chunks} 个chunks...")
-
-        batch_start = time.time()
-        db.batch_set(chunks_dict)
-        batch_time = time.time() - batch_start
-
-        if show_progress:
-            print(f"   批量写入完成: {batch_time:.2f}秒")
-
-        # 更新元数据（标记为完成）
-        upload_time = time.time() - start_time
-        metadata['status'] = 'completed'
-        metadata['upload_time'] = upload_time
-        db[f"{key}:meta"] = metadata
-
-        if show_progress:
-            throughput = file_size / upload_time / (1024 * 1024)
-            print(f"\n✅ 批量上传完成!")
-            print(f"   总耗时: {upload_time:.2f}秒")
-            print(f"   吞吐量: {throughput:.1f} MB/s\n")
-
-        return metadata
-
-    except Exception as e:
-        # 上传失败，清理已上传的数据
-        if show_progress:
-            print(f"\n❌ 上传失败: {e}")
-            print(f"   正在清理...")
-
-        try:
-            # 删除元数据
-            del db[f"{key}:meta"]
-            # 删除已上传的 chunks
-            for i in range(total_chunks):
-                try:
-                    del db[f"{key}:chunk:{i}"]
-                except:
-                    pass
-        except:
-            pass
 
         raise

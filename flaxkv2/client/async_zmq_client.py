@@ -87,8 +87,10 @@ class AsyncRemoteDBDict:
 
         self._closed = False
 
-        # 请求/响应锁（防止并发请求时响应错乱）
-        self._request_lock = asyncio.Lock()
+        # 请求ID机制（替代锁，实现真正的并发）
+        self._request_id = 0
+        self._pending_requests: Dict[int, asyncio.Future] = {}
+        self._receive_task: Optional[asyncio.Task] = None
 
     async def __aenter__(self):
         """异步上下文管理器入口"""
@@ -110,6 +112,12 @@ class AsyncRemoteDBDict:
         self.socket.setsockopt(zmq.RCVTIMEO, self.timeout)
         self.socket.setsockopt(zmq.SNDTIMEO, self.timeout)
 
+        # 性能优化：增大发送/接收缓冲区，提升大文件传输吞吐量
+        self.socket.setsockopt(zmq.SNDBUF, 10 * 1024 * 1024)  # 10MB发送缓冲区
+        self.socket.setsockopt(zmq.RCVBUF, 10 * 1024 * 1024)  # 10MB接收缓冲区
+
+        # 注意：TCP_NODELAY在ZMQ 4.2+中默认启用，无需手动设置
+
         # 配置加密
         if self.enable_encryption:
             await self._setup_encryption()
@@ -117,6 +125,9 @@ class AsyncRemoteDBDict:
         # 连接
         self.socket.connect(self.url)
         logger.debug(f"Connected to {self.url}")
+
+        # 启动后台接收循环（实现真正的并发）
+        self._receive_task = asyncio.create_task(self._receive_loop())
 
         # 发送 CONNECT 命令
         request = [self.CMD_CONNECT, self.db_name.encode('utf-8')]
@@ -158,9 +169,55 @@ class AsyncRemoteDBDict:
         # 跳过第一个字节（压缩标志）
         return data[1:]
 
+    async def _receive_loop(self):
+        """
+        后台接收循环 - 持续接收响应并分发到对应的Future
+
+        这是实现真正并发的关键：
+        - 不再需要锁
+        - 多个请求可以同时发送
+        - 响应根据request_id自动路由到正确的等待者
+        """
+        try:
+            while not self._closed:
+                try:
+                    # 接收响应
+                    response_data_compressed = await self.socket.recv()
+
+                    # 移除压缩标志
+                    response_data = self._decompress_data(response_data_compressed)
+
+                    # 解包响应 [request_id, status, result]
+                    response = msgpack.unpackb(response_data, raw=True)
+
+                    request_id = response[0]
+                    status = response[1]
+                    result = response[2] if len(response) > 2 else None
+
+                    # 根据request_id找到对应的Future并设置结果
+                    if request_id in self._pending_requests:
+                        future = self._pending_requests.pop(request_id)
+                        if not future.done():
+                            future.set_result((status, result))
+                    else:
+                        logger.warning(f"Received response for unknown request_id: {request_id}")
+
+                except zmq.Again:
+                    # 超时，继续循环
+                    continue
+                except asyncio.CancelledError:
+                    # 正常关闭
+                    break
+                except Exception as e:
+                    if not self._closed:
+                        logger.error(f"Error in receive loop: {e}")
+                    break
+        finally:
+            logger.debug("Receive loop stopped")
+
     async def _send_request(self, request):
         """
-        发送请求并等待响应（带锁，防止并发时响应错乱）
+        发送请求并等待响应（使用请求ID，无锁并发）
 
         Args:
             request: 请求列表 [command, ...]
@@ -168,31 +225,41 @@ class AsyncRemoteDBDict:
         Returns:
             (status, result) 元组
         """
-        # 使用锁保护整个请求/响应过程
-        # 这确保在并发调用时，send和recv是配对的
-        async with self._request_lock:
-            # 序列化请求
-            request_data = msgpack.packb(request, use_bin_type=True)
+        if self._closed:
+            raise ConnectionError("Connection is closed")
+
+        # 分配请求ID
+        request_id = self._request_id
+        self._request_id += 1
+
+        # 创建Future等待响应
+        future = asyncio.Future()
+        self._pending_requests[request_id] = future
+
+        try:
+            # 序列化请求（在请求前加上request_id）
+            request_with_id = [request_id] + request
+            request_data = msgpack.packb(request_with_id, use_bin_type=True)
 
             # 添加压缩标志
             request_data_compressed = self._compress_data(request_data)
 
-            # 发送请求（异步）
+            # 发送请求（异步，无需等待响应）
             await self.socket.send(request_data_compressed)
 
-            # 接收响应（异步）
-            response_data_compressed = await self.socket.recv()
-
-            # 移除压缩标志
-            response_data = self._decompress_data(response_data_compressed)
-
-            # 解包响应
-            response = msgpack.unpackb(response_data, raw=True)
-
-            status = response[0]
-            result = response[1] if len(response) > 1 else None
+            # 等待后台接收循环设置结果
+            status, result = await asyncio.wait_for(future, timeout=self.timeout / 1000)
 
             return status, result
+
+        except asyncio.TimeoutError:
+            # 超时，清理Future
+            self._pending_requests.pop(request_id, None)
+            raise TimeoutError(f"Request {request_id} timed out")
+        except Exception as e:
+            # 其他错误，清理Future
+            self._pending_requests.pop(request_id, None)
+            raise
 
     async def get(self, key: Any) -> Any:
         """
@@ -330,6 +397,8 @@ class AsyncRemoteDBDict:
         if self._closed:
             return
 
+        self._closed = True
+
         try:
             # 发送 DISCONNECT 命令
             request = [self.CMD_DISCONNECT, self.db_name.encode('utf-8')]
@@ -337,12 +406,25 @@ class AsyncRemoteDBDict:
         except Exception as e:
             logger.warning(f"Error disconnecting: {e}")
 
+        # 停止接收循环
+        if self._receive_task:
+            self._receive_task.cancel()
+            try:
+                await self._receive_task
+            except asyncio.CancelledError:
+                pass
+
+        # 取消所有待处理的请求
+        for future in self._pending_requests.values():
+            if not future.done():
+                future.set_exception(ConnectionError("Connection closed"))
+        self._pending_requests.clear()
+
         # 关闭 socket
         if self.socket:
             self.socket.close()
             self.socket = None
 
-        self._closed = True
         logger.debug(f"Async client closed: {self.db_name}")
 
     # 便捷方法（字典风格）

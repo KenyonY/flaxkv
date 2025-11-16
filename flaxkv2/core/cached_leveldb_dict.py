@@ -407,6 +407,10 @@ class CachedLevelDBDict:
 
         # 1. 检查统一缓存（包含写入和读取数据）
         if self._cache_enabled:
+            # 先检查是否已被标记删除（删除立即生效，无需等待flush）
+            if key in self._cache._delete_keys:
+                raise KeyError(key)
+
             cached = self._cache.get(key)
             if cached is not None:
                 return cached

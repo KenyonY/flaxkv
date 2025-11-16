@@ -234,67 +234,80 @@ class FlaxKVServer:
     
     def _handle_request(self, identity: bytes, request: list) -> list:
         """
-        处理客户端请求
-        
+        处理客户端请求（支持请求ID）
+
         Args:
             identity: 客户端标识
-            request: 请求数据 [command, db_name, *args]
+            request: 请求数据
+                    新格式: [request_id, command, db_name, *args]
+                    旧格式: [command, db_name, *args]
                     所有的 key 和 value 都是已序列化的 bytes
-            
+
         Returns:
-            响应数据 [status, result]
+            响应数据 [request_id, status, result]
         """
         try:
             with self.stats_lock:
                 self.stats['requests'] += 1
-            
+
             if not request or len(request) < 2:
-                return [self.STATUS_ERROR, b"Invalid request format"]
-            
-            command = request[0]
-            db_name_bytes = request[1]
+                return [0, self.STATUS_ERROR, b"Invalid request format"]
+
+            # 检测格式：request[0]是整数→新格式，字节→旧格式
+            if isinstance(request[0], int):
+                # 新格式：[request_id, command, db_name, *args]
+                request_id = request[0]
+                command = request[1]
+                db_name_bytes = request[2] if len(request) > 2 else b''
+                args_offset = 3  # 参数从索引3开始
+            else:
+                # 旧格式：[command, db_name, *args]（向后兼容）
+                request_id = 0
+                command = request[0]
+                db_name_bytes = request[1] if len(request) > 1 else b''
+                args_offset = 2  # 参数从索引2开始
             
             # 将 db_name 从 bytes 转换为 string
             if isinstance(db_name_bytes, bytes):
                 db_name = db_name_bytes.decode('utf-8')
             else:
                 db_name = db_name_bytes
-            
+
             # PING 命令不需要数据库
             if command == self.CMD_PING:
-                return [self.STATUS_OK, b'PONG']
-            
+                return [request_id, self.STATUS_OK, b'PONG']
+
             # CONNECT 命令
             if command == self.CMD_CONNECT:
                 try:
                     self._get_or_create_db(db_name)
-                    return [self.STATUS_OK, None]
+                    return [request_id, self.STATUS_OK, None]
                 except Exception as e:
                     logger.error(f"Error connecting to database {db_name}: {e}")
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             # DISCONNECT 命令
             if command == self.CMD_DISCONNECT:
                 # 不关闭数据库，保持打开以支持多个并发连接
                 # 数据库由服务器统一管理，在服务器停止时关闭
                 logger.debug(f"Client disconnected from database: {db_name}")
-                return [self.STATUS_OK, True]
-            
+                return [request_id, self.STATUS_OK, True]
+
             # 其他命令需要数据库实例
             try:
                 db = self._get_or_create_db(db_name)
             except Exception as e:
                 logger.error(f"Error getting database {db_name}: {e}")
-                return [self.STATUS_ERROR, f"Database error: {str(e)}".encode('utf-8')]
+                return [request_id, self.STATUS_ERROR, f"Database error: {str(e)}".encode('utf-8')]
             
             # 处理各种命令（所有 key/value 都是 bytes，直接操作）
             if command == self.CMD_GET:
-                key_bytes = request[2]  # 已序列化的 key
+                key_bytes = request[args_offset]  # 已序列化的 key
                 try:
                     # 读取数据
                     value_bytes = db._db.get(key_bytes)
                     if value_bytes is None:
-                        return [self.STATUS_NOT_FOUND, None]
+                        return [request_id, self.STATUS_NOT_FOUND, None]
 
                     # 检查是否包含TTL元数据并已过期
                     if ValueWithMeta.has_meta(value_bytes):
@@ -306,100 +319,101 @@ class FlaxKVServer:
                                 logger.debug(f"Deleted expired key: {key}")
                             except:
                                 pass
-                            return [self.STATUS_NOT_FOUND, None]
+                            return [request_id, self.STATUS_NOT_FOUND, None]
 
-                    return [self.STATUS_OK, value_bytes]
+                    return [request_id, self.STATUS_OK, value_bytes]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
             
             elif command == self.CMD_SET:
-                key_bytes = request[2]  # 已序列化的 key
-                value_bytes = request[3]  # 已序列化的 value
+                key_bytes = request[args_offset]  # 已序列化的 key
+                value_bytes = request[args_offset + 1]  # 已序列化的 value
                 try:
                     db._db.put(key_bytes, value_bytes)  # 直接写入 LevelDB
-                    return [self.STATUS_OK, None]
+                    return [request_id, self.STATUS_OK, None]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             elif command == self.CMD_DELETE:
-                key_bytes = request[2]
+                key_bytes = request[args_offset]
                 try:
                     # 先检查是否存在
                     if db._db.get(key_bytes) is None:
-                        return [self.STATUS_NOT_FOUND, None]
+                        return [request_id, self.STATUS_NOT_FOUND, None]
                     db._db.delete(key_bytes)
-                    return [self.STATUS_OK, None]
+                    return [request_id, self.STATUS_OK, None]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             elif command == self.CMD_CONTAINS:
-                key_bytes = request[2]
+                key_bytes = request[args_offset]
                 try:
                     exists = db._db.get(key_bytes) is not None
-                    return [self.STATUS_OK, exists]
+                    return [request_id, self.STATUS_OK, exists]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             elif command == self.CMD_KEYS:
                 try:
                     keys = []
                     for key_bytes, _ in db._db:
                         keys.append(key_bytes)
-                    return [self.STATUS_OK, keys]
+                    return [request_id, self.STATUS_OK, keys]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             elif command == self.CMD_VALUES:
                 try:
                     values = []
                     for _, value_bytes in db._db:
                         values.append(value_bytes)
-                    return [self.STATUS_OK, values]
+                    return [request_id, self.STATUS_OK, values]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             elif command == self.CMD_ITEMS:
                 try:
                     items = []
                     for key_bytes, value_bytes in db._db:
                         items.append([key_bytes, value_bytes])
-                    return [self.STATUS_OK, items]
+                    return [request_id, self.STATUS_OK, items]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             elif command == self.CMD_UPDATE:
-                items_list = request[2]  # [[key_bytes, value_bytes], ...]
+                items_list = request[args_offset]  # [[key_bytes, value_bytes], ...]
                 try:
                     batch = db._db.write_batch()
                     for key_bytes, value_bytes in items_list:
                         batch.put(key_bytes, value_bytes)
                     batch.write()
-                    return [self.STATUS_OK, None]
+                    return [request_id, self.STATUS_OK, None]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             elif command == self.CMD_LEN:
                 try:
                     count = sum(1 for _ in db._db)
-                    return [self.STATUS_OK, count]
+                    return [request_id, self.STATUS_OK, count]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             elif command == self.CMD_STAT:
                 try:
                     stat = db.stat()
-                    return [self.STATUS_OK, stat]
+                    return [request_id, self.STATUS_OK, stat]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             elif command == self.CMD_BATCH_WRITE:
                 # 批量写入命令（支持写缓冲）
-                # request格式: [CMD_BATCH_WRITE, db_name, writes_dict, deletes_list]
+                # 新格式: [request_id, CMD_BATCH_WRITE, db_name, writes_dict, deletes_list]
+                # 旧格式: [CMD_BATCH_WRITE, db_name, writes_dict, deletes_list]
                 # writes_dict: {key_bytes: value_bytes}
                 # deletes_list: [key_bytes1, key_bytes2, ...]
                 try:
-                    writes_dict = request[2]  # {key_bytes: value_bytes}
-                    deletes_list = request[3]  # [key_bytes1, key_bytes2, ...]
+                    writes_dict = request[args_offset]  # {key_bytes: value_bytes}
+                    deletes_list = request[args_offset + 1]  # [key_bytes1, key_bytes2, ...]
 
                     # 使用 write_batch 批量操作
                     batch = db._db.write_batch()
@@ -416,10 +430,10 @@ class FlaxKVServer:
                     batch.write()
 
                     logger.debug(f"Batch write completed: {len(writes_dict)} writes, {len(deletes_list)} deletes")
-                    return [self.STATUS_OK, None]
+                    return [request_id, self.STATUS_OK, None]
                 except Exception as e:
                     logger.error(f"Batch write error: {e}", exc_info=True)
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
 
             elif command == self.CMD_CLEANUP_EXPIRED:
                 try:
@@ -445,18 +459,19 @@ class FlaxKVServer:
                     logger.info(f"Cleaned up {count} expired keys")
 
                     # 返回编码后的计数
-                    return [self.STATUS_OK, encoder.encode(count)]
+                    return [request_id, self.STATUS_OK, encoder.encode(count)]
                 except Exception as e:
-                    return [self.STATUS_ERROR, str(e).encode('utf-8')]
-            
+                    return [request_id, self.STATUS_ERROR, str(e).encode('utf-8')]
+
             else:
-                return [self.STATUS_ERROR, f"Unknown command: {command}".encode('utf-8')]
-        
+                return [request_id, self.STATUS_ERROR, f"Unknown command: {command}".encode('utf-8')]
+
         except Exception as e:
             logger.error(f"Error handling request: {e}", exc_info=True)
             with self.stats_lock:
                 self.stats['errors'] += 1
-            return [self.STATUS_ERROR, str(e).encode('utf-8')]
+            # 异常时使用request_id=0（因为我们可能无法解析request_id）
+            return [0, self.STATUS_ERROR, str(e).encode('utf-8')]
     
     async def _server_loop(self):
         """异步服务器主循环（并发处理所有请求）"""
@@ -615,6 +630,12 @@ class FlaxKVServer:
 
         # 设置 socket 选项
         self.socket.setsockopt(zmq.LINGER, 0)
+
+        # 性能优化：增大发送/接收缓冲区，提升大文件传输吞吐量
+        self.socket.setsockopt(zmq.SNDBUF, 10 * 1024 * 1024)  # 10MB发送缓冲区
+        self.socket.setsockopt(zmq.RCVBUF, 10 * 1024 * 1024)  # 10MB接收缓冲区
+
+        # 注意：TCP_NODELAY在ZMQ 4.2+中默认启用，无需手动设置
 
         # 创建线程池用于LevelDB同步操作
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers)

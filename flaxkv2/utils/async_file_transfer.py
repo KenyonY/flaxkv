@@ -147,23 +147,27 @@ async def upload_large_file_async(
                     chunk = f.read(chunk_size)
                     chunks_data.append((i, chunk))
 
-            # 上传进度
+            # 上传进度（使用锁保护计数器）
             uploaded_count = 0
-            upload_lock = asyncio.Lock()
+            progress_lock = asyncio.Lock()
 
             async def upload_chunk(chunk_index: int, chunk_data: bytes):
                 """上传单个chunk"""
                 nonlocal uploaded_count
 
-                async with upload_lock:
-                    await db.set(f"{key}:chunk:{chunk_index}", chunk_data)
+                # 上传数据（无锁，允许真正的并发）
+                await db.set(f"{key}:chunk:{chunk_index}", chunk_data)
 
-                    uploaded_count += 1
-                    if show_progress:
+                # 更新进度（仅在显示进度时使用锁）
+                if show_progress:
+                    async with progress_lock:
+                        uploaded_count += 1
                         progress = uploaded_count * 100 // total_chunks
                         size_uploaded = min(uploaded_count * chunk_size, file_size)
-                        print(f"   上传分块: {chunk_index} 大小: {format_size(len(chunk_data))}", end='\r')
                         print(f"   进度: [{progress:3d}%] {format_size(size_uploaded)}/{format_size(file_size)}", end='\r')
+                else:
+                    # 不显示进度时，直接增加计数（可能不准确但无关紧要）
+                    uploaded_count += 1
 
             # 并发上传（限制并发数）
             semaphore = asyncio.Semaphore(max_concurrency)
