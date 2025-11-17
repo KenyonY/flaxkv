@@ -549,23 +549,97 @@ class FlaxFileCLI:
 
     def list(
         self,
+        prefix: str = "",
         server: Optional[str] = None,
+        password: Optional[str] = None,
     ):
         """
         列出服务器上的所有文件
 
         Args:
+            prefix: 文件前缀过滤（可选）
             server: 服务器名称（可选）
+            password: 密码（用于加密传输，可选，优先使用环境变量 FLAXFILE_PASSWORD）
 
         示例:
-            flaxfile list
-            flaxfile list --server prod
-
-        注意: 需要服务器支持LIST命令（当前版本暂不支持，待实现）
+            flaxfile list                       # 列出所有文件
+            flaxfile list myproject             # 列出 myproject 开头的文件
+            flaxfile list --server prod         # 列出 prod 服务器的文件
+            export FLAXFILE_PASSWORD=mysecret && flaxfile list
         """
-        print("注意: list功能待实现")
-        print("当前服务器端暂不支持列出文件功能")
-        print("可以通过服务器端存储目录查看：zmq_streaming_storage/")
+        from rich.console import Console
+        from rich.table import Table
+
+        # 获取服务器配置
+        server_config = self._config_obj.get_server(server)
+
+        # 创建客户端
+        client = FlaxFileClient(
+            server_host=server_config['host'],
+            port=server_config['port'],
+            password=password,
+        )
+
+        console = Console()
+
+        try:
+            files = client.list_files(prefix=prefix)
+
+            if not files:
+                if prefix:
+                    console.print(f"[yellow]⚠️  未找到匹配 '{prefix}' 的文件")
+                else:
+                    console.print("[yellow]⚠️  服务器上没有文件")
+                return
+
+            # 创建表格
+            table = Table(title=f"[bold cyan]服务器文件列表 ({len(files)} 个文件)", show_header=True, header_style="bold magenta")
+            table.add_column("文件键", style="cyan", no_wrap=False)
+            table.add_column("大小", justify="right", style="yellow")
+            table.add_column("修改时间", style="green")
+
+            # 添加数据
+            from datetime import datetime
+            total_size = 0
+            for file_info in files:
+                key = file_info['key']
+                size = file_info['size']
+                mtime = file_info.get('mtime', 0)
+
+                # 格式化大小
+                if size < 1024:
+                    size_str = f"{size} B"
+                elif size < 1024 * 1024:
+                    size_str = f"{size / 1024:.2f} KB"
+                elif size < 1024 * 1024 * 1024:
+                    size_str = f"{size / (1024 * 1024):.2f} MB"
+                else:
+                    size_str = f"{size / (1024 * 1024 * 1024):.2f} GB"
+
+                # 格式化时间
+                if mtime > 0:
+                    mtime_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    mtime_str = "N/A"
+
+                table.add_row(key, size_str, mtime_str)
+                total_size += size
+
+            console.print(table)
+
+            # 显示总计
+            if total_size < 1024 * 1024 * 1024:
+                total_str = f"{total_size / (1024 * 1024):.2f} MB"
+            else:
+                total_str = f"{total_size / (1024 * 1024 * 1024):.2f} GB"
+
+            console.print(f"\n[bold green]总计: {len(files)} 个文件，{total_str}")
+
+        except Exception as e:
+            console.print(f"[red]✗ 列出文件失败: {e}")
+            sys.exit(1)
+        finally:
+            client.close()
 
     def version(self):
         """显示版本信息"""

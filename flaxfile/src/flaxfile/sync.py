@@ -352,9 +352,8 @@ def pull_directory(
                 # 计算本地路径（移除远程目录前缀）
                 if remote_key.startswith(remote_dir + '/'):
                     rel_path = remote_key[len(remote_dir) + 1:]
-                elif remote_key.startswith(remote_dir):
-                    rel_path = remote_key[len(remote_dir):]
                 else:
+                    # 不匹配前缀，使用原始键名
                     rel_path = remote_key
 
                 local_path = local_dir_path / rel_path
@@ -390,9 +389,8 @@ def pull_directory(
             # 计算本地路径
             if remote_key.startswith(remote_dir + '/'):
                 rel_path = remote_key[len(remote_dir) + 1:]
-            elif remote_key.startswith(remote_dir):
-                rel_path = remote_key[len(remote_dir):]
             else:
+                # 不匹配前缀，使用原始键名
                 rel_path = remote_key
 
             local_path = local_dir_path / rel_path
