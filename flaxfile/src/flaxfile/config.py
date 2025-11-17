@@ -23,13 +23,13 @@ DEFAULT_CONFIG = {
     },
     'server': {
         'host': '0.0.0.0',
-        'port': 25555,
+        'port': 27555,
         'storage_dir': './zmq_streaming_storage',
     },
     'servers': {
         'local': {
             'host': '127.0.0.1',
-            'port': 25555,
+            'port': 27555,
         }
     }
 }
@@ -53,19 +53,17 @@ def generate_default_config_toml() -> str:
 # ============================================================
 [client]
 # 默认使用的服务器（对应 [servers] 中的键名）
-default_server = "local"
+default_server = "prod"
 
 # ============================================================
 # 服务端配置（运行 flaxfile serve 时使用）
 # ============================================================
 [server]
 # 监听地址
-#   - "0.0.0.0" = 监听所有网卡（允许远程连接）
-#   - "127.0.0.1" = 仅本地访问
 host = "0.0.0.0"
 
 # 端口配置 (异步单端口设计)
-port = 25555
+port = 27555
 
 # 存储目录
 storage_dir = "./zmq_streaming_storage"
@@ -77,19 +75,12 @@ storage_dir = "./zmq_streaming_storage"
 # 本地服务器
 [servers.local]
 host = "127.0.0.1"
-port = 25555
+port = 27555
 
 # 生产环境服务器示例（取消注释以启用）
 # [servers.prod]
 # host = "192.168.1.100"
-# port = 25555
-
-# 开发环境服务器示例
-# [servers.dev]
-# host = "10.0.0.5"
-# port = 26555
-# download_port = 26556
-# control_port = 26557
+# port = 27555
 """
 
 

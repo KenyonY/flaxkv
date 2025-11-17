@@ -8,7 +8,7 @@
 # ============================================================
 [client]
 # 默认使用的服务器（对应 [servers] 中的键名）
-default_server = "local"
+default_server = "prod"
 
 # ============================================================
 # 服务端配置（运行 flaxfile serve 时使用）
@@ -32,7 +32,7 @@ storage_dir = "./zmq_streaming_storage"
 # 本地服务器
 [servers.local]
 host = "127.0.0.1"
-port = 25555
+port = 27555
 
 # 生产环境服务器
 [servers.prod]
