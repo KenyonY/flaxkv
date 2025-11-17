@@ -20,7 +20,7 @@ default_server = "local"
 host = "0.0.0.0"
 
 # 端口配置 (异步单端口设计)
-port = 25555
+port = 27555
 
 # 存储目录
 storage_dir = "./zmq_streaming_storage"

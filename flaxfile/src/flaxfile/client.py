@@ -432,6 +432,14 @@ class FlaxFileClient:
         # 忽略旧的 upload_port, download_port, control_port
         self.async_client = AsyncFlaxFileClient(server_host, port, password)
 
+        # Windows 平台：设置事件循环策略为 Selector（ZMQ 需要）
+        if sys.platform == 'win32':
+            try:
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            except AttributeError:
+                # Python < 3.8 不支持 WindowsSelectorEventLoopPolicy
+                pass
+
     def connect(self):
         """连接到服务器"""
         asyncio.run(self.async_client.connect())
