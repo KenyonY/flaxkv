@@ -81,13 +81,19 @@ def get_password(
         密码字符串，如果允许为空且用户选择无加密则返回 None
     """
     # 1. 优先从环境变量读取
-    password = os.getenv(env_var)
-    if password is not None:
-        # 环境变量存在（即使是空字符串也返回）
-        # 空字符串表示用户明确选择不加密
+    # 区分"环境变量不存在"和"环境变量存在但为空"
+    if env_var in os.environ:
+        # 环境变量存在（即使是空字符串）
+        # 空字符串表示用户明确选择不加密，不进入交互式输入
+        password = os.getenv(env_var)
         return password if password else None
 
-    # 2. 交互式输入
+    # 2. 环境变量不存在，检查是否在交互式终端
+    if not is_interactive_terminal():
+        # 非交互式环境（后台、管道等）：环境变量未设置，返回 None（不加密）
+        return None
+
+    # 3. 交互式输入（仅当环境变量不存在时）
     if allow_empty and is_server:
         # 服务器端：询问是否启用加密
         response = input("是否启用加密? (需要设置密码) [Y/n]: ").strip().lower()

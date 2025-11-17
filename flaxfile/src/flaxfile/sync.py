@@ -127,6 +127,11 @@ def scan_directory(directory: str, respect_gitignore: bool = True) -> List[Tuple
 
         for filename in filenames:
             abs_path = Path(root) / filename
+
+            # 检查文件是否真的存在（跳过损坏的符号链接等）
+            if not abs_path.exists() or not abs_path.is_file():
+                continue
+
             rel_path = abs_path.relative_to(directory)
 
             # 检查是否应该忽略

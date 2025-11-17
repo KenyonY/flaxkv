@@ -21,7 +21,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import print as rprint
 
-from .crypto import get_password, configure_client_encryption, is_interactive_terminal
+from .crypto import get_password, configure_client_encryption
 
 # 配置日志
 logging.basicConfig(
@@ -552,22 +552,14 @@ class FlaxFileClient:
         # 忽略旧的 upload_port, download_port, control_port
 
         # 在同步上下文中获取密码（避免在异步 connect() 中阻塞）
+        # 密码获取优先级：1. 命令行参数 -> 2. 环境变量 -> 3. 交互式输入
         if password is None:
-            # 检测是否在交互式终端
-            if is_interactive_terminal():
-                # 交互式环境：允许用户输入密码
-                password = get_password(
-                    prompt="服务器密码: ",
-                    allow_empty=True,
-                    env_var="FLAXFILE_PASSWORD",
-                    is_server=False
-                )
-            else:
-                # 非交互式环境（后台、管道等）：只从环境变量读取
-                password = os.getenv("FLAXFILE_PASSWORD")
-                if password is not None:
-                    # 空字符串表示不加密
-                    password = password if password else None
+            password = get_password(
+                prompt="服务器密码: ",
+                allow_empty=True,
+                env_var="FLAXFILE_PASSWORD",
+                is_server=False
+            )
 
         self.async_client = AsyncFlaxFileClient(server_host, port, password)
 
