@@ -144,7 +144,9 @@ def push_directory(
     local_dir: str,
     remote_dir: str,
     show_progress: bool = True,
-    password: Optional[str] = None
+    password: Optional[str] = None,
+    use_concurrent: bool = True,  # 是否使用chunk并发上传（已废弃，upload_file默认并发）
+    chunk_concurrency: int = 16,  # chunk并发度（默认16）
 ) -> dict:
     """
     上传本地目录到服务器
@@ -155,6 +157,8 @@ def push_directory(
         remote_dir: 远程目录名称
         show_progress: 是否显示进度
         password: 密码（可选）
+        use_concurrent: 已废弃，upload_file默认使用并发模式
+        chunk_concurrency: chunk并发度（默认16）
 
     Returns:
         同步结果统计
@@ -219,8 +223,12 @@ def push_directory(
                         description=f"[cyan]上传: {rel_path}"
                     )
 
-                    # 上传文件（不显示单文件进度，避免刷屏）
-                    client.upload_file(abs_path, remote_key, show_progress=False)
+                    # 上传文件（默认并发模式）
+                    client.upload_file(
+                        abs_path, remote_key,
+                        show_progress=False,
+                        max_concurrency=chunk_concurrency
+                    )
                     uploaded += 1
 
                     # 更新字节进度
@@ -239,7 +247,11 @@ def push_directory(
 
             try:
                 console.print(f"[cyan]上传: {rel_path}")
-                client.upload_file(abs_path, remote_key, show_progress=False)
+                client.upload_file(
+                    abs_path, remote_key,
+                    show_progress=False,
+                    max_concurrency=chunk_concurrency
+                )
                 uploaded += 1
             except Exception as e:
                 failed += 1

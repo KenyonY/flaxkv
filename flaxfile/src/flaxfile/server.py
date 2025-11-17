@@ -23,9 +23,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 存储目录
+# 存储目录（默认值，会在服务器启动时创建）
 STORAGE_DIR = Path("zmq_streaming_storage")
-STORAGE_DIR.mkdir(exist_ok=True)
 
 # 统计信息
 stats = {
@@ -65,6 +64,9 @@ class FlaxFileServer:
                 env_var="FLAXFILE_PASSWORD",
                 is_server=True
             )
+
+        # 创建存储目录（只在服务器启动时创建）
+        STORAGE_DIR.mkdir(exist_ok=True)
 
         logger.info("="*70)
         logger.info("FlaxFile 异步单端口文件传输服务器 (DEALER/ROUTER)")
@@ -128,17 +130,20 @@ class FlaxFileServer:
             if command == b'PING':
                 await self.socket.send_multipart([identity, b'', b'PONG'])
 
-            elif command == b'UPLOAD_START':
-                await self.handle_upload_start(identity, args)
+            elif command == b'UPLOAD_START_CONCURRENT':
+                await self.handle_upload_start_concurrent(identity, args)
 
-            elif command == b'UPLOAD_CHUNK':
-                await self.handle_upload_chunk(identity, args)
+            elif command == b'UPLOAD_CHUNK_CONCURRENT':
+                await self.handle_upload_chunk_concurrent(identity, args)
 
             elif command == b'UPLOAD_END':
                 await self.handle_upload_end(identity)
 
-            elif command == b'DOWNLOAD':
-                await self.handle_download(identity, args)
+            elif command == b'DOWNLOAD_START_CONCURRENT':
+                await self.handle_download_start_concurrent(identity, args)
+
+            elif command == b'DOWNLOAD_CHUNK_CONCURRENT':
+                await self.handle_download_chunk_concurrent(identity, args)
 
             elif command == b'DELETE':
                 await self.handle_delete(identity, args)
@@ -156,64 +161,6 @@ class FlaxFileServer:
                 await self.socket.send_multipart([identity, b'', b'ERROR', str(e).encode('utf-8')])
             except:
                 pass
-
-    async def handle_upload_start(self, identity: bytes, args: list):
-        """开始上传"""
-        if len(args) < 2:
-            await self.socket.send_multipart([identity, b'', b'ERROR', b'Missing arguments'])
-            return
-
-        file_key = args[0].decode('utf-8')
-        file_size = int(args[1].decode('utf-8'))
-
-        file_path = STORAGE_DIR / file_key
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        f = open(file_path, 'wb')
-        hash_obj = hashlib.sha256()
-
-        logger.info(f"📤 上传: {file_key} ({file_size/(1024*1024):.1f} MB)")
-
-        self.upload_states[identity] = {
-            'file_key': file_key,
-            'file_path': file_path,
-            'file': f,
-            'bytes_received': 0,
-            'expected_size': file_size,
-            'hash': hash_obj,
-            'start_time': time.time(),
-            'chunks_received': 0
-        }
-
-        await self.socket.send_multipart([identity, b'', b'OK'])
-
-    async def handle_upload_chunk(self, identity: bytes, args: list):
-        """处理上传数据块"""
-        if identity not in self.upload_states:
-            await self.socket.send_multipart([identity, b'', b'ERROR', b'No active upload'])
-            return
-
-        if len(args) < 1:
-            await self.socket.send_multipart([identity, b'', b'ERROR', b'No data'])
-            return
-
-        upload_state = self.upload_states[identity]
-        data = args[0]
-
-        # 写入文件
-        upload_state['file'].write(data)
-        upload_state['hash'].update(data)
-        upload_state['bytes_received'] += len(data)
-        upload_state['chunks_received'] += 1
-
-        # 发送ACK确认
-        await self.socket.send_multipart([identity, b'', b'ACK'])
-
-        # 打印进度 (每10%)
-        if upload_state['expected_size'] > 0:
-            progress = upload_state['bytes_received'] / upload_state['expected_size'] * 100
-            if int(progress) % 10 == 0 and upload_state['chunks_received'] % 100 == 1:
-                logger.info(f"  进度: {progress:.0f}% ({upload_state['bytes_received']/(1024*1024):.1f} MB)")
 
     async def handle_upload_end(self, identity: bytes):
         """完成上传"""
@@ -247,8 +194,78 @@ class FlaxFileServer:
 
         await self.socket.send_multipart([identity, b'', b'OK', json.dumps(result).encode('utf-8')])
 
-    async def handle_download(self, identity: bytes, args: list):
-        """处理下载请求"""
+    async def handle_upload_start_concurrent(self, identity: bytes, args: list):
+        """开始并发上传"""
+        if len(args) < 3:
+            await self.socket.send_multipart([identity, b'', b'ERROR', b'Missing arguments'])
+            return
+
+        file_key = args[0].decode('utf-8')
+        file_size = int(args[1].decode('utf-8'))
+        max_concurrency = int(args[2].decode('utf-8'))
+
+        file_path = STORAGE_DIR / file_key
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        f = open(file_path, 'wb')
+        hash_obj = hashlib.sha256()
+
+        logger.info(f"📤 并发上传 (x{max_concurrency}): {file_key} ({file_size/(1024*1024):.1f} MB)")
+
+        self.upload_states[identity] = {
+            'file_key': file_key,
+            'file_path': file_path,
+            'file': f,
+            'bytes_received': 0,
+            'expected_size': file_size,
+            'hash': hash_obj,
+            'start_time': time.time(),
+            'chunks_received': 0,
+            'concurrent': True,
+            'chunks': {},  # {chunk_id: data}
+            'next_chunk_id': 0,  # 下一个要写入的chunk_id
+            'max_concurrency': max_concurrency
+        }
+
+        await self.socket.send_multipart([identity, b'', b'OK'])
+
+    async def handle_upload_chunk_concurrent(self, identity: bytes, args: list):
+        """处理并发上传的chunk（可能乱序到达）"""
+        if identity not in self.upload_states:
+            await self.socket.send_multipart([identity, b'', b'ERROR', b'No active upload'])
+            return
+
+        if len(args) < 2:
+            await self.socket.send_multipart([identity, b'', b'ERROR', b'No data'])
+            return
+
+        upload_state = self.upload_states[identity]
+        chunk_id = int(args[0].decode('utf-8'))
+        data = args[1]
+
+        # 缓存chunk（可能乱序到达）
+        upload_state['chunks'][chunk_id] = data
+
+        # 按序写入chunk
+        while upload_state['next_chunk_id'] in upload_state['chunks']:
+            chunk_data = upload_state['chunks'].pop(upload_state['next_chunk_id'])
+            upload_state['file'].write(chunk_data)
+            upload_state['hash'].update(chunk_data)
+            upload_state['bytes_received'] += len(chunk_data)
+            upload_state['chunks_received'] += 1
+            upload_state['next_chunk_id'] += 1
+
+        # 发送ACK（带chunk_id）
+        await self.socket.send_multipart([identity, b'', b'ACK', args[0]])
+
+        # 打印进度（每10%）
+        if upload_state['expected_size'] > 0:
+            progress = upload_state['bytes_received'] / upload_state['expected_size'] * 100
+            if int(progress) % 10 == 0 and upload_state['chunks_received'] % 100 == 1:
+                logger.info(f"  进度: {progress:.0f}% ({upload_state['bytes_received']/(1024*1024):.1f} MB)")
+
+    async def handle_download_start_concurrent(self, identity: bytes, args: list):
+        """处理并发下载开始请求"""
         if len(args) < 1:
             await self.socket.send_multipart([identity, b'', b'ERROR', b'Missing file_key'])
             return
@@ -261,48 +278,52 @@ class FlaxFileServer:
             return
 
         file_size = file_path.stat().st_size
-        logger.info(f"📥 下载: {file_key} ({file_size/(1024*1024):.1f} MB)")
-
-        # 发送文件大小
-        await self.socket.send_multipart([identity, b'', b'OK', str(file_size).encode('utf-8')])
-
-        # 异步发送文件数据
-        asyncio.create_task(self.send_file(identity, file_path, file_key))
-
-    async def send_file(self, identity: bytes, file_path: Path, file_key: str):
-        """异步发送文件数据"""
-        start_time = time.time()
-        bytes_sent = 0
         chunk_size = 4 * 1024 * 1024  # 4MB
+        total_chunks = (file_size + chunk_size - 1) // chunk_size
+
+        logger.info(f"📥 并发下载: {file_key} ({file_size/(1024*1024):.1f} MB, {total_chunks} chunks)")
+
+        # 返回文件信息
+        await self.socket.send_multipart([
+            identity, b'', b'OK',
+            str(file_size).encode('utf-8'),
+            str(total_chunks).encode('utf-8'),
+            str(chunk_size).encode('utf-8')
+        ])
+
+    async def handle_download_chunk_concurrent(self, identity: bytes, args: list):
+        """处理并发下载chunk请求"""
+        if len(args) < 2:
+            await self.socket.send_multipart([identity, b'', b'ERROR', b'Missing arguments'])
+            return
+
+        file_key = args[0].decode('utf-8')
+        chunk_id = int(args[1].decode('utf-8'))
+
+        file_path = STORAGE_DIR / file_key
+
+        if not file_path.exists():
+            await self.socket.send_multipart([identity, b'', b'ERROR', b'File not found'])
+            return
 
         try:
+            chunk_size = 4 * 1024 * 1024  # 4MB
+            offset = chunk_id * chunk_size
+
             with open(file_path, 'rb') as f:
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        break
-                    await self.socket.send_multipart([identity, b'', b'CHUNK', chunk])
-                    bytes_sent += len(chunk)
-                    # 给客户端一点时间处理
-                    await asyncio.sleep(0.001)
+                f.seek(offset)
+                chunk_data = f.read(chunk_size)
 
-            # 发送结束标记
-            await self.socket.send_multipart([identity, b'', b'EOF'])
-
-            download_time = time.time() - start_time
-            throughput = (bytes_sent / (1024 * 1024)) / download_time if download_time > 0 else 0
-
-            stats['downloads'] += 1
-            stats['bytes_downloaded'] += bytes_sent
-
-            logger.info(f"✓ 下载完成: {file_key} ({bytes_sent/(1024*1024):.1f} MB, {throughput:.2f} MB/s)")
+            # 返回chunk数据
+            await self.socket.send_multipart([
+                identity, b'', b'CHUNK',
+                str(chunk_id).encode('utf-8'),
+                chunk_data
+            ])
 
         except Exception as e:
-            logger.error(f"下载失败: {e}")
-            try:
-                await self.socket.send_multipart([identity, b'', b'ERROR', str(e).encode('utf-8')])
-            except:
-                pass
+            logger.error(f"读取chunk失败: {e}")
+            await self.socket.send_multipart([identity, b'', b'ERROR', str(e).encode('utf-8')])
 
     async def handle_delete(self, identity: bytes, args: list):
         """删除文件"""

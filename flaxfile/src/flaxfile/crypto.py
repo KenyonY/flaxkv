@@ -3,10 +3,22 @@ FlaxFile 加密工具 - 基于 CurveZMQ (Curve25519)
 """
 
 import os
+import sys
 import hashlib
 import getpass
 from typing import Tuple, Optional
 import zmq
+
+
+def is_interactive_terminal() -> bool:
+    """
+    检测是否在交互式终端中运行
+
+    Returns:
+        True 如果在交互式终端，False 如果在非交互式环境（后台、管道等）
+    """
+    # 检查 stdin 是否连接到 TTY
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def derive_server_keypair(password: str) -> Tuple[bytes, bytes]:
@@ -70,8 +82,10 @@ def get_password(
     """
     # 1. 优先从环境变量读取
     password = os.getenv(env_var)
-    if password:
-        return password
+    if password is not None:
+        # 环境变量存在（即使是空字符串也返回）
+        # 空字符串表示用户明确选择不加密
+        return password if password else None
 
     # 2. 交互式输入
     if allow_empty and is_server:
