@@ -5,7 +5,7 @@ FlaxFile - 高性能文件传输工具
 性能: 3800+ MB/s (本地), 1000+ MB/s (10Gbps网络)
 """
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 __author__ = "K.Y"
 
 from .client import FlaxFileClient

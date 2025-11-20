@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 FlaxFile 异步单端口服务器 - 使用 DEALER/ROUTER 模式
+支持多连接 + aiofiles异步文件I/O
 """
 
 import zmq
@@ -11,6 +12,7 @@ import time
 import argparse
 import logging
 import asyncio
+import aiofiles
 from pathlib import Path
 from typing import Optional, Dict
 from .crypto import get_password, configure_server_encryption, get_key_fingerprint, derive_server_keypair
@@ -51,8 +53,17 @@ class FlaxFileServer:
         self.context = zmq.asyncio.Context()
         self.socket = None
 
-        # 存储每个客户端的上传状态
+        # 存储每个客户端的上传状态（按identity索引，用于向后兼容）
         self.upload_states: Dict[bytes, dict] = {}
+
+        # 存储按file_key索引的上传会话（支持多socket协同上传）
+        self.file_upload_sessions: Dict[str, dict] = {}
+
+        # 映射identity到file_key（用于清理）
+        self.identity_to_filekey: Dict[bytes, str] = {}
+
+        # 全局锁：保护file_upload_sessions的创建（防止并发UPLOAD_START竞态）
+        self.session_creation_lock = asyncio.Lock()
 
     async def start(self):
         """启动服务器"""
@@ -163,39 +174,66 @@ class FlaxFileServer:
                 pass
 
     async def handle_upload_end(self, identity: bytes):
-        """完成上传"""
+        """完成上传（支持多socket协同）"""
         if identity not in self.upload_states:
             await self.socket.send_multipart([identity, b'', b'ERROR', b'No active upload'])
             return
 
-        upload_state = self.upload_states.pop(identity)
-        upload_state['file'].close()
+        result = {'status': 'ok', 'message': 'Upload ended'}  # 默认result
 
-        upload_time = time.time() - upload_state['start_time']
-        throughput = (upload_state['bytes_received'] / (1024 * 1024)) / upload_time if upload_time > 0 else 0
+        # 从该identity对应的file_key会话中移除
+        file_key = self.identity_to_filekey.get(identity)
+        if file_key and file_key in self.file_upload_sessions:
+            session = self.file_upload_sessions[file_key]
 
-        # 更新统计
-        stats['uploads'] += 1
-        stats['bytes_uploaded'] += upload_state['bytes_received']
+            # 使用会话锁保护UPLOAD_END的并发访问
+            async with session['lock']:
+                session['identities'].discard(identity)
 
-        result = {
-            'status': 'ok',
-            'file_key': upload_state['file_key'],
-            'size': upload_state['bytes_received'],
-            'time': upload_time,
-            'throughput': throughput,
-            'sha256': upload_state['hash'].hexdigest()
-        }
+                # 只有当所有identity都结束时，才真正关闭文件
+                if len(session['identities']) == 0:
+                    # 所有socket都完成了，关闭文件
+                    await session['file'].close()  # aiofiles异步关闭
 
-        logger.info(f"✓ 上传完成: {upload_state['file_key']} "
-                   f"({upload_state['bytes_received']/(1024*1024):.1f} MB, "
-                   f"{throughput:.2f} MB/s, "
-                   f"{upload_state['chunks_received']} chunks)")
+                    upload_time = time.time() - session['start_time']
+                    throughput = (session['bytes_received'] / (1024 * 1024)) / upload_time if upload_time > 0 else 0
+
+                    # 更新统计
+                    stats['uploads'] += 1
+                    stats['bytes_uploaded'] += session['bytes_received']
+
+                    result = {
+                        'status': 'ok',
+                        'file_key': session['file_key'],
+                        'size': session['bytes_received'],
+                        'time': upload_time,
+                        'throughput': throughput,
+                        'sha256': session['hash'].hexdigest()
+                    }
+
+                    logger.info(f"✓ 上传完成: {session['file_key']} "
+                               f"({session['bytes_received']/(1024*1024):.1f} MB, "
+                               f"{throughput:.2f} MB/s, "
+                               f"{session['chunks_received']} chunks)")
+
+                    # 清理会话
+                    self.file_upload_sessions.pop(file_key)
+                else:
+                    # 还有其他socket在上传，只返回临时确认
+                    result = {
+                        'status': 'ok',
+                        'message': 'Socket finished, waiting for others'
+                    }
+                    logger.info(f"✓ Socket完成: {file_key} (identity: {identity.hex()[:8]}..., 剩余{len(session['identities'])}个)")
+
+        # 清理该identity的映射
+        self.upload_states.pop(identity, None)
+        self.identity_to_filekey.pop(identity, None)
 
         await self.socket.send_multipart([identity, b'', b'OK', json.dumps(result).encode('utf-8')])
 
     async def handle_upload_start_concurrent(self, identity: bytes, args: list):
-        """开始并发上传"""
+        """开始并发上传（支持多socket协同）"""
         if len(args) < 3:
             await self.socket.send_multipart([identity, b'', b'ERROR', b'Missing arguments'])
             return
@@ -204,28 +242,46 @@ class FlaxFileServer:
         file_size = int(args[1].decode('utf-8'))
         max_concurrency = int(args[2].decode('utf-8'))
 
-        file_path = STORAGE_DIR / file_key
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        # 使用全局锁保护会话创建（防止并发UPLOAD_START竞态）
+        async with self.session_creation_lock:
+            # 检查是否已有该file_key的上传会话
+            if file_key not in self.file_upload_sessions:
+                # 首次上传，创建新会话
+                file_path = STORAGE_DIR / file_key
+                file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        f = open(file_path, 'wb')
-        hash_obj = hashlib.sha256()
+                # 使用aiofiles异步打开文件
+                f = await aiofiles.open(file_path, 'wb')
+                hash_obj = hashlib.sha256()
 
-        logger.info(f"📤 并发上传 (x{max_concurrency}): {file_key} ({file_size/(1024*1024):.1f} MB)")
+                logger.info(f"📤 并发上传 (x{max_concurrency}): {file_key} ({file_size/(1024*1024):.1f} MB)")
 
-        self.upload_states[identity] = {
-            'file_key': file_key,
-            'file_path': file_path,
-            'file': f,
-            'bytes_received': 0,
-            'expected_size': file_size,
-            'hash': hash_obj,
-            'start_time': time.time(),
-            'chunks_received': 0,
-            'concurrent': True,
-            'chunks': {},  # {chunk_id: data}
-            'next_chunk_id': 0,  # 下一个要写入的chunk_id
-            'max_concurrency': max_concurrency
-        }
+                # 按file_key索引的会话（支持多个identity共享）
+                self.file_upload_sessions[file_key] = {
+                    'file_key': file_key,
+                    'file_path': file_path,
+                    'file': f,
+                    'bytes_received': 0,
+                    'expected_size': file_size,
+                    'hash': hash_obj,
+                    'start_time': time.time(),
+                    'chunks_received': 0,
+                    'concurrent': True,
+                    'chunks': {},  # {chunk_id: data}
+                    'next_chunk_id': 0,  # 下一个要写入的chunk_id
+                    'max_concurrency': max_concurrency,
+                    'lock': asyncio.Lock(),  # 保护并发写入的锁
+                    'identities': set()  # 参与上传的所有identity
+                }
+            else:
+                logger.info(f"📤 加入并发上传: {file_key} (identity: {identity.hex()[:8]}...)")
+
+            # 注册该identity到会话
+            self.file_upload_sessions[file_key]['identities'].add(identity)
+            self.identity_to_filekey[identity] = file_key
+
+            # 同时保留旧的upload_states映射（向后兼容）
+            self.upload_states[identity] = self.file_upload_sessions[file_key]
 
         await self.socket.send_multipart([identity, b'', b'OK'])
 
@@ -243,19 +299,21 @@ class FlaxFileServer:
         chunk_id = int(args[0].decode('utf-8'))
         data = args[1]
 
-        # 缓存chunk（可能乱序到达）
-        upload_state['chunks'][chunk_id] = data
+        # 使用锁保护并发写入的临界区
+        async with upload_state['lock']:
+            # 缓存chunk（可能乱序到达）
+            upload_state['chunks'][chunk_id] = data
 
-        # 按序写入chunk
-        while upload_state['next_chunk_id'] in upload_state['chunks']:
-            chunk_data = upload_state['chunks'].pop(upload_state['next_chunk_id'])
-            upload_state['file'].write(chunk_data)
-            upload_state['hash'].update(chunk_data)
-            upload_state['bytes_received'] += len(chunk_data)
-            upload_state['chunks_received'] += 1
-            upload_state['next_chunk_id'] += 1
+            # 按序写入chunk (使用aiofiles异步写入)
+            while upload_state['next_chunk_id'] in upload_state['chunks']:
+                chunk_data = upload_state['chunks'].pop(upload_state['next_chunk_id'])
+                await upload_state['file'].write(chunk_data)  # aiofiles异步写入
+                upload_state['hash'].update(chunk_data)
+                upload_state['bytes_received'] += len(chunk_data)
+                upload_state['chunks_received'] += 1
+                upload_state['next_chunk_id'] += 1
 
-        # 发送ACK（带chunk_id）
+        # 发送ACK（带chunk_id）- 在锁外发送，避免阻塞其他chunk
         await self.socket.send_multipart([identity, b'', b'ACK', args[0]])
 
         # 打印进度（每10%）
@@ -310,9 +368,10 @@ class FlaxFileServer:
             chunk_size = 4 * 1024 * 1024  # 4MB
             offset = chunk_id * chunk_size
 
-            with open(file_path, 'rb') as f:
-                f.seek(offset)
-                chunk_data = f.read(chunk_size)
+            # 使用aiofiles异步读取
+            async with aiofiles.open(file_path, 'rb') as f:
+                await f.seek(offset)
+                chunk_data = await f.read(chunk_size)
 
             # 返回chunk数据
             await self.socket.send_multipart([

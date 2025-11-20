@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 import fire
 
-from .client import FlaxFileClient
+from .multi_socket_client import MultiSocketFlaxFileClientSync as FlaxFileClient
 from .server import FlaxFileServer
 from .config import Config, CONFIG_FILE_PATHS
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 FlaxFile 异步单端口客户端 - 使用 DEALER/ROUTER 模式
+支持多连接 + aiofiles异步文件I/O
 """
 
 import sys
@@ -12,8 +13,9 @@ import json
 import hashlib
 import logging
 import asyncio
+import aiofiles
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn, TransferSpeedColumn, DownloadColumn
@@ -102,17 +104,17 @@ class AsyncFlaxFileClient:
         file_path: str,
         file_key: str,
         chunk_size: int = 4 * 1024 * 1024,  # 4MB
-        max_concurrency: int = 8,  # 最大并发chunk数
+        max_concurrency: int = 8,  # 最大并发chunk数（滑动窗口大小）
         show_progress: bool = False
     ) -> Dict[str, Any]:
         """
-        并发上传文件 (Pipeline模式，高性能)
+        并发上传文件 (Pipeline模式 + 滑动窗口，修复socket竞争问题)
 
         Args:
             file_path: 文件路径
             file_key: 文件键名
             chunk_size: chunk大小（默认4MB）
-            max_concurrency: 最大并发chunk数（默认8）
+            max_concurrency: 滑动窗口大小（默认8，同时最多8个chunk在传输中）
             show_progress: 是否显示进度
 
         Returns:
@@ -142,63 +144,81 @@ class AsyncFlaxFileClient:
         if len(frames) < 2 or frames[1] != b'OK':
             raise Exception(f"服务器未就绪: {frames}")
 
-        # 2. 并发上传chunks
-        chunk_queue = asyncio.Queue(maxsize=max_concurrency * 2)
-        results_queue = asyncio.Queue()
-
+        # 2. 使用滑动窗口并发上传 (单发送者+单接收者，避免socket竞争)
         total_chunks = (file_size + chunk_size - 1) // chunk_size
 
-        # 生产者：读取文件并生成chunks
-        async def producer():
-            try:
-                with open(file_path, 'rb') as f:
-                    chunk_id = 0
-                    while True:
-                        chunk = f.read(chunk_size)
-                        if not chunk:
-                            break
-                        await chunk_queue.put((chunk_id, chunk))
-                        chunk_id += 1
-            finally:
-                # 发送结束信号
-                for _ in range(max_concurrency):
-                    await chunk_queue.put(None)
-
-        # 消费者：发送chunk并等待ACK
-        async def consumer():
-            while True:
-                item = await chunk_queue.get()
-                if item is None:
-                    break
-
-                chunk_id, chunk = item
-
-                # 发送chunk
-                await self.socket.send_multipart([
-                    b'',
-                    b'UPLOAD_CHUNK_CONCURRENT',
-                    str(chunk_id).encode('utf-8'),
-                    chunk
-                ])
-
-                # 等待ACK
-                frames = await self.socket.recv_multipart()
-                if len(frames) < 3 or frames[1] != b'ACK':
-                    raise Exception(f"Chunk {chunk_id} ACK失败: {frames}")
-
-                await results_queue.put((chunk_id, len(chunk)))
-
-        # 启动生产者和消费者
-        producer_task = asyncio.create_task(producer())
-        consumer_tasks = [
-            asyncio.create_task(consumer())
-            for _ in range(max_concurrency)
-        ]
-
-        # 进度跟踪
+        # 滑动窗口状态
+        pending_acks = {}  # {chunk_id: (send_time, chunk_len)}
+        next_send_id = 0
+        next_ack_id = 0
         bytes_sent = 0
-        chunks_received = 0
 
+        # 单一发送者协程
+        async def sender():
+            nonlocal next_send_id, bytes_sent
+
+            # 使用aiofiles异步读取文件
+            async with aiofiles.open(file_path, 'rb') as f:
+                while next_send_id < total_chunks:
+                    # 等待窗口有空位
+                    while len(pending_acks) >= max_concurrency:
+                        await asyncio.sleep(0.0001)  # 短暂等待
+
+                    # 异步读取chunk
+                    chunk_data = await f.read(chunk_size)
+                    if not chunk_data:
+                        break
+
+                    # 发送chunk (只有这一个协程发送，无竞争)
+                    await self.socket.send_multipart([
+                        b'',
+                        b'UPLOAD_CHUNK_CONCURRENT',
+                        str(next_send_id).encode('utf-8'),
+                        chunk_data
+                    ])
+
+                    # 记录待确认的chunk
+                    pending_acks[next_send_id] = (time.time(), len(chunk_data))
+                    next_send_id += 1
+
+        # 单一接收者协程
+        async def receiver():
+            nonlocal next_ack_id, bytes_sent
+
+            while next_ack_id < total_chunks:
+                # 接收ACK (只有这一个协程接收，无竞争)
+                frames = await self.socket.recv_multipart()
+
+                if len(frames) < 3 or frames[1] != b'ACK':
+                    raise Exception(f"收到非ACK响应: {frames}")
+
+                ack_chunk_id = int(frames[2].decode('utf-8'))
+
+                # 移除已确认的chunk
+                if ack_chunk_id in pending_acks:
+                    _, chunk_len = pending_acks.pop(ack_chunk_id)
+                    bytes_sent += chunk_len
+
+                    # 更新已确认的ID
+                    if ack_chunk_id == next_ack_id:
+                        next_ack_id += 1
+                else:
+                    logger.warning(f"收到重复ACK: {ack_chunk_id}")
+
+        # 进度跟踪协程
+        async def progress_tracker(progress_task=None, progress_obj=None):
+            nonlocal bytes_sent
+            last_bytes = 0
+
+            while next_ack_id < total_chunks:
+                await asyncio.sleep(0.1)  # 每100ms更新一次
+
+                if show_progress and progress_obj and progress_task is not None:
+                    if bytes_sent > last_bytes:
+                        progress_obj.update(progress_task, completed=bytes_sent)
+                        last_bytes = bytes_sent
+
+        # 并发运行发送者和接收者
         if show_progress:
             with Progress(
                 SpinnerColumn(),
@@ -210,25 +230,19 @@ class AsyncFlaxFileClient:
                 console=console,
             ) as progress:
                 upload_task = progress.add_task(
-                    f"[cyan]并发上传 {file_path.name} (x{max_concurrency})",
+                    f"[cyan]滑动窗口上传 {file_path.name} (窗口{max_concurrency})",
                     total=file_size
                 )
 
-                # 收集结果
-                while chunks_received < total_chunks:
-                    chunk_id, chunk_len = await results_queue.get()
-                    bytes_sent += chunk_len
-                    chunks_received += 1
-                    progress.update(upload_task, completed=bytes_sent)
+                # 同时运行发送、接收和进度跟踪
+                await asyncio.gather(
+                    sender(),
+                    receiver(),
+                    progress_tracker(upload_task, progress)
+                )
         else:
             # 无进度条模式
-            while chunks_received < total_chunks:
-                chunk_id, chunk_len = await results_queue.get()
-                bytes_sent += chunk_len
-                chunks_received += 1
-
-        # 等待所有任务完成
-        await asyncio.gather(producer_task, *consumer_tasks)
+            await asyncio.gather(sender(), receiver())
 
         # 3. 发送上传结束请求
         await self.socket.send_multipart([b'', b'UPLOAD_END'])
@@ -304,59 +318,77 @@ class AsyncFlaxFileClient:
         total_chunks = int(frames[3].decode('utf-8'))
         chunk_size = int(frames[4].decode('utf-8'))
 
-        # 2. 并发下载chunks
-        chunk_queue = asyncio.Queue(maxsize=max_concurrency * 2)
-        results_queue = asyncio.Queue()
+        # 2. 使用滑动窗口并发下载 (单发送者+单接收者，避免socket竞争)
+        pending_requests = {}  # {chunk_id: request_time}
+        chunks_buffer = {}  # {chunk_id: data}
+        next_request_id = 0
+        next_write_id = 0
+        bytes_received = 0
+        hash_obj = hashlib.sha256()
 
-        # 生产者：生成chunk请求
-        async def producer():
-            try:
-                for chunk_id in range(total_chunks):
-                    await chunk_queue.put(chunk_id)
-            finally:
-                # 发送结束信号
-                for _ in range(max_concurrency):
-                    await chunk_queue.put(None)
+        # 单一请求发送者
+        async def requester():
+            nonlocal next_request_id
 
-        # 消费者：请求chunk并接收数据
-        async def consumer():
-            while True:
-                chunk_id = await chunk_queue.get()
-                if chunk_id is None:
-                    break
+            while next_request_id < total_chunks:
+                # 等待窗口有空位
+                while len(pending_requests) >= max_concurrency:
+                    await asyncio.sleep(0.0001)
 
-                # 请求chunk
+                # 请求chunk (只有这一个协程发送，无竞争)
                 await self.socket.send_multipart([
                     b'',
                     b'DOWNLOAD_CHUNK_CONCURRENT',
                     file_key.encode('utf-8'),
-                    str(chunk_id).encode('utf-8')
+                    str(next_request_id).encode('utf-8')
                 ])
 
-                # 接收chunk数据
-                frames = await self.socket.recv_multipart()
-                if len(frames) < 4 or frames[1] != b'CHUNK':
-                    raise Exception(f"Chunk {chunk_id} 下载失败: {frames}")
+                pending_requests[next_request_id] = time.time()
+                next_request_id += 1
 
-                received_chunk_id = int(frames[2].decode('utf-8'))
+        # 单一响应接收者
+        async def receiver():
+            nonlocal bytes_received
+
+            received_count = 0
+            while received_count < total_chunks:
+                # 接收chunk数据 (只有这一个协程接收，无竞争)
+                frames = await self.socket.recv_multipart()
+
+                if len(frames) < 4 or frames[1] != b'CHUNK':
+                    raise Exception(f"收到非CHUNK响应: {frames}")
+
+                chunk_id = int(frames[2].decode('utf-8'))
                 chunk_data = frames[3]
 
-                await results_queue.put((received_chunk_id, chunk_data))
+                # 移除待确认
+                pending_requests.pop(chunk_id, None)
 
-        # 启动生产者和消费者
-        producer_task = asyncio.create_task(producer())
-        consumer_tasks = [
-            asyncio.create_task(consumer())
-            for _ in range(max_concurrency)
-        ]
+                # 缓存chunk数据
+                chunks_buffer[chunk_id] = chunk_data
+                bytes_received += len(chunk_data)
+                received_count += 1
 
-        # 写入文件（按序写入）
-        bytes_received = 0
-        chunks_received = 0
-        chunks_buffer = {}  # {chunk_id: data}
-        next_chunk_id = 0
-        hash_obj = hashlib.sha256()
+        # 文件写入器 (按序写入，使用aiofiles)
+        async def writer(f, progress_task=None, progress_obj=None):
+            nonlocal next_write_id
 
+            while next_write_id < total_chunks:
+                # 等待下一个chunk到达
+                while next_write_id not in chunks_buffer:
+                    await asyncio.sleep(0.0001)
+
+                # 按序写入 (aiofiles异步写入)
+                data = chunks_buffer.pop(next_write_id)
+                await f.write(data)
+                hash_obj.update(data)
+                next_write_id += 1
+
+                # 更新进度
+                if show_progress and progress_obj and progress_task is not None:
+                    progress_obj.update(progress_task, completed=bytes_received)
+
+        # 并发运行请求、接收和写入
         if show_progress:
             with Progress(
                 SpinnerColumn(),
@@ -368,43 +400,25 @@ class AsyncFlaxFileClient:
                 console=console,
             ) as progress:
                 download_task = progress.add_task(
-                    f"[cyan]并发下载 {file_key} (x{max_concurrency})",
+                    f"[cyan]滑动窗口下载 {file_key} (窗口{max_concurrency})",
                     total=file_size
                 )
 
-                with open(output_path, 'wb') as f:
-                    # 收集结果并按序写入
-                    while chunks_received < total_chunks:
-                        chunk_id, chunk_data = await results_queue.get()
-                        chunks_buffer[chunk_id] = chunk_data
-
-                        # 按序写入
-                        while next_chunk_id in chunks_buffer:
-                            data = chunks_buffer.pop(next_chunk_id)
-                            f.write(data)
-                            hash_obj.update(data)
-                            bytes_received += len(data)
-                            chunks_received += 1
-                            next_chunk_id += 1
-                            progress.update(download_task, completed=bytes_received)
+                # 使用aiofiles异步打开文件
+                async with aiofiles.open(output_path, 'wb') as f:
+                    await asyncio.gather(
+                        requester(),
+                        receiver(),
+                        writer(f, download_task, progress)
+                    )
         else:
             # 无进度条模式
-            with open(output_path, 'wb') as f:
-                while chunks_received < total_chunks:
-                    chunk_id, chunk_data = await results_queue.get()
-                    chunks_buffer[chunk_id] = chunk_data
-
-                    # 按序写入
-                    while next_chunk_id in chunks_buffer:
-                        data = chunks_buffer.pop(next_chunk_id)
-                        f.write(data)
-                        hash_obj.update(data)
-                        bytes_received += len(data)
-                        chunks_received += 1
-                        next_chunk_id += 1
-
-        # 等待所有任务完成
-        await asyncio.gather(producer_task, *consumer_tasks)
+            async with aiofiles.open(output_path, 'wb') as f:
+                await asyncio.gather(
+                    requester(),
+                    receiver(),
+                    writer(f)
+                )
 
         download_time = time.time() - start_time
         throughput = (bytes_received / (1024 * 1024)) / download_time if download_time > 0 else 0
