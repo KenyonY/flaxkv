@@ -131,6 +131,7 @@ class MultiSocketFlaxFileClient:
         # 全局进度跟踪
         total_bytes_uploaded = 0
         upload_lock = asyncio.Lock()
+        upload_done = asyncio.Event()  # 添加完成标志
 
         # 单个socket的工作线程
         async def socket_worker(socket_idx: int):
@@ -233,18 +234,25 @@ class MultiSocketFlaxFileClient:
                 # 进度更新协程
                 async def progress_updater():
                     last_bytes = 0
-                    while total_bytes_uploaded < file_size:
+                    while not upload_done.is_set():
                         await asyncio.sleep(0.1)
                         if total_bytes_uploaded > last_bytes:
                             progress.update(upload_task, completed=total_bytes_uploaded)
                             last_bytes = total_bytes_uploaded
+                    # 最后一次更新
+                    progress.update(upload_task, completed=total_bytes_uploaded)
 
-                # 运行worker和进度更新
+                # 启动进度更新
+                progress_task = asyncio.create_task(progress_updater())
+
+                # 运行worker
                 tasks = [socket_worker(i) for i in range(num_sockets)]
-                tasks.append(progress_updater())
-
                 results = await asyncio.gather(*tasks)
-                bytes_total = sum(results[:-1])  # 排除progress_updater
+                bytes_total = sum(results)
+
+                # 通知进度更新完成
+                upload_done.set()
+                await progress_task
         else:
             tasks = [socket_worker(i) for i in range(num_sockets)]
             results = await asyncio.gather(*tasks)
@@ -315,6 +323,7 @@ class MultiSocketFlaxFileClient:
         bytes_received = 0
         buffer_lock = asyncio.Lock()
         hash_obj = hashlib.sha256()
+        download_done = asyncio.Event()  # 添加完成标志
 
         # 单个socket的下载线程
         async def socket_worker(socket_idx: int):
@@ -399,17 +408,25 @@ class MultiSocketFlaxFileClient:
 
                 async def progress_updater():
                     last_bytes = 0
-                    while bytes_received < file_size:
+                    while not download_done.is_set():
                         await asyncio.sleep(0.1)
                         if bytes_received > last_bytes:
                             progress.update(download_task, completed=bytes_received)
                             last_bytes = bytes_received
+                    # 最后一次更新
+                    progress.update(download_task, completed=bytes_received)
 
+                # 启动进度更新
+                progress_task = asyncio.create_task(progress_updater())
+
+                # 运行worker和writer
                 tasks = [socket_worker(i) for i in range(num_sockets)]
                 tasks.append(writer())
-                tasks.append(progress_updater())
-
                 await asyncio.gather(*tasks)
+
+                # 通知进度更新完成
+                download_done.set()
+                await progress_task
         else:
             tasks = [socket_worker(i) for i in range(num_sockets)]
             tasks.append(writer())
@@ -488,11 +505,20 @@ class MultiSocketFlaxFileClient:
 
     async def close(self):
         """关闭所有连接"""
+        # 设置linger=0立即关闭，避免阻塞
         for sock in self.sockets:
+            sock.setsockopt(zmq.LINGER, 0)
             sock.close()
-        self.context.term()
+
         self.sockets = []
         self.connected = False
+
+        # 不立即terminate，让context自动清理
+        # context.term()可能阻塞，改为destroy
+        try:
+            self.context.destroy(linger=0)
+        except:
+            pass
 
     async def __aenter__(self):
         return self
