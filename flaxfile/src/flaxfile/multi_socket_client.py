@@ -67,12 +67,18 @@ class MultiSocketFlaxFileClient:
 
     async def connect(self, num_connections: int):
         """创建多个socket连接"""
-        if self.connected:
+        # 如果已有足够的socket，直接返回
+        if self.connected and len(self.sockets) >= num_connections:
             return
 
-        self.sockets = []
+        # 如果需要更多socket，创建额外的
+        if not self.connected:
+            self.sockets = []
+            start_idx = 0
+        else:
+            start_idx = len(self.sockets)
 
-        for i in range(num_connections):
+        for i in range(start_idx, num_connections):
             sock = self.context.socket(zmq.DEALER)
             sock.setsockopt(zmq.SNDBUF, 128 * 1024 * 1024)
             sock.setsockopt(zmq.RCVBUF, 128 * 1024 * 1024)
@@ -90,10 +96,12 @@ class MultiSocketFlaxFileClient:
 
             self.sockets.append(sock)
 
-        if encryption_enabled:
-            console.print(f"[green]🔒 已建立 {num_connections} 个加密连接[/green]")
-        else:
-            console.print(f"[yellow]⚠️  已建立 {num_connections} 个连接（未加密）[/yellow]")
+        # 只在创建了新socket时打印
+        if start_idx < num_connections:
+            if encryption_enabled:
+                console.print(f"[green]🔒 已建立 {num_connections} 个加密连接[/green]")
+            else:
+                console.print(f"[yellow]⚠️  已建立 {num_connections} 个连接（未加密）[/yellow]")
 
         self.connected = True
 
@@ -301,7 +309,16 @@ class MultiSocketFlaxFileClient:
         ])
 
         frames = await self.sockets[0].recv_multipart()
-        if len(frames) < 5 or frames[1] != b'OK':
+
+        # 检查响应
+        if len(frames) < 2:
+            raise Exception(f"服务器响应格式错误")
+
+        if frames[1] == b'ERROR':
+            error_msg = frames[2].decode('utf-8') if len(frames) > 2 else "Unknown error"
+            raise FileNotFoundError(f"下载失败: {error_msg}")
+
+        if frames[1] != b'OK' or len(frames) < 5:
             raise FileNotFoundError(f"文件不存在: {file_key}")
 
         file_size = int(frames[2].decode('utf-8'))
