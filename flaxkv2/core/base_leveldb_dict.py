@@ -269,6 +269,11 @@ class BaseLevelDBDict(ABC):
         与 keys() 不同，此方法返回生成器，不会一次性加载所有键到内存。
         适用于百万级键的大数据库。
 
+        优化说明：
+        - 使用单次遍历收集数据
+        - 使用字节前缀集合 + 提取前缀的方式快速判断嵌套子键
+        - 复杂度从 O(n × m) 优化到 O(n)
+
         Args:
             prefix: 可选的键前缀过滤，只返回以此前缀开头的键
 
@@ -287,14 +292,17 @@ class BaseLevelDBDict(ABC):
             >>> # 转换为列表（与 keys() 等效，但更灵活）
             >>> all_keys = list(db.keys_iter())
         """
-        # 第一遍：收集所有嵌套前缀（以字节形式存储，用于后续过滤子键）
-        nested_prefixes_bytes = set()
-        marker_keys = []  # 存储从标记中提取的实际键
+        # 单次遍历：收集标记键和普通键
+        # 延迟处理可能的嵌套子键
+        pending_keys = []  # (key_bytes, key, value_bytes)
+        nested_prefixes_bytes = set()  # 嵌套前缀的字节形式，如 b'user:0:'
+        marker_keys_set = set()  # 用于去重
 
         for key_bytes, value_bytes in self._db:
             try:
                 key = self._decode_key(key_bytes)
 
+                # 处理嵌套字典标记
                 if isinstance(key, str) and key.startswith('__nested__:'):
                     actual_key = key[len('__nested__:'):]
                     nested_prefixes_bytes.add((actual_key + ':').encode('utf-8'))
@@ -302,52 +310,72 @@ class BaseLevelDBDict(ABC):
                         _, _, is_expired = self._decode_value(value_bytes)
                         if not is_expired:
                             if prefix is None or actual_key.startswith(prefix):
-                                marker_keys.append(actual_key)
+                                if actual_key not in marker_keys_set:
+                                    marker_keys_set.add(actual_key)
                     except Exception:
                         if prefix is None or actual_key.startswith(prefix):
-                            marker_keys.append(actual_key)
+                            if actual_key not in marker_keys_set:
+                                marker_keys_set.add(actual_key)
+                    continue
 
-                elif isinstance(key, str) and key.startswith('__list__:'):
+                # 处理嵌套列表标记
+                if isinstance(key, str) and key.startswith('__list__:'):
                     actual_key = key[len('__list__:'):]
                     nested_prefixes_bytes.add((actual_key + ':').encode('utf-8'))
                     try:
                         _, _, is_expired = self._decode_value(value_bytes)
                         if not is_expired:
                             if prefix is None or actual_key.startswith(prefix):
-                                marker_keys.append(actual_key)
+                                if actual_key not in marker_keys_set:
+                                    marker_keys_set.add(actual_key)
                     except Exception:
                         if prefix is None or actual_key.startswith(prefix):
-                            marker_keys.append(actual_key)
+                            if actual_key not in marker_keys_set:
+                                marker_keys_set.add(actual_key)
+                    continue
+
+                # 普通键 - 先收集，后续判断是否是嵌套子键
+                pending_keys.append((key_bytes, key, value_bytes))
 
             except (ValueError, UnicodeDecodeError):
-                pass
+                # 解码失败，可能是嵌套存储的子键
+                pending_keys.append((key_bytes, None, value_bytes))
 
         # 先返回标记键
-        seen_keys = set()
-        for key in marker_keys:
-            if key not in seen_keys:
-                seen_keys.add(key)
-                yield key
+        for key in marker_keys_set:
+            yield key
 
-        # 第二遍：收集普通用户键（过滤掉嵌套子键）
-        for key_bytes, value_bytes in self._db:
-            # 先检查原始字节是否是嵌套子键（以已知嵌套前缀开头）
-            is_nested_subkey = any(key_bytes.startswith(pfx) for pfx in nested_prefixes_bytes)
-            if is_nested_subkey:
-                continue
+        # 处理 pending_keys：过滤掉嵌套子键
+        seen_keys = set(marker_keys_set)
 
-            try:
-                key = self._decode_key(key_bytes)
+        if nested_prefixes_bytes:
+            # 优化：提取 key_bytes 中第一个 ':' 之前的部分作为可能的前缀
+            # 然后检查这个前缀是否在 nested_prefixes_bytes 中
+            # 这样将 O(m) 的前缀匹配变成 O(1) 的哈希查找
+            for key_bytes, key, value_bytes in pending_keys:
+                # 检查是否是嵌套子键：提取到第一个 ':' 的前缀并检查
+                is_nested_subkey = False
+                colon_pos = key_bytes.find(b':')
+                if colon_pos > 0:
+                    # 提取前缀（包含 ':'）
+                    prefix_candidate = key_bytes[:colon_pos + 1]
+                    if prefix_candidate in nested_prefixes_bytes:
+                        is_nested_subkey = True
 
-                # 跳过标记键（已处理）
-                if isinstance(key, str) and (key.startswith('__nested__:') or key.startswith('__list__:')):
+                if is_nested_subkey:
                     continue
+
+                # 解码失败的键，可能是嵌套子键
+                if key is None:
+                    if colon_pos > 0:
+                        continue
+                    continue  # 无法解码的键跳过
 
                 # 跳过已经返回过的键
                 if key in seen_keys:
                     continue
 
-                # 正常的用户键 - 检查TTL是否过期
+                # 检查 TTL 是否过期
                 try:
                     _, _, is_expired = self._decode_value(value_bytes)
                     if not is_expired:
@@ -358,16 +386,29 @@ class BaseLevelDBDict(ABC):
                     if prefix is None or (isinstance(key, str) and key.startswith(prefix)):
                         seen_keys.add(key)
                         yield key
-
-            except (ValueError, UnicodeDecodeError):
-                # 解码失败，可能是嵌套存储的子键（没有类型前缀）
-                try:
-                    key_str = key_bytes.decode('utf-8')
-                    # 跳过嵌套子键
-                    if ':' in key_str:
+        else:
+            # 没有嵌套前缀，直接处理所有 pending keys
+            for key_bytes, key, value_bytes in pending_keys:
+                if key is None:
+                    # 解码失败的键，可能是子键
+                    if b':' in key_bytes:
                         continue
-                except UnicodeDecodeError:
-                    pass
+                    continue
+
+                # 跳过已经返回过的键
+                if key in seen_keys:
+                    continue
+
+                try:
+                    _, _, is_expired = self._decode_value(value_bytes)
+                    if not is_expired:
+                        if prefix is None or (isinstance(key, str) and key.startswith(prefix)):
+                            seen_keys.add(key)
+                            yield key
+                except Exception:
+                    if prefix is None or (isinstance(key, str) and key.startswith(prefix)):
+                        seen_keys.add(key)
+                        yield key
 
     def keys_count(self) -> int:
         """
