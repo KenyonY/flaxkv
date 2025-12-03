@@ -11,7 +11,8 @@
 | 文档 | 描述 | 位置 |
 |-----|------|------|
 | **README** | 项目介绍、快速开始、主要特性 | [../README.md](../README.md) |
-| **密码认证指南** | 两种密码认证方案对比和使用指南 | [../PASSWORD_AUTH_GUIDE.md](../PASSWORD_AUTH_GUIDE.md) |
+| **故障排查指南** | 常见问题及解决方案 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| **密码认证指南** | 两种密码认证方案对比和使用指南 | [development/PASSWORD_AUTH_GUIDE.md](development/PASSWORD_AUTH_GUIDE.md) |
 | **CHANGELOG** | 版本变更记录 | [../CHANGELOG.md](../CHANGELOG.md) |
 
 ### 开发者文档
@@ -44,22 +45,16 @@
 
 ## ⚡ 性能文档
 
-性能优化相关的规划、分析和成果报告：
+性能优化相关的规划和分析：
 
 | 文档 | 描述 | 状态 |
 |-----|------|------|
 | [**性能优化计划**](performance/PERFORMANCE_OPTIMIZATION_PLAN.md) | 完整的性能优化路线图（P0-P2） | 📋 规划 |
-| [**P1优化成果报告**](P1_OPTIMIZATION_RESULTS.md) | 流水线传输+连接池优化成果 | ✅ 完成 |
+| [**智能缓存指南**](SMART_CACHE_GUIDE.md) | 智能缓存系统使用指南 | ✅ 完成 |
+| [**统一缓存设计**](UNIFIED_CACHE_DESIGN.md) | UnifiedCache 设计文档 | ✅ 完成 |
 | [**请求锁必要性分析**](REQUEST_LOCK_ANALYSIS.md) | `_request_lock`深度技术分析 | ✅ 完成 |
-| [**P2优化成果报告**](P2_REQUEST_ID_OPTIMIZATION.md) | 请求ID机制优化成果 | ✅ 完成 |
 
 ### 性能优化进展
-
-**远程传输优化** (大文件传输)：
-- ✅ **P0: 基础优化** - 密钥缓存 + ZMQ缓冲区，+14%性能提升（35.6 MB/s）
-- ✅ **P1: 流水线传输** - 连接池 + 并发上传，+112%性能提升（75.1 MB/s）
-- ✅ **P2: 请求ID机制** - 移除`_request_lock`，单连接+50%，连接池+116%（76.6 MB/s）
-- 🎯 **累计提升**: 31.25 MB/s → 76.6 MB/s (**+145%, 2.45x加速**) 🚀
 
 **本地存储优化**：
 - ✅ **P0: LevelDB配置优化** - 4-25%性能提升（已实施）

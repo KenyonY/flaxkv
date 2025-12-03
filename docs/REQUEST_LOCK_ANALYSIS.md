@@ -291,17 +291,17 @@ self.socket = self.context.socket(zmq.REQ)
 
 ```python
 # 保持 _request_lock，使用连接池实现并发
-from flaxkv2.client.connection_pool import upload_large_file_with_pool
+from flaxkv2.client.connection_pool import AsyncConnectionPool
 
-await upload_large_file_with_pool(
+async with AsyncConnectionPool(
     'default_db',
     'tcp://127.0.0.1:25555',
-    'my_file',
-    '/path/to/file.bin',
     pool_size=8,  # ← 8个并发连接
     password='yao'
-)
-# 性能: 75.1 MB/s (2.1x 提升)
+) as pool:
+    # 并发执行多个操作
+    async with pool.acquire() as conn:
+        await conn.set('key', 'value')
 ```
 
 **理由**：

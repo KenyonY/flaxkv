@@ -124,22 +124,6 @@ pip install -e .[test]
 python -m build
 ```
 
-### 性能分析
-```bash
-# 一键性能分析（文件传输）
-./quick_profile.sh
-
-# 详细性能分析（需要先启动服务器）
-python profile_file_transfer.py           # 对比所有传输方式
-python profile_file_transfer_detailed.py  # 详细阶段分析
-
-# 查看分析报告
-cat profile_results/summary_report.md     # 汇总报告
-cat profile_results/detailed_analysis.txt # 详细分析
-```
-
-详见 `README_PROFILING.md` 和 `PROFILE_GUIDE.md`
-
 ### CLI 命令别名
 
 FlaxKV2 提供了多个命令别名，以下命令等价：
@@ -159,10 +143,6 @@ flaxkv2 config init
 
 # 使用配置文件中的 profile
 flaxkv2 run --profile production
-
-# 配置文件中可以定义服务器别名，使用 @ 前缀引用
-# 例如配置了 @prod 服务器，可以这样使用：
-flaxkv2 get @prod mydb mykey
 
 # 命令行参数优先级高于配置文件
 flaxkv2 run --profile production --port 8888  # 覆盖 profile 中的端口
@@ -316,7 +296,7 @@ db = FlaxKV("mydb", "./data", performance_profile='read_optimized')
 - 客户端: REQ socket，服务器: ROUTER socket
 - 消息格式: `[command_type, db_name, ...args]`
 - 响应格式: `[status_code, data]`
-- 支持命令: CONNECT, GET, SET, DELETE, KEYS, VALUES, ITEMS, UPDATE, PING, FILE_CHUNK, FILE_META
+- 支持命令: CONNECT, GET, SET, DELETE, KEYS, VALUES, ITEMS, UPDATE, PING
 - 服务端仅处理二进制数据，客户端负责所有序列化
 - 支持 CurveZMQ 加密（基于 NaCl/Curve25519）
 - 支持 LZ4 压缩（降低网络带宽）
@@ -414,7 +394,6 @@ tests/
 - `docs/LOGGING.md` - 日志配置指南
 - `docs/INSPECTOR.md` - Inspector 工具使用
 - `docs/CONFIG_FILE_GUIDE.md` - 配置文件指南
-- `docs/LARGE_FILE_TRANSFER.md` - 大文件传输指南
 - `docs/development/PASSWORD_AUTH_GUIDE.md` - 密码认证指南
 - `docs/README.md` - 文档目录树
 
@@ -432,7 +411,6 @@ tests/
    ```python
    import asyncio
    from flaxkv2.client.async_zmq_client import AsyncRemoteDBDict
-   from flaxkv2.utils.async_file_transfer import upload_large_file_async
 
    async def main():
        # 异步客户端（并发性能更高）
@@ -454,16 +432,6 @@ tests/
                db.get('key1'),
                db.get('key2'),
                db.get('key3')
-           )
-
-           # 异步文件传输（并发上传chunk）
-           await upload_large_file_async(
-               'default_db',
-               'tcp://127.0.0.1:25555',
-               'my_file',
-               '/path/to/large/file.bin',
-               max_concurrency=8,  # 8个并发chunk
-               password='yao'
            )
 
    asyncio.run(main())
@@ -499,55 +467,4 @@ tests/
 
    # 单个键设置 TTL
    db.set_ttl("session:123", 1800)
-   ```
-
-7. **大文件传输**（同步API）:
-   ```python
-   from flaxkv2.utils.file_transfer import upload_large_file, download_large_file
-
-   # 上传大文件（自动分块，10MB/块）
-   upload_large_file(
-       db,
-       key="my_video",
-       file_path="/path/to/video.mp4",
-       chunk_size=10 * 1024 * 1024,
-       show_progress=True
-   )
-
-   # 下载文件
-   download_large_file(
-       db,
-       key="my_video",
-       output_path="./downloads/",
-       show_progress=True
-   )
-   ```
-
-8. **大文件传输**（异步API，性能更高）:
-   ```python
-   import asyncio
-   from flaxkv2.utils.async_file_transfer import upload_large_file_async, download_large_file_async
-
-   async def transfer_files():
-       # 异步并发上传（8个并发chunk）
-       await upload_large_file_async(
-           'default_db',
-           'tcp://127.0.0.1:25555',
-           'my_file',
-           '/path/to/large/file.bin',
-           max_concurrency=8,
-           password='yao'
-       )
-
-       # 异步并发下载
-       await download_large_file_async(
-           'default_db',
-           'tcp://127.0.0.1:25555',
-           'my_file',
-           './downloads/',
-           max_concurrency=8,
-           password='yao'
-       )
-
-   asyncio.run(transfer_files())
    ```
