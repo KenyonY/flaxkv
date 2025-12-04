@@ -289,6 +289,7 @@ class FlaxKV:
                 raw=raw,
                 default_ttl=default_ttl,
                 auto_nested=auto_nested,
+                enable_write_buffer=True,
                 **cache_params
             )
         else:

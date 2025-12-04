@@ -47,8 +47,8 @@ class CachedLevelDBDict(BaseLevelDBDict):
         cleanup_interval: int = 60,
         cleanup_batch_size: int = 1000,
         # 写缓冲参数
-        enable_write_buffer: bool = False,
-        write_buffer_size: int = 100,
+        enable_write_buffer: bool = True,
+        write_buffer_size: int = 500,
         write_buffer_flush_interval: int = 60,
         async_flush: bool = False,
         # 性能配置参数
@@ -76,8 +76,8 @@ class CachedLevelDBDict(BaseLevelDBDict):
             enable_ttl_cleanup: 是否启用TTL自动清理（默认True）
             cleanup_interval: TTL清理间隔（秒），默认60秒
             cleanup_batch_size: 每次清理扫描的键数量，默认1000
-            enable_write_buffer: 是否启用写缓冲（默认False）
-            write_buffer_size: 写缓冲区大小（条目数），默认100
+            enable_write_buffer: 是否启用写缓冲（默认True）
+            write_buffer_size: 写缓冲区大小（条目数），默认500
             write_buffer_flush_interval: 写缓冲刷新间隔（秒），默认60秒
             async_flush: 是否使用异步flush（默认False）
             performance_profile: 性能配置文件名称
